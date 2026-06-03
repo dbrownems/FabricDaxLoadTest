@@ -9,10 +9,34 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Match QueryRunner — drop satellite locale resource DLLs. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\QueryRunner\QueryRunner.csproj" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
     <PackageReference Include="Azure.Identity" Version="1.13.2" />
   </ItemGroup>
+
+  <!-- Exclude the WAM broker artifacts from the publish output entirely
+       (BEFORE the single-file bundler runs, so they don't end up
+       embedded in LoadGen.exe). We never invoke the WAM broker — callers
+       always pass a bearer token via AccessToken=. The native msalruntime
+       DLLs and the broker bridge DLLs are pure dead weight.
+
+       Using <RuntimeHostConfigurationOption> + <ResolvedFileToPublish>
+       Remove= is the supported pattern for excluding files before the
+       single-file bundler runs. See plan.md § 2.7. -->
+  <Target Name="TrimBrokerArtifactsBeforeBundle"
+          AfterTargets="ComputeFilesToPublish"
+          BeforeTargets="GenerateSingleFileBundle">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(Filename)%(Extension)' == 'Microsoft.Identity.Client.Broker.dll' or
+                   '%(Filename)%(Extension)' == 'Microsoft.Identity.Client.NativeInterop.dll' or
+                   '%(Filename)%(Extension)' == 'msalruntime.dll' or
+                   '%(Filename)%(Extension)' == 'msalruntime_arm64.dll' or
+                   '%(Filename)%(Extension)' == 'msalruntime_x86.dll'" />
+    </ItemGroup>
+  </Target>
 </Project>

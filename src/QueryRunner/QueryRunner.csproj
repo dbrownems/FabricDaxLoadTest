@@ -9,8 +9,28 @@
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
     <FileVersion>0.1.0.0</FileVersion>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- Drop satellite locale resource DLLs (~5 MB across 96 files).
+         English error/log strings are sufficient for our diagnostics. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AnalysisServices.AdomdClient" Version="19.113.2" />
   </ItemGroup>
+
+  <!-- Trim Microsoft.Identity.Client WAM broker artifacts (~8.5 MB total).
+       We never invoke the WAM broker — callers always pass a bearer token
+       via the AccessToken= connection-string property. The broker DLLs and
+       native msalruntime*.dll files are pure dead weight in our publish
+       output. See plan.md § 2.7 (Distribution & in-process loading). -->
+  <Target Name="TrimBrokerArtifacts" AfterTargets="Publish">
+    <ItemGroup>
+      <BrokerJunk Include="$(PublishDir)Microsoft.Identity.Client.Broker.dll" />
+      <BrokerJunk Include="$(PublishDir)Microsoft.Identity.Client.NativeInterop.dll" />
+      <BrokerJunk Include="$(PublishDir)runtimes\win-arm64\native\msalruntime_arm64.dll" />
+      <BrokerJunk Include="$(PublishDir)runtimes\win-x64\native\msalruntime.dll" />
+      <BrokerJunk Include="$(PublishDir)runtimes\win-x86\native\msalruntime_x86.dll" />
+    </ItemGroup>
+    <Delete Files="@(BrokerJunk)" />
+    <Message Text="TrimBrokerArtifacts: removed @(BrokerJunk->Count()) broker artifacts from $(PublishDir)" Importance="high" />
+  </Target>
 </Project>
