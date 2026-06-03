@@ -16,3 +16,8 @@ Thumbs.db
 # Tokens & local artifacts
 *.token
 logs/
+
+# Personal AI agent instructions (not for sharing)
+.copilot/
+AGENTS.local.md
+
