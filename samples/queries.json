@@ -1,0 +1,4 @@
+[
+  "EVALUATE ROW(\"x\", 1)",
+  "EVALUATE ROW(\"now\", NOW())"
+]

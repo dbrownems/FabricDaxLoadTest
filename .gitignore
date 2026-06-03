@@ -1,0 +1,18 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tokens & local artifacts
+*.token
+logs/
