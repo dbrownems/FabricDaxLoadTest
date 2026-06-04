@@ -17,6 +17,20 @@
     <PackageReference Include="Microsoft.AnalysisServices.AdomdClient" Version="19.113.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Server-side trace definition. Loaded as embedded resource by
+         FabricDaxLoadTest.Tracing.TraceSubscriber, which substitutes
+         the per-run trace ID/Name (FDLT-<RunId>) before issuing
+         <Create><Trace>. NB: the file ships WITHOUT a <Filter> block
+         because the PBI Service rejects any server-side filter clause
+         on subscription traces (see .copilot/tracing-notes.md §3).
+         Filtering by ApplicationName=FabricDaxLoadTest/<RunId>
+         happens client-side in TraceEventReader. -->
+    <EmbeddedResource Include="Tracing\FilteredTrace.xmla">
+      <LogicalName>FabricDaxLoadTest.Tracing.FilteredTrace.xmla</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- Trim Microsoft.Identity.Client WAM broker artifacts (~8.5 MB total).
        We never invoke the WAM broker — callers always pass a bearer token
        via the AccessToken= connection-string property. The broker DLLs and
