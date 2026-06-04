@@ -290,8 +290,18 @@ namespace FabricDaxLoadTest
     {
         private static QueryRunnerLogger _logger = new();
 
+        // Process-wide single-run gate. Static singletons (_logger,
+        // QueryRunnerStatus.Instance) make concurrent runs unsafe;
+        // StartLoadTest fails fast if a run is already in flight.
+        private static int _activeRun;
+
         private static void Log(string message) => _logger.Log(message);
 
+        /// <summary>
+        /// Legacy entry point preserved for back-compat. Builds a
+        /// <see cref="LoadTestConfig"/> from the positional parameters,
+        /// starts a run, and blocks until completion.
+        /// </summary>
         public static string RunLoadTest(
             string[] queries, string xmlaEndpoint, string dataset, string token,
             string[] userEmails, string[] userRoles,
@@ -302,10 +312,132 @@ namespace FabricDaxLoadTest
             bool skipResults = false,
             Action<string>? logCallback = null)
         {
+            var config = new LoadTestConfig
+            {
+                Queries = queries,
+                XmlaEndpoint = xmlaEndpoint,
+                Dataset = dataset,
+                Token = token,
+                UserEmails = userEmails,
+                UserRoles = userRoles,
+                DurationSeconds = durationSeconds,
+                QueriesPerBatch = queriesPerBatch,
+                PauseBetweenIterationsMs = pauseBetweenIterationsMs,
+                PauseBetweenQueriesMs = pauseBetweenQueriesMs,
+                LogDirectory = logDirectory,
+                UserRampTimeSec = userRampTimeSec,
+                LogFileName = logFileName,
+                SkipResults = skipResults,
+                LogCallback = logCallback,
+            };
+            using var handle = StartLoadTest(config);
+            return handle.Wait();
+        }
+
+        /// <summary>
+        /// Starts a load test on a background <see cref="Task"/> and
+        /// returns a <see cref="LoadTestHandle"/> that the caller polls
+        /// for progress and joins via <see cref="LoadTestHandle.Wait"/>.
+        /// Throws synchronously on invalid config or if a run is already
+        /// in flight in this process.
+        /// </summary>
+        public static LoadTestHandle StartLoadTest(LoadTestConfig config)
+        {
+            ValidateConfig(config);
+
+            if (Interlocked.CompareExchange(ref _activeRun, 1, 0) != 0)
+                throw new InvalidOperationException(
+                    "A load test is already running in this process. " +
+                    "Call Cancel() and Wait() on the existing handle, " +
+                    "or wait for it to complete, before starting another.");
+
+            var runId = Guid.NewGuid();
+            var externalCts = new CancellationTokenSource();
+            var box = new SnapshotBox(new LoadTestProgressSnapshot
+            {
+                UtcNow = DateTime.UtcNow,
+                Phase = "Pending",
+                TargetUsers = config.UserEmails.Length,
+            });
+
+            Task<string> task;
+            try
+            {
+                task = Task.Run(() =>
+                {
+                    try { return RunLoadTestCore(config, runId, externalCts.Token, box); }
+                    finally { Interlocked.Exchange(ref _activeRun, 0); }
+                });
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _activeRun, 0);
+                try { externalCts.Dispose(); } catch { }
+                throw;
+            }
+
+            return new LoadTestHandle(runId, task, externalCts, box);
+        }
+
+        private static void ValidateConfig(LoadTestConfig config)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            if (config.Queries == null || config.Queries.Length == 0)
+                throw new ArgumentException("Queries must not be empty.", nameof(config));
+            if (config.UserEmails == null || config.UserEmails.Length == 0)
+                throw new ArgumentException("UserEmails must not be empty.", nameof(config));
+            if (config.UserRoles == null || config.UserRoles.Length != config.UserEmails.Length)
+                throw new ArgumentException(
+                    "UserRoles must be non-null and have the same length as UserEmails.",
+                    nameof(config));
+            if (string.IsNullOrEmpty(config.XmlaEndpoint))
+                throw new ArgumentException("XmlaEndpoint must be set.", nameof(config));
+            if (string.IsNullOrEmpty(config.Dataset))
+                throw new ArgumentException("Dataset must be set.", nameof(config));
+            if (string.IsNullOrEmpty(config.Token))
+                throw new ArgumentException("Token must be set.", nameof(config));
+            if (config.DurationSeconds <= 0)
+                throw new ArgumentException("DurationSeconds must be > 0.", nameof(config));
+            if (config.QueriesPerBatch <= 0)
+                throw new ArgumentException("QueriesPerBatch must be > 0.", nameof(config));
+            if (config.UserRampTimeSec < 0)
+                throw new ArgumentException("UserRampTimeSec must be >= 0.", nameof(config));
+        }
+
+        private static string RunLoadTestCore(
+            LoadTestConfig config, Guid runId,
+            CancellationToken externalCt, SnapshotBox snapshotBox)
+        {
+            var queries = config.Queries;
+            var xmlaEndpoint = config.XmlaEndpoint;
+            var dataset = config.Dataset;
+            var token = config.Token;
+            var userEmails = config.UserEmails;
+            var userRoles = config.UserRoles;
+            int durationSeconds = config.DurationSeconds;
+            int queriesPerBatch = config.QueriesPerBatch;
+            int pauseBetweenIterationsMs = config.PauseBetweenIterationsMs;
+            int pauseBetweenQueriesMs = config.PauseBetweenQueriesMs;
+            string? logDirectory = config.LogDirectory;
+            int userRampTimeSec = config.UserRampTimeSec;
+            string? logFileName = config.LogFileName;
+            bool skipResults = config.SkipResults;
+            var logCallback = config.LogCallback;
+
             var status = QueryRunnerStatus.Instance;
             status.Reset();
 
-            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
+            // Internal duration timer linked with the caller's cancel token.
+            // Either source firing causes the run to drain.
+            using var durationCts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                durationCts.Token, externalCt);
+            var cts = linkedCts;
+
+            // Volatile phase string published into snapshots.
+            string phase = "Pending";
+            void SetPhase(string p) => Volatile.Write(ref phase, p);
+
             var testStart = Stopwatch.StartNew();
             var testStartTime = DateTime.UtcNow;
 
@@ -320,6 +452,17 @@ namespace FabricDaxLoadTest
                 textLogPath = Path.Combine(logDirectory, baseName + ".log");
             }
             _logger = new QueryRunnerLogger(textLogPath) { OnLogLine = logCallback };
+
+            // Seed the initial snapshot so pythonnet callers polling
+            // LatestSnapshot see a coherent "Pending" record before the
+            // first user driver starts.
+            snapshotBox.Set(new LoadTestProgressSnapshot
+            {
+                UtcNow = DateTime.UtcNow,
+                Elapsed = TimeSpan.Zero,
+                Phase = Volatile.Read(ref phase),
+                TargetUsers = userEmails.Length,
+            });
 
             Log($"Starting: {userEmails.Length} users, {queries.Length} queries, {durationSeconds}s, {queriesPerBatch} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
             if (textLogPath != null)
@@ -346,6 +489,9 @@ namespace FabricDaxLoadTest
             }
 
             Task? periodicReporter = null;
+            Task? snapshotTask = null;
+            string? builtResult = null;
+            using var snapshotCts = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
             try
             {
 
@@ -454,6 +600,43 @@ namespace FabricDaxLoadTest
                 }, cts.Token));
             }
 
+            SetPhase("Connecting");
+
+            // 1Hz snapshot publisher. Reads cumulative counters from the
+            // status singleton, computes a 5s rolling QPS from the
+            // success delta, and writes into snapshotBox so pythonnet
+            // callers see live progress without a callback.
+            snapshotTask = Task.Run(async () =>
+            {
+                long lastSuccessful = 0;
+                var lastSampleAt = Stopwatch.StartNew();
+                while (!snapshotCts.IsCancellationRequested)
+                {
+                    try { await Task.Delay(1000, snapshotCts.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+
+                    long total = status.TotalQueries;
+                    long errors = status.TotalErrors;
+                    long successful = total - errors;
+                    double elapsedSec = lastSampleAt.Elapsed.TotalSeconds;
+                    double qps = elapsedSec > 0 ? (successful - lastSuccessful) / elapsedSec : 0;
+                    lastSuccessful = successful;
+                    lastSampleAt.Restart();
+
+                    snapshotBox.Set(new LoadTestProgressSnapshot
+                    {
+                        UtcNow = DateTime.UtcNow,
+                        Elapsed = testStart.Elapsed,
+                        Phase = Volatile.Read(ref phase),
+                        ActiveUsers = status.ActiveUsers,
+                        TargetUsers = nUsers,
+                        Successful = successful,
+                        Failed = errors,
+                        RollingQps = qps,
+                    });
+                }
+            });
+
             // Periodic ramp-progress logging (every progressStep users connected)
             int lastLogged = 0;
             while (true)
@@ -482,7 +665,19 @@ namespace FabricDaxLoadTest
             }
 
             if (connectedUsers == 0)
-                throw new InvalidOperationException("No users connected successfully — cannot run load test");
+            {
+                // Distinguish caller-initiated cancellation from genuine
+                // connect failure. Cancelling during ramp must not look
+                // like a fatal error to the polling caller.
+                if (externalCt.IsCancellationRequested || durationCts.IsCancellationRequested)
+                {
+                    Log($"Cancelled during ramp at t={testStart.Elapsed.TotalSeconds:F1}s — no users connected");
+                }
+                else
+                {
+                    throw new InvalidOperationException("No users connected successfully — cannot run load test");
+                }
+            }
 
             if (connectedUsers < nUsers)
                 Log($"WARNING: Only {connectedUsers}/{nUsers} users connected successfully");
@@ -506,6 +701,9 @@ namespace FabricDaxLoadTest
             Log($"│  Ramp-up time:      {testStart.Elapsed.TotalSeconds:F1}s{new string(' ', Math.Max(0, 17 - testStart.Elapsed.TotalSeconds.ToString("F1").Length))}│");
             Log("└──────────────────────────────────────────┘");
 
+            if (connectedUsers > 0)
+                SetPhase("Steady");
+
             // ── Periodic stats reporter (every 60s) ──
             periodicReporter = Task.Run(() =>
             {
@@ -522,38 +720,76 @@ namespace FabricDaxLoadTest
                 }
             });
 
-            Task.WaitAll(userTasks.ToArray());
+            try
+            {
+                Task.WaitAll(userTasks.ToArray());
+            }
+            catch (AggregateException ae) when (ae.InnerExceptions.All(e => e is OperationCanceledException))
+            {
+                // Normal shutdown path: linked token fired (duration
+                // expired or caller called Cancel()), user driver loops
+                // exited cooperatively. Not a fault.
+            }
 
             } // end try
             catch (Exception ex)
             {
                 Log($"FATAL ERROR: {ex}");
+                SetPhase("Failed");
                 throw;
             }
             finally
             {
-            testStart.Stop();
+                testStart.Stop();
 
-            // Shut down periodic reporter
-            if (periodicReporter != null)
-                try { periodicReporter.Wait(TimeSpan.FromSeconds(2)); } catch { }
+                // Stop the snapshot publisher first so it doesn't observe
+                // a half-torn-down state while we drain the rest.
+                try { snapshotCts.Cancel(); } catch { }
+                if (snapshotTask != null)
+                    try { snapshotTask.Wait(TimeSpan.FromSeconds(2)); } catch { }
 
-            // Shut down log writer
-            if (telemetryQueue != null)
-            {
-                telemetryQueue.CompleteAdding();
-                logWriterTask?.Wait(TimeSpan.FromSeconds(10));
-                Log($"Log written: {logFilePath}");
+                if (periodicReporter != null)
+                    try { periodicReporter.Wait(TimeSpan.FromSeconds(2)); } catch { }
+
+                if (telemetryQueue != null)
+                {
+                    telemetryQueue.CompleteAdding();
+                    logWriterTask?.Wait(TimeSpan.FromSeconds(10));
+                    Log($"Log written: {logFilePath}");
+                }
+
+                // Resolve final phase: Failed (set above) > Cancelled
+                // (external or duration token fired) > Done.
+                var currentPhase = Volatile.Read(ref phase);
+                if (currentPhase != "Failed")
+                {
+                    SetPhase(externalCt.IsCancellationRequested ? "Cancelled" : "Done");
+                }
+
+                Log($"Done: {status.TotalQueries} executions in {testStart.Elapsed.TotalSeconds:F1}s");
+
+                builtResult = BuildStats(status.AllResults, testStart.Elapsed.TotalMilliseconds,
+                    userEmails.Length, queries.Length, logFilePath);
+
+                // Publish the final snapshot so a polling caller sees
+                // accurate "Done"/"Cancelled"/"Failed" without racing
+                // the IsCompleted flip.
+                snapshotBox.Set(new LoadTestProgressSnapshot
+                {
+                    UtcNow = DateTime.UtcNow,
+                    Elapsed = testStart.Elapsed,
+                    Phase = Volatile.Read(ref phase),
+                    ActiveUsers = status.ActiveUsers,
+                    TargetUsers = userEmails.Length,
+                    Successful = status.TotalQueries - status.TotalErrors,
+                    Failed = status.TotalErrors,
+                    RollingQps = 0,
+                });
+
+                try { _logger.Dispose(); } catch { }
             }
-            }
 
-            Log($"Done: {status.TotalQueries} executions in {testStart.Elapsed.TotalSeconds:F1}s");
-
-            var result = BuildStats(status.AllResults, testStart.Elapsed.TotalMilliseconds,
-                userEmails.Length, queries.Length, logFilePath);
-
-            _logger.Dispose();
-            return result;
+            return builtResult ?? "{}";
         }
 
         private static void LogWriterLoop(BlockingCollection<TelemetryRecord> queue,
