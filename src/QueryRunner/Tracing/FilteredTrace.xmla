@@ -1,265 +1,120 @@
-<?xml version="1.0" encoding="utf-8"?>
 <Batch xmlns="http://schemas.microsoft.com/analysisservices/2003/engine">
-  <Create xmlns="http://schemas.microsoft.com/analysisservices/2003/engine">
+  <Create>
     <ObjectDefinition>
       <Trace>
-        <ID>MicrosoftProfilerTrace1777844585</ID>
-        <Name>MicrosoftProfilerTrace1777844585</Name>
+        <ID>FabricDaxLoadTest_TraceTemplate</ID>
+        <Name>FabricDaxLoadTest_TraceTemplate</Name>
+        <!--
+          Server-side trace definition for FabricDaxLoadTest.
+
+          The <ID> and <Name> nodes above are placeholders rewritten at
+          runtime by TraceSubscriber.LoadCreateTemplate to FDLT-<RunId>.
+
+          Event/column matrix curated from PbiLoadTester's
+          LiveTraceCapture.EventColumns dictionary, which has been tested
+          against the live PBI Service and Fabric XMLA endpoints. Three
+          rules below carry over:
+
+          1. ColumnID 0 (EventClass) is included on EVERY event. ADOMD's
+             Subscribe reader returns rows with the union of all
+             requested columns; without EventClass we cannot map a row
+             back to its event class and the row is dropped. PBI's own
+             Profiler-export trace definitions OMIT EventClass per
+             event — copying those breaks the row dispatcher. See
+             .copilot/tracing-notes.md §6.
+          2. Never include ColumnID 44 (RequestParameters) or 45
+             (RequestProperties) on any event. PBI Service emits these
+             as list-shaped BinaryXml that the ADOMD reader rejects
+             mid-stream with "Lists of BinaryXml value tokens not
+             supported." — kills the whole subscription.
+          3. Event 85 (VertiPaqSEQueryCacheMatch) is restricted to a
+             small confirmed-accepted column set per
+             .copilot/tracing-notes.md §4. The PBI Service rejects
+             any other column on event 85 with a generic schema error
+             that fails the entire <Create><Trace>.
+
+          NO <Filter> clause. PBI Service can accept some Create-side
+          filters but the safe portable choice is to filter
+          client-side in TraceSubscriber.ProcessRow on
+          ApplicationName=FabricDaxLoadTest/<RunId>. Event 85 has no
+          ApplicationName column and is admitted by RequestID match
+          downstream. See .copilot/tracing-notes.md §3.
+        -->
         <Events>
-          <Event>
-            <EventID>15</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>44</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>16</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>36</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>38</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>33</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>35</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>17</EventID>
-            <Columns>
-              <ColumnID>24</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>136</EventID>
-            <Columns>
-              <ColumnID>28</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>39</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>40</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>5</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>7</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>6</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>8</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
+
+          <!-- 9: QueryBegin — start of DAX/MDX query -->
           <Event>
             <EventID>9</EventID>
             <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>44</ColumnID>
-              <ColumnID>45</ColumnID>
+              <ColumnID>0</ColumnID>   <!-- EventClass -->
+              <ColumnID>1</ColumnID>   <!-- EventSubclass -->
+              <ColumnID>2</ColumnID>   <!-- CurrentTime -->
+              <ColumnID>3</ColumnID>   <!-- StartTime -->
+              <ColumnID>25</ColumnID>  <!-- ConnectionID -->
+              <ColumnID>28</ColumnID>  <!-- DatabaseName -->
+              <ColumnID>32</ColumnID>  <!-- NTUserName -->
+              <ColumnID>33</ColumnID>  <!-- NTDomainName -->
+              <ColumnID>36</ColumnID>  <!-- ClientProcessID -->
+              <ColumnID>37</ColumnID>  <!-- ApplicationName -->
+              <ColumnID>39</ColumnID>  <!-- SessionID -->
+              <ColumnID>41</ColumnID>  <!-- Spid -->
+              <ColumnID>42</ColumnID>  <!-- TextData (DAX text) -->
+              <ColumnID>47</ColumnID>  <!-- RequestID -->
+              <ColumnID>55</ColumnID>  <!-- Identity -->
             </Columns>
           </Event>
+
+          <!-- 10: QueryEnd — end of DAX/MDX query (Duration, CPU) -->
           <Event>
             <EventID>10</EventID>
             <Columns>
+              <ColumnID>0</ColumnID>
+              <ColumnID>1</ColumnID>
+              <ColumnID>2</ColumnID>
+              <ColumnID>3</ColumnID>
+              <ColumnID>5</ColumnID>   <!-- Duration -->
+              <ColumnID>6</ColumnID>   <!-- CpuTime -->
+              <ColumnID>24</ColumnID>  <!-- Error -->
+              <ColumnID>25</ColumnID>
+              <ColumnID>28</ColumnID>
+              <ColumnID>32</ColumnID>
+              <ColumnID>33</ColumnID>
+              <ColumnID>36</ColumnID>
+              <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>
+              <ColumnID>41</ColumnID>
+              <ColumnID>42</ColumnID>
+              <ColumnID>47</ColumnID>
+              <ColumnID>55</ColumnID>
+            </Columns>
+          </Event>
+
+          <!-- 15: CommandBegin — XMLA command start -->
+          <Event>
+            <EventID>15</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>
+              <ColumnID>1</ColumnID>
+              <ColumnID>2</ColumnID>
+              <ColumnID>3</ColumnID>
+              <ColumnID>25</ColumnID>
+              <ColumnID>28</ColumnID>
+              <ColumnID>32</ColumnID>
+              <ColumnID>33</ColumnID>
+              <ColumnID>36</ColumnID>
+              <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>
+              <ColumnID>41</ColumnID>
+              <ColumnID>42</ColumnID>
+              <ColumnID>47</ColumnID>
+            </Columns>
+          </Event>
+
+          <!-- 16: CommandEnd — XMLA command end -->
+          <Event>
+            <EventID>16</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>
               <ColumnID>1</ColumnID>
               <ColumnID>2</ColumnID>
               <ColumnID>3</ColumnID>
@@ -272,221 +127,19 @@
               <ColumnID>33</ColumnID>
               <ColumnID>36</ColumnID>
               <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>135</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>35</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
               <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
               <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-              <ColumnID>56</ColumnID>
             </Columns>
           </Event>
+
+          <!-- 17: Error -->
           <Event>
-            <EventID>120</EventID>
+            <EventID>17</EventID>
             <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>50</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>121</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
+              <ColumnID>0</ColumnID>
               <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>22</ColumnID>
-              <ColumnID>23</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>49</ColumnID>
-              <ColumnID>50</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>122</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>50</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>123</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>50</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>124</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>50</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>137</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>35</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-              <ColumnID>56</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>112</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>35</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>133</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>22</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>35</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>98</EventID>
-            <Columns>
-              <ColumnID>8</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>7</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>11</ColumnID>
-              <ColumnID>12</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>22</ColumnID>
-              <ColumnID>23</ColumnID>
               <ColumnID>24</ColumnID>
               <ColumnID>25</ColumnID>
               <ColumnID>28</ColumnID>
@@ -494,319 +147,173 @@
               <ColumnID>33</ColumnID>
               <ColumnID>36</ColumnID>
               <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>49</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>99</EventID>
-            <Columns>
-              <ColumnID>8</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>7</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>11</ColumnID>
-              <ColumnID>12</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>22</ColumnID>
-              <ColumnID>23</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>49</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>61</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
-              <ColumnID>47</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>11</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
             </Columns>
           </Event>
+
+          <!-- 82: VertiPaqSEQueryBegin -->
           <Event>
             <EventID>82</EventID>
             <Columns>
-              <ColumnID>8</ColumnID>
+              <ColumnID>0</ColumnID>
               <ColumnID>1</ColumnID>
               <ColumnID>2</ColumnID>
               <ColumnID>3</ColumnID>
-              <ColumnID>11</ColumnID>
-              <ColumnID>7</ColumnID>
-              <ColumnID>12</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>15</ColumnID>
+              <ColumnID>13</ColumnID>  <!-- ObjectName -->
               <ColumnID>25</ColumnID>
               <ColumnID>28</ColumnID>
               <ColumnID>32</ColumnID>
               <ColumnID>33</ColumnID>
               <ColumnID>37</ColumnID>
               <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
               <ColumnID>47</ColumnID>
-              <ColumnID>51</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
             </Columns>
           </Event>
+
+          <!-- 83: VertiPaqSEQueryEnd -->
+          <Event>
+            <EventID>83</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>
+              <ColumnID>1</ColumnID>
+              <ColumnID>2</ColumnID>
+              <ColumnID>3</ColumnID>
+              <ColumnID>5</ColumnID>
+              <ColumnID>6</ColumnID>
+              <ColumnID>10</ColumnID>  <!-- IntegerData (rows scanned) -->
+              <ColumnID>13</ColumnID>
+              <ColumnID>24</ColumnID>
+              <ColumnID>25</ColumnID>
+              <ColumnID>28</ColumnID>
+              <ColumnID>32</ColumnID>
+              <ColumnID>33</ColumnID>
+              <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>
+              <ColumnID>41</ColumnID>
+              <ColumnID>42</ColumnID>
+              <ColumnID>47</ColumnID>
+            </Columns>
+          </Event>
+
+          <!-- 85: VertiPaqSEQueryCacheMatch — strict narrow column set;
+               PBI Service rejects most columns on this event. NOTE: no
+               ApplicationName (37) here — client-side filter must
+               admit by RequestID, not ApplicationName. See
+               .copilot/tracing-notes.md §4. -->
           <Event>
             <EventID>85</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>   <!-- EventClass -->
+              <ColumnID>1</ColumnID>   <!-- EventSubclass -->
+              <ColumnID>2</ColumnID>   <!-- CurrentTime -->
+              <ColumnID>25</ColumnID>  <!-- ConnectionID -->
+              <ColumnID>28</ColumnID>  <!-- DatabaseName -->
+              <ColumnID>41</ColumnID>  <!-- Spid -->
+              <ColumnID>42</ColumnID>  <!-- TextData -->
+              <ColumnID>47</ColumnID>  <!-- RequestID -->
+            </Columns>
+          </Event>
+
+          <!-- 98: DirectQueryBegin -->
+          <Event>
+            <EventID>98</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>
+              <ColumnID>2</ColumnID>
+              <ColumnID>3</ColumnID>
+              <ColumnID>5</ColumnID>
+              <ColumnID>6</ColumnID>
+              <ColumnID>10</ColumnID>
+              <ColumnID>13</ColumnID>
+              <ColumnID>24</ColumnID>
+              <ColumnID>25</ColumnID>
+              <ColumnID>28</ColumnID>
+              <ColumnID>32</ColumnID>
+              <ColumnID>33</ColumnID>
+              <ColumnID>36</ColumnID>
+              <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>
+              <ColumnID>41</ColumnID>
+              <ColumnID>42</ColumnID>
+              <ColumnID>47</ColumnID>
+            </Columns>
+          </Event>
+
+          <!-- 99: DirectQueryEnd -->
+          <Event>
+            <EventID>99</EventID>
+            <Columns>
+              <ColumnID>0</ColumnID>
+              <ColumnID>2</ColumnID>
+              <ColumnID>3</ColumnID>
+              <ColumnID>5</ColumnID>
+              <ColumnID>6</ColumnID>
+              <ColumnID>10</ColumnID>
+              <ColumnID>13</ColumnID>
+              <ColumnID>24</ColumnID>
+              <ColumnID>25</ColumnID>
+              <ColumnID>28</ColumnID>
+              <ColumnID>32</ColumnID>
+              <ColumnID>33</ColumnID>
+              <ColumnID>36</ColumnID>
+              <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>
+              <ColumnID>41</ColumnID>
+              <ColumnID>42</ColumnID>
+              <ColumnID>47</ColumnID>
+            </Columns>
+          </Event>
+
+          <!-- 112: DAXQueryPlan — formula engine query plan text -->
+          <Event>
+            <EventID>112</EventID>
             <Columns>
               <ColumnID>0</ColumnID>
               <ColumnID>1</ColumnID>
               <ColumnID>2</ColumnID>
               <ColumnID>25</ColumnID>
               <ColumnID>28</ColumnID>
+              <ColumnID>37</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
               <ColumnID>47</ColumnID>
             </Columns>
           </Event>
+
+          <!-- 134: JobGraph — engine job parallelism graph (JSON in TextData) -->
           <Event>
-            <EventID>86</EventID>
+            <EventID>134</EventID>
             <Columns>
-              <ColumnID>8</ColumnID>
-              <ColumnID>1</ColumnID>
+              <ColumnID>0</ColumnID>
               <ColumnID>2</ColumnID>
-              <ColumnID>7</ColumnID>
-              <ColumnID>11</ColumnID>
-              <ColumnID>12</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>15</ColumnID>
               <ColumnID>25</ColumnID>
               <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
+              <ColumnID>37</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
               <ColumnID>47</ColumnID>
-              <ColumnID>51</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
             </Columns>
           </Event>
+
+          <!-- 136: ExecutionMetrics — JSON CPU/memory/throttling metrics
+               (parsed by correlator). One per query; pairs with QueryEnd
+               by RequestID. -->
           <Event>
-            <EventID>83</EventID>
+            <EventID>136</EventID>
             <Columns>
-              <ColumnID>1</ColumnID>
+              <ColumnID>0</ColumnID>
               <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>4</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>7</ColumnID>
-              <ColumnID>8</ColumnID>
-              <ColumnID>9</ColumnID>
-              <ColumnID>10</ColumnID>
-              <ColumnID>11</ColumnID>
-              <ColumnID>12</ColumnID>
-              <ColumnID>13</ColumnID>
-              <ColumnID>14</ColumnID>
-              <ColumnID>15</ColumnID>
-              <ColumnID>22</ColumnID>
-              <ColumnID>23</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
               <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
               <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>40</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>43</ColumnID>
-              <ColumnID>46</ColumnID>
               <ColumnID>47</ColumnID>
-              <ColumnID>49</ColumnID>
-              <ColumnID>51</ColumnID>
-              <ColumnID>52</ColumnID>
-              <ColumnID>54</ColumnID>
-              <ColumnID>55</ColumnID>
             </Columns>
           </Event>
-          <Event>
-            <EventID>19</EventID>
-            <Columns>
-              <ColumnID>1</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>1</EventID>
-            <Columns>
-              <ColumnID>24</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>2</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>18</EventID>
-            <Columns>
-              <ColumnID>13</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>4</EventID>
-            <Columns>
-              <ColumnID>24</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>42</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>41</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>42</EventID>
-            <Columns>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
-          <Event>
-            <EventID>43</EventID>
-            <Columns>
-              <ColumnID>32</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>45</ColumnID>
-            </Columns>
-          </Event>
+
         </Events>
       </Trace>
     </ObjectDefinition>

@@ -38,9 +38,10 @@ public sealed record AsTraceEvent(
 
 /// <summary>
 /// Subset of AMO's TraceColumn enum we actually consume. Values match
-/// the AS trace ColumnID schema. Keep additions ordered by ColumnID for
-/// easy reconciliation against the Analysis Services trace
-/// documentation.
+/// the AS trace ColumnID schema. Authoritative source: Microsoft.
+/// AnalysisServices.TraceColumn (Microsoft.AnalysisServices.Core
+/// v19.114.0). Keep additions ordered by ColumnID for easy
+/// reconciliation against the Analysis Services trace documentation.
 /// </summary>
 internal enum TraceColumn
 {
@@ -59,18 +60,30 @@ internal enum TraceColumn
     DatabaseName = 28,
     NTUserName = 32,
     NTDomainName = 33,
+    ClientHostName = 35,
     ClientProcessID = 36,
     ApplicationName = 37,
     SessionID = 39,
+    NTCanonicalUserName = 40,
     Spid = 41,
     TextData = 42,
+    ServerName = 43,
+    RequestParameters = 44,        // never request — BinaryXml on PBI Service breaks Subscribe
+    RequestProperties = 45,        // never request — BinaryXml on PBI Service breaks Subscribe
+    ActivityID = 46,
     RequestID = 47,
-    Identity = 60,
+    ErrorType = 49,
+    ApplicationContext = 52,
+    DatabaseFriendlyName = 54,
+    Identity = 55,                 // verified vs MS docs (was incorrectly 60 in earlier draft)
+    Label = 56,
 }
 
 /// <summary>
 /// Subset of AMO's TraceEventClass enum we actually subscribe to.
-/// Values match the AS trace EventID schema.
+/// Values match the AS trace EventID schema. Authoritative source:
+/// Microsoft.AnalysisServices.TraceEventClass (Microsoft.AnalysisServices.
+/// Core v19.114.0). Verified against MS Learn docs 2026-06-04.
 /// </summary>
 internal enum TraceEventClass
 {
@@ -86,7 +99,9 @@ internal enum TraceEventClass
     VertiPaqSEQueryCacheMatch = 85,
     DirectQueryBegin = 98,
     DirectQueryEnd = 99,
-    AggregateTableRewriteQuery = 112,
+    DAXQueryPlan = 112,             // formerly mislabeled as AggregateTableRewriteQuery in early draft
+    AggregateTableRewriteQuery = 131,
+    DAXQueryShape = 133,
     JobGraph = 134,
     ExecutionMetrics = 136,
 }

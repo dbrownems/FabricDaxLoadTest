@@ -72,6 +72,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
     public DateTime ConnectedAtUtc { get; private set; }
     public long EventsSeen { get; private set; }
     public long EventsDroppedByFilter { get; private set; }
+    public long EventsDroppedByBackpressure { get; private set; }
 
     /// <summary>
     /// Fires for every event that survives the application filter, BEFORE
@@ -107,7 +108,13 @@ public sealed class TraceSubscriber : IAsyncDisposable
         _log = log ?? (_ => { });
         _channel = Channel.CreateBounded<AsTraceEvent>(new BoundedChannelOptions(10_000)
         {
-            FullMode = BoundedChannelFullMode.DropOldest,
+            // Wait would back-pressure the row pump and let ADOMD time out;
+            // DropOldest would silently lose QueryEnd/ExecutionMetrics rows
+            // and break correlation. DropWrite drops the NEWEST event when
+            // the consumer is too slow, exposed via EventsDroppedByBackpressure
+            // so analysis can flag suspect runs. The 10k buffer is ample for
+            // a fast Delta-table sink.
+            FullMode = BoundedChannelFullMode.DropWrite,
             SingleReader = true,
             SingleWriter = true,
         });
@@ -246,8 +253,20 @@ public sealed class TraceSubscriber : IAsyncDisposable
 
             // Application-name filter (client-side: PBI Service rejects
             // server-side <Filter> clauses on subscription traces).
+            //
+            // IMPORTANT: when ApplicationName is NULL on the row, the
+            // event class either doesn't emit ApplicationName (e.g.
+            // Event 85 VertiPaqSEQueryCacheMatch — which is restricted
+            // to a small column set per .copilot/tracing-notes.md §4)
+            // or AS chose not to populate it. We admit those rows
+            // unconditionally and rely on downstream RequestID
+            // correlation to drop non-load-test cache events. Without
+            // this carve-out, every Event 85 would be filtered away —
+            // a real measurement loss because cache hit-rate is one of
+            // the load-test signals.
             dict.TryGetValue(TraceColumn.ApplicationName, out var appName);
             if (_applicationFilter != null
+                && appName != null
                 && !string.Equals(appName, _applicationFilter, StringComparison.Ordinal))
             {
                 EventsDroppedByFilter++;
@@ -294,9 +313,19 @@ public sealed class TraceSubscriber : IAsyncDisposable
                 RequestId: dict.GetValueOrDefault(TraceColumn.RequestID));
 
             // Channel write FIRST so a slow OnRawEvent observer can't
-            // drop events from the live aggregator pipeline.
-            _channel.Writer.TryWrite(ev);
-            EventsSeen++;
+            // drop events from the live aggregator pipeline. TryWrite
+            // returns false when the bounded channel is full under
+            // DropWrite mode (consumer slower than producer); we count
+            // those as backpressure drops rather than letting them
+            // silently corrupt the QueryEnd/ExecutionMetrics correlator.
+            if (_channel.Writer.TryWrite(ev))
+            {
+                EventsSeen++;
+            }
+            else
+            {
+                EventsDroppedByBackpressure++;
+            }
 
             try { OnRawEvent?.Invoke(ev); } catch { /* never let observer crash trace */ }
         }
