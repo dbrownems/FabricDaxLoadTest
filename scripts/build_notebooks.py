@@ -130,21 +130,49 @@ ctx = notebookutils.runtime.context
 WS_ID   = ctx["currentWorkspaceId"]
 WS_NAME = ctx.get("currentWorkspaceName", WS_ID)
 
-# Resolve LoadTests lakehouse ID (no API call needed — lakehouse name is
-# unique within the workspace, and the OneLake mount path uses the lakehouse
-# display name).
+# Resolve LoadTests lakehouse — friendly-name support is disabled on some
+# OneLake tenants, so we look up the GUID via the Fabric items API and use
+# that in the abfss path. We hit REST directly (rather than via
+# sempy.fabric.list_items) because importing sempy.fabric here pre-initializes
+# pythonnet and breaks namespace registration for our path-loaded assemblies
+# in the next cell.
 LAKEHOUSE_NAME = "LoadTests"
-LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LAKEHOUSE_NAME}.Lakehouse"
+import requests
+_tok = notebookutils.credentials.getToken("https://api.fabric.microsoft.com")
+_r = requests.get(
+    f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/items?type=Lakehouse",
+    headers={"Authorization": f"Bearer {_tok}"}, timeout=30)
+_r.raise_for_status()
+_match = [i for i in _r.json().get("value", []) if i["displayName"] == LAKEHOUSE_NAME]
+if not _match:
+    raise RuntimeError(f"Lakehouse '{LAKEHOUSE_NAME}' not found in workspace {WS_ID}")
+LH_ID = _match[0]["id"]
+LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}"
 
 # Stage QueryRunner.dll + dependencies to a local /tmp dir. pythonnet's
 # AssemblyResolver wants a real filesystem path; abfss:// won't do.
+# We list and copy per-file (recursing manually) because notebookutils.fs.cp
+# with recurse=True does a HEAD/getStatus on the source directory which
+# OneLake currently rejects with HTTP 400 for Files/* directories.
 STAGE = "/tmp/fdlt-bin"
 os.makedirs(STAGE, exist_ok=True)
-notebookutils.fs.cp(f"{LH_ABFSS}/Files/bin", f"file://{STAGE}", recurse=True)
 
-dll = os.path.join(STAGE, "bin", "QueryRunner.dll")
+def _stage_dir(src_abfss, dst_local):
+    os.makedirs(dst_local, exist_ok=True)
+    for entry in notebookutils.fs.ls(src_abfss):
+        name = entry.name
+        sp   = f"{src_abfss.rstrip('/')}/{name}"
+        dp   = os.path.join(dst_local, name)
+        if entry.isDir:
+            _stage_dir(sp, dp)
+        else:
+            notebookutils.fs.cp(sp, f"file://{dp}")
+
+_stage_dir(f"{LH_ABFSS}/Files/bin", STAGE)
+
+dll = os.path.join(STAGE, "QueryRunner.dll")
 if not os.path.exists(dll):
-    # Fallback if Deploy-LoadTests put files at the root of bin/.
+    # Fallback search in case the layout changes.
     cands = glob.glob(os.path.join(STAGE, "**", "QueryRunner.dll"), recursive=True)
     dll = cands[0] if cands else dll
 if not os.path.exists(dll):
@@ -153,25 +181,31 @@ if not os.path.exists(dll):
         f"to populate {LH_ABFSS}/Files/bin."
     )
 print(f"Workspace : {WS_NAME} ({WS_ID})")
-print(f"Lakehouse : {LAKEHOUSE_NAME}")
+print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})")
 print(f"DLL       : {dll}  ({os.path.getsize(dll):,} bytes)")
 """)
 
     # 3. pythonnet bootstrap
     code(nb, r"""
 # ── 3. pythonnet bootstrap ────────────────────────────────────────────────────
-# sempy ships ADOMD.NET in the Fabric image; importing it warms the AppDomain
-# so AdomdClient resolves without manual probing.
-import sempy.fabric as fabric
-fabric.create_tom_server()
+# Add sempy's bundled .NET libs to sys.path so clr can find
+# Microsoft.AnalysisServices.AdomdClient by simple name. Then AddReference
+# ADOMD first (warms the AppDomain), then QueryRunner.dll by full path.
+# `import clr` raises RuntimeError (not ImportError) on Fabric Linux when
+# coreclr isn't preloaded, so the except must be broad.
+import sys
+sempy_lib = "/home/trusted-service-user/cluster-env/trident_env/lib/python3.11/site-packages/sempy/lib"
+if sempy_lib not in sys.path:
+    sys.path.insert(0, sempy_lib)
 
 try:
     import clr
-except ImportError:
+except Exception:
     from pythonnet import load
     load("coreclr")
     import clr
 
+clr.AddReference("Microsoft.AnalysisServices.AdomdClient")
 clr.AddReference(dll)
 from FabricDaxLoadTest import QueryRunner, LoadTestConfig          # noqa: E402
 from System import Array, String                                   # noqa: E402
@@ -218,7 +252,7 @@ if TARGET_REPLICA:
 cfg = LoadTestConfig()
 cfg.Queries                  = Array[String]([str(q) for q in queries])
 cfg.XmlaEndpoint             = xmla
-cfg.Database                 = TARGET_DATASET
+cfg.Dataset                  = TARGET_DATASET
 cfg.Token                    = TOKEN
 cfg.UserEmails               = Array[String]([u["email"] for u in users])
 cfg.UserRoles                = Array[String]([u.get("role", "") for u in users])
@@ -427,12 +461,7 @@ display(to_df(new_queries))
 
     code(nb, r"""
 # ── 4. Save back to OneLake ───────────────────────────────────────────────────
-import os, tempfile
-tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-json.dump(new_queries, tmp, indent=2)
-tmp.close()
-notebookutils.fs.cp(f"file://{tmp.name}", QPATH, overwrite=True)
-os.unlink(tmp.name)
+notebookutils.fs.put(QPATH, json.dumps(new_queries, indent=2), overwrite=True)
 print(f"Saved {len(new_queries)} queries to {QPATH}")
 """)
 
