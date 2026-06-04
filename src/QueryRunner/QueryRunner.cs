@@ -14,14 +14,36 @@ using Microsoft.AnalysisServices.AdomdClient;
 namespace FabricDaxLoadTest
 {
     /// <summary>
-    /// Lock-free logger that enqueues all output (console + file) to a single
-    /// background consumer thread via BlockingCollection.
+    /// Lock-free logger that enqueues all output to a single background
+    /// consumer thread via BlockingCollection. The consumer writes to
+    /// the on-disk log file and (optionally) invokes <see cref="OnLogLine"/>
+    /// for each line.
+    /// <para>
+    /// IMPORTANT: this logger MUST NOT write to <c>Console.Out</c>
+    /// directly. When QueryRunner is hosted inside a Livy or Jupyter
+    /// kernel, .NET writes to fd 1 / stderr leak into the kernel's
+    /// JSON-RPC framing and corrupt every subsequent statement with
+    /// JSON-parse errors. The caller (e.g. LoadGen Program.cs) opts in
+    /// to console echo by setting <see cref="OnLogLine"/> to
+    /// <c>Console.WriteLine</c>; embedded callers leave it null and
+    /// rely on the file log + the <c>RunLoadTest</c> return string.
+    /// </para>
     /// </summary>
     public sealed class QueryRunnerLogger : IDisposable
     {
         private readonly BlockingCollection<string> _queue = new(boundedCapacity: 4096);
         private readonly Task _writerTask;
         private readonly string? _logFilePath;
+
+        /// <summary>
+        /// Optional sink invoked for every log line. Set to
+        /// <c>Console.WriteLine</c> for an interactive console host;
+        /// leave null for embedded callers (Livy, notebooks) so the
+        /// kernel's stdout stays clean. Exceptions thrown by the
+        /// callback are swallowed so a misbehaving sink can never
+        /// stall the writer.
+        /// </summary>
+        public Action<string>? OnLogLine { get; set; }
 
         public QueryRunnerLogger(string? logFilePath = null)
         {
@@ -73,7 +95,7 @@ namespace FabricDaxLoadTest
                         Task? ft = null;
                         try { ft = fileWriter?.WriteLineAsync(line); }
                         catch { }
-                        Console.WriteLine(line);
+                        try { OnLogLine?.Invoke(line); } catch { /* never let observer crash logger */ }
                         if (ft != null)
                         {
                             try { await ft; }
@@ -277,7 +299,8 @@ namespace FabricDaxLoadTest
             int pauseBetweenIterationsMs = 1000, int pauseBetweenQueriesMs = 0,
             string? logDirectory = null, int userRampTimeSec = 0,
             string? logFileName = null,
-            bool skipResults = false)
+            bool skipResults = false,
+            Action<string>? logCallback = null)
         {
             var status = QueryRunnerStatus.Instance;
             status.Reset();
@@ -296,7 +319,7 @@ namespace FabricDaxLoadTest
                     : $"LoadTest.{testStartTime:yyyyMMdd-HHmmss}";
                 textLogPath = Path.Combine(logDirectory, baseName + ".log");
             }
-            _logger = new QueryRunnerLogger(textLogPath);
+            _logger = new QueryRunnerLogger(textLogPath) { OnLogLine = logCallback };
 
             Log($"Starting: {userEmails.Length} users, {queries.Length} queries, {durationSeconds}s, {queriesPerBatch} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
             if (textLogPath != null)

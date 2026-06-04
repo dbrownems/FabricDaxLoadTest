@@ -166,7 +166,8 @@ class Program
                 duration, queriesPerBatch,
                 pauseIter, pauseQuery,
                 logDir, rampTime, logFile,
-                skipResults);
+                skipResults,
+                Console.WriteLine);
         }
         catch (Exception ex)
         {
