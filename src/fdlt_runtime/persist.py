@@ -240,25 +240,41 @@ def write_run(
         df2["QueryHash"] = df2["QueryIndex"].apply(
             lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
         exec_schema = StructType([
-            StructField("RunId",              StringType(),    False),
-            StructField("LoadTestId",         StringType(),    False),
-            StructField("UserIndex",          IntegerType(),   False),
-            StructField("UserEmail",          StringType(),    True),
-            StructField("QueryIndex",         IntegerType(),   False),
-            StructField("QueryHash",          StringType(),    True),
-            StructField("Iteration",          IntegerType(),   False),
-            StructField("QuerySeq",           IntegerType(),   True),
-            StructField("StartUtc",           TimestampType(), False),
-            StructField("EndUtc",             TimestampType(), True),
-            StructField("StartTimeMs",        DoubleType(),    True),
-            StructField("ClientDurationMs",   DoubleType(),    True),
-            StructField("EngineDurationMs",   LongType(),      True),
-            StructField("EngineCpuMs",        LongType(),      True),
-            StructField("Outcome",            StringType(),    False),
-            StructField("RowCount",           IntegerType(),   True),
-            StructField("ResponseBytes",      LongType(),      True),
-            StructField("ErrorMessage",       StringType(),    True),
-            StructField("ActiveUsersAtStart", IntegerType(),   True),
+            StructField("RunId",                StringType(),    False),
+            StructField("LoadTestId",           StringType(),    False),
+            StructField("UserIndex",            IntegerType(),   False),
+            StructField("UserEmail",            StringType(),    True),
+            StructField("QueryIndex",           IntegerType(),   False),
+            StructField("QueryHash",            StringType(),    True),
+            StructField("Iteration",            IntegerType(),   False),
+            StructField("QuerySeq",             IntegerType(),   True),
+            StructField("StartUtc",             TimestampType(), False),
+            StructField("EndUtc",               TimestampType(), True),
+            StructField("StartTimeMs",          DoubleType(),    True),
+            StructField("ClientDurationMs",     DoubleType(),    True),
+            # QueryEnd-event totals (engine-wall + total CPU as the
+            # server billed it; ≈ ExecutionMetrics.totalCpuTimeMs).
+            StructField("EngineDurationMs",     LongType(),      True),
+            StructField("EngineCpuMs",          LongType(),      True),
+            # ExecutionMetrics breakdown — back-filled via RequestId map.
+            StructField("SECpuMs",              LongType(),      True),
+            StructField("FECpuMs",              LongType(),      True),
+            StructField("ExecutionDelayMs",     LongType(),      True),
+            StructField("PeakMemoryKB",         LongType(),      True),
+            StructField("QueryResultRows",      LongType(),      True),
+            # VertiPaq SE aggregates per query.
+            StructField("VertiPaqQueryCount",   IntegerType(),   True),
+            StructField("VertiPaqDurationMs",   LongType(),      True),
+            StructField("VertiPaqCacheHits",    IntegerType(),   True),
+            # DirectQuery aggregates per query (DirectLake/DQ models).
+            StructField("DirectQueryCount",     IntegerType(),   True),
+            StructField("DirectQueryDurationMs", LongType(),     True),
+            StructField("DirectQueryCpuMs",     LongType(),      True),
+            StructField("Outcome",              StringType(),    False),
+            StructField("RowCount",             IntegerType(),   True),
+            StructField("ResponseBytes",        LongType(),      True),
+            StructField("ErrorMessage",         StringType(),    True),
+            StructField("ActiveUsersAtStart",   IntegerType(),   True),
         ])
         rows = [Row(
             RunId=str(r["RunId"]),
@@ -273,8 +289,14 @@ def write_run(
             EndUtc=r["EndUtc"].to_pydatetime() if pd.notna(r["EndUtc"]) else None,
             StartTimeMs=float(r["StartTimeMs"]) if pd.notna(r["StartTimeMs"]) else None,
             ClientDurationMs=float(r["DurationMs"]) if pd.notna(r["DurationMs"]) else None,
-            EngineDurationMs=None,  # back-filled below from trace QueryEnd
-            EngineCpuMs=None,       # back-filled below from trace QueryEnd
+            # All trace-derived columns are back-filled below.
+            EngineDurationMs=None, EngineCpuMs=None,
+            SECpuMs=None, FECpuMs=None, ExecutionDelayMs=None,
+            PeakMemoryKB=None, QueryResultRows=None,
+            VertiPaqQueryCount=None, VertiPaqDurationMs=None,
+            VertiPaqCacheHits=None,
+            DirectQueryCount=None, DirectQueryDurationMs=None,
+            DirectQueryCpuMs=None,
             Outcome=str(r["Outcome"]),
             RowCount=int(r["RowCount"]) if pd.notna(r["RowCount"]) else None,
             ResponseBytes=int(r["ResponseBytes"]) if pd.notna(r["ResponseBytes"]) else None,
@@ -338,17 +360,23 @@ def write_run(
             trace_df = spark.createDataFrame(trace_rows, schema=trace_schema)
             trace_events_written = len(trace_rows)
 
-    # Engine-CPU back-fill: JOIN executions to QueryEnd trace rows on
-    # (RunId, QuerySeq). QuerySeq is the last 4 bytes of ActivityId
-    # (a Guid we encoded in C# as runId-prefix + big-endian seq). Two-int
-    # equi-join — Spark broadcast-hashes the small QueryEnd side. LEFT
-    # JOIN: cancelled or never-traced executions keep NULL.
+    # Engine-side back-fill: JOIN executions to several trace events on
+    # (RunId, RequestId). The QueryEnd trace row carries both ActivityId
+    # (which decodes back to QuerySeq) and RequestId (the per-XMLA-request
+    # id every engine event is also tagged with). We build a
+    # (RunId, QuerySeq) → RequestId mapping from QueryEnd, then aggregate
+    # each downstream event class by RequestId and JOIN onto exec_df.
+    # All JOINs are LEFT so a missing event class (e.g. no DQ on import
+    # models) just leaves its columns NULL.
     if exec_df is not None and trace_df is not None:
         from pyspark.sql import functions as F
-        # Guid format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx". Strip
-        # hyphens (32 hex chars), take chars 25..32, parse as base-16.
-        # `conv` returns string; cast to long then int. Last 4 bytes
-        # encode seq big-endian; we wrote a positive int so this is safe.
+        from pyspark.sql.types import (
+            StructType as _ST, StructField as _SF, LongType as _LT,
+            StringType as _StrT,
+        )
+
+        # 1. QueryEnd → (RunId, QuerySeq, RequestId, EngineCpuMs, EngineDurationMs)
+        #    QuerySeq is the last 4 hex bytes of ActivityId, decoded big-endian.
         trace_qe = (trace_df
             .where((F.col("EventClass") == F.lit("QueryEnd")) &
                    F.col("ActivityId").isNotNull())
@@ -362,16 +390,90 @@ def write_run(
             .select(
                 F.col("RunId"),
                 F.col("QuerySeq"),
+                F.col("RequestId"),
                 F.col("CpuMs").alias("EngineCpuMs"),
-                F.col("DurationMs").alias("EngineDurationMs")))
-        # Defend against a duplicated seq (shouldn't happen — we
-        # Interlocked.Increment per attempt — but keep the join 1:1).
-        trace_qe = trace_qe.dropDuplicates(["RunId", "QuerySeq"])
-        # Drop the predeclared null columns so the JOIN's columns aren't
-        # ambiguous, then re-join. Final schema matches exec_schema.
-        exec_df = (exec_df
-            .drop("EngineCpuMs", "EngineDurationMs")
-            .join(trace_qe, on=["RunId", "QuerySeq"], how="left"))
+                F.col("DurationMs").alias("EngineDurationMs"))
+            .dropDuplicates(["RunId", "QuerySeq"]))
+
+        # The (RunId, RequestId) → QuerySeq map for joining the rest.
+        qe_map = trace_qe.select("RunId", "RequestId", "QuerySeq")
+
+        # 2. ExecutionMetrics — JSON in TextData. Parse once, project fields.
+        em_schema = _ST([
+            _SF("vertipaqJobCpuTimeMs",            _LT(), True),
+            _SF("queryProcessingCpuTimeMs",        _LT(), True),
+            _SF("executionDelayMs",                _LT(), True),
+            _SF("approximatePeakMemConsumptionKB", _LT(), True),
+            _SF("queryResultRows",                 _LT(), True),
+        ])
+        trace_em = (trace_df
+            .where((F.col("EventClass") == F.lit("ExecutionMetrics")) &
+                   F.col("RequestId").isNotNull() &
+                   F.col("TextData").isNotNull())
+            .withColumn("em", F.from_json(F.col("TextData"), em_schema))
+            .select(
+                F.col("RunId"),
+                F.col("RequestId"),
+                F.col("em.vertipaqJobCpuTimeMs").alias("SECpuMs"),
+                F.col("em.queryProcessingCpuTimeMs").alias("FECpuMs"),
+                F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
+                F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
+                F.col("em.queryResultRows").alias("QueryResultRows"))
+            .dropDuplicates(["RunId", "RequestId"])
+            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .drop("RequestId"))
+
+        # 3. VertiPaqSEQueryEnd aggregates — count + sum(duration) per query.
+        trace_vpq = (trace_df
+            .where((F.col("EventClass") == F.lit("VertiPaqSEQueryEnd")) &
+                   F.col("RequestId").isNotNull())
+            .groupBy("RunId", "RequestId")
+            .agg(
+                F.count(F.lit(1)).cast("int").alias("VertiPaqQueryCount"),
+                F.sum(F.col("DurationMs")).cast("long").alias("VertiPaqDurationMs"))
+            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .drop("RequestId"))
+
+        # 4. VertiPaqSEQueryCacheMatch — just the count (no Duration/CPU).
+        trace_vcm = (trace_df
+            .where((F.col("EventClass") == F.lit("VertiPaqSEQueryCacheMatch")) &
+                   F.col("RequestId").isNotNull())
+            .groupBy("RunId", "RequestId")
+            .agg(F.count(F.lit(1)).cast("int").alias("VertiPaqCacheHits"))
+            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .drop("RequestId"))
+
+        # 5. DirectQueryEnd aggregates (Direct Lake / DQ models only).
+        trace_dq = (trace_df
+            .where((F.col("EventClass") == F.lit("DirectQueryEnd")) &
+                   F.col("RequestId").isNotNull())
+            .groupBy("RunId", "RequestId")
+            .agg(
+                F.count(F.lit(1)).cast("int").alias("DirectQueryCount"),
+                F.sum(F.col("DurationMs")).cast("long").alias("DirectQueryDurationMs"),
+                F.sum(F.col("CpuMs")).cast("long").alias("DirectQueryCpuMs"))
+            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .drop("RequestId"))
+
+        # Drop the placeholder NULL columns and LEFT JOIN each aggregate
+        # back onto exec_df by (RunId, QuerySeq).
+        backfill_drop = [
+            "EngineCpuMs", "EngineDurationMs",
+            "SECpuMs", "FECpuMs", "ExecutionDelayMs",
+            "PeakMemoryKB", "QueryResultRows",
+            "VertiPaqQueryCount", "VertiPaqDurationMs",
+            "VertiPaqCacheHits",
+            "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
+        ]
+        exec_df = exec_df.drop(*backfill_drop)
+        for side in (
+            trace_qe.drop("RequestId"),
+            trace_em, trace_vpq, trace_vcm, trace_dq,
+        ):
+            exec_df = exec_df.join(side, on=["RunId", "QuerySeq"], how="left")
+
+        # Reassert column order so the final DataFrame matches exec_schema.
+        exec_df = exec_df.select(*[f.name for f in exec_schema.fields])
 
     # Fan out the writes. Each task is independent (different Delta path,
     # no foreign-key dependency between tables) so a ThreadPool gets the
