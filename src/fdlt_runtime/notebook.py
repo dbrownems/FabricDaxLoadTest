@@ -31,8 +31,6 @@ from .persist import WriteSummary, write_run
 from .queries import load_queries, load_users
 from .runner import RunConfig, RunResult, render_progress, run_load_test
 
-_TEMPLATE_NAME = "LoadTest - Template"
-
 
 @dataclass
 class BootstrapResult:
@@ -65,7 +63,6 @@ def bootstrap(
     lakehouse_name: str = "LoadTests",
     lakehouse_schema: Optional[str] = None,
     stage_dir: str = "/tmp/fdlt-bin",
-    allow_template_run: bool = False,
 ) -> BootstrapResult:
     """Resolve env (workspace / lakehouse / dotnet) for a load test.
 
@@ -80,12 +77,6 @@ def bootstrap(
     ws_id = ctx["currentWorkspaceId"]
     ws_name = ctx.get("currentWorkspaceName") or ws_id
     nb_name = (ctx.get("currentNotebookName") or "").strip()
-
-    if nb_name == _TEMPLATE_NAME and not allow_template_run:
-        raise RuntimeError(
-            f"This is the LoadTest template. Save As → 'LoadTest - <name>' "
-            "and run that copy. Edits to the template are wiped on every "
-            "scripts/Deploy-LoadTests.ps1 redeploy.")
 
     token = notebookutils.credentials.getToken("pbi")
     lh = discover_lakehouse(

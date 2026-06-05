@@ -82,8 +82,8 @@ jobs:
 
       - name: Stage notebook + LoadGen zip
         run: |
-          cp notebooks/LoadTest-Template.ipynb ./LoadTest-Template.ipynb
-          ls -l LoadTest-Template.ipynb loadgen-bin.zip
+          cp notebooks/LoadTest-Main.ipynb ./LoadTest-Main.ipynb
+          ls -l LoadTest-Main.ipynb loadgen-bin.zip
 
       - name: Resolve release tag
         id: tag
@@ -103,13 +103,13 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             loadgen-bin.zip
-            LoadTest-Template.ipynb
+            LoadTest-Main.ipynb
           body: |
             **Manual-deployment artifacts** (see [README — Option B: Manual setup](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/README.md#option-b--manual-setup)).
 
             | Asset | Where it goes |
             |---|---|
             | `loadgen-bin.zip` | Upload as-is to `LoadTests.Lakehouse/Files/loadgen-bin.zip` (cell 2 of the notebook unzips it on each kernel start). |
-            | `LoadTest-Template.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Template`** automatically. |
+            | `LoadTest-Main.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Main`** automatically. |
 
             For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.

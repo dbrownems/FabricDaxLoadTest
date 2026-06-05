@@ -1,4 +1,4 @@
-"""Generate notebooks/LoadTest-Template.ipynb.
+"""Generate notebooks/LoadTest-Main.ipynb.
 
 The notebook is deployed into a `LoadTests` workspace folder by
 scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
@@ -62,25 +62,31 @@ def write(nb, path: Path):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# LoadTest-Template.ipynb — the runner template
+# LoadTest-Main.ipynb — the runner notebook
 # ────────────────────────────────────────────────────────────────────────────
 def build_run():
     nb = new_notebook()
 
     md(nb, r"""
-    # FabricDaxLoadTest — LoadTest Template
+    # FabricDaxLoadTest — LoadTest Main
 
-    > ⚠️ **This is the template — do not edit or run this notebook in place.**
+    **This is your Load Test.** Edit cell 1 and run it. Each Run-All mints a
+    fresh `RunId`, so re-running is purely additive — every Run is preserved
+    in the four Delta tables for cross-Run comparison.
+
+    > 🆕 **Multiple Load Tests in one workspace?** Most workspaces only need
+    > one Load Test, and this is it. If you need *additional* Load Tests
+    > (e.g. a baseline vs. a what-if scenario, or one per model under test),
+    > **File → Save As** (or right-click → **Duplicate**) and rename the
+    > copy to `LoadTest - <descriptive name>` — keep it in the same
+    > `LoadTests` folder so it can find the lakehouse.
     >
-    > 1. **File → Save As** (or right-click the notebook in the workspace → **Duplicate**).
-    > 2. Rename the copy to `LoadTest - <descriptive name>` (e.g.
-    >    `LoadTest - DIAD 5u baseline`). Keep it in the same `LoadTests` folder
-    >    so it can find `LoadTests.Lakehouse`.
-    > 3. Open the copy, edit cell **1**, and run.
-    >
-    > Why: `scripts/Deploy-LoadTests.ps1` overwrites this template on every
-    > redeploy. Saved copies are yours forever — they document the exact
-    > configuration of each run and stay reproducible across upgrades.
+    > **What about redeploys?** `scripts/Deploy-LoadTests.ps1` will *not*
+    > overwrite this notebook (or any saved `LoadTest - …` copy) if it
+    > already exists. New runtime behavior ships via the wheel inside
+    > `Files/loadgen-bin.zip`, which the deploy script always refreshes —
+    > the notebook itself is a thin shim that picks up the new behavior on
+    > the next Run-All.
 
     ---
 
@@ -101,9 +107,9 @@ def build_run():
       lakehouse is schema-enabled; flat lakehouses write directly under
       `Tables/`. Override with `LAKEHOUSE_SCHEMA` in cell 1.
 
-    ## How to use (in your saved copy)
+    ## How to use
 
-    1. **Set up the Load Test Scenario.** Cell 1 ships with a tiny `QUERIES_INLINE`
+    1. **Set up the Scenario.** Cell 1 ships with a tiny `QUERIES_INLINE`
        fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
        testing the pipeline. For a real test you have two options:
 
@@ -113,7 +119,7 @@ def build_run():
          Accepted shapes: Power BI Desktop *Performance Analyzer* export,
          `[{"query": "EVALUATE …"}, …]`, or `["EVALUATE …", …]`.
        - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
-         Fine for one-off tests; doesn't scale to large corpora.
+         Fine for one-off tests; doesn't scale to large Scenarios.
 
        Optional: drop a `users.json` onto Resources too and set
        `USERS_FILE = "users.json"` in cell 1 to drive role / EffectiveUserName
@@ -121,19 +127,20 @@ def build_run():
        or `["alice@contoso.com", "bob@contoso.com"]`.
 
     2. Edit cell **1** to point at the target workspace + dataset and tweak
-       load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
-       these land in the `LoadTests` dim and surface in the Power BI report.
+       load parameters. `LOAD_TEST_NAME` defaults to the notebook name with
+       any `LoadTest -` prefix stripped (so `LoadTest - Main` → `Main`); set
+       it explicitly if you want a different label in the `LoadTests` dim.
     3. **Run All**. Cell **3** prints a live status line every second and
-       then writes the run into the four Delta tables; press **Interrupt
+       then writes the Run into the four Delta tables; press **Interrupt
        Kernel** (■) to cancel — the subprocess receives SIGINT and drains
-       cleanly. Each notebook execution mints a fresh `RunId`, so prior
-       runs are preserved untouched and re-running is purely additive.
-    4. Cell **4** plots latency / QPS / users for the run that just
+       cleanly. Each Run-All mints a fresh `RunId`, so prior Runs are
+       preserved untouched and re-running is purely additive.
+    4. Cell **4** plots latency / QPS / users for the Run that just
        completed, straight from the per-run CSV.
 
     > Re-deploy / upgrade `Files/loadgen-bin.zip` by re-running
-    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
-    > `LoadTest - …` notebooks are not touched by the deploy.
+    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. This notebook
+    > and any saved `LoadTest - …` copies are **not** touched by the deploy.
     """)
 
     # 1. Configuration
@@ -325,7 +332,7 @@ outcome = fdlt_nb.run(
 fdlt_nb.analyze(outcome)
 """)
 
-    write(nb, OUT / "LoadTest-Template.ipynb")
+    write(nb, OUT / "LoadTest-Main.ipynb")
 
 
 if __name__ == "__main__":

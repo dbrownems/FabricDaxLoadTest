@@ -11,14 +11,16 @@
                                 ADOMD assemblies), Files/runs/<runId>/
                                 (per-run telemetry), and
                                 Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}.
-      * LoadTest - Template  — the runner template; users do **Save As** in the
-                                portal to produce per-test copies
-                                (`LoadTest - <descriptive name>`). Redeploys
-                                only overwrite the template, never user copies.
+      * LoadTest - Main      — the runner notebook; users edit cell 1 and
+                                Run All directly. Save As (in the portal)
+                                to make *additional* Load Tests in the
+                                same workspace. Redeploys refresh the zip
+                                but never touch existing notebooks — pass
+                                `-ForceNotebook` to overwrite anyway.
 
-    Everything is idempotent — re-run any time to refresh assemblies or
-    notebook content. Folder and lakehouse names are always `LoadTests`;
-    the notebook auto-discovers the lakehouse from the workspace.
+    Everything else is idempotent — re-run any time to refresh assemblies.
+    Folder and lakehouse names are always `LoadTests`; the notebook
+    auto-discovers the lakehouse from the workspace.
 
 .PARAMETER Workspace
     Display name of the target workspace.
@@ -27,13 +29,21 @@
     Skip `dotnet publish`; reuse the existing publish output under
     src/LoadGen/bin/Release/net8.0/linux-x64/publish/.
 
+.PARAMETER ForceNotebook
+    Overwrite an existing `LoadTest - Main` notebook in the workspace.
+    Default behavior is to leave any existing notebook in place so user
+    edits to cell 1 are preserved across redeploys. Runtime behavior
+    changes always ship via the wheel inside loadgen-bin.zip, which is
+    refreshed on every deploy regardless.
+
 .EXAMPLE
     pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Verbose
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Workspace,
-    [switch] $SkipPublish
+    [switch] $SkipPublish,
+    [switch] $ForceNotebook
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,7 +204,7 @@ Remove-Item $staging -Recurse -Force
 $zipKb = [int]((Get-Item $ZipPath).Length / 1024)
 Info "Built $ZipPath ($zipKb KiB)"
 
-Step "Rebuilding notebook (LoadTest-Template.ipynb)"
+Step "Rebuilding notebook (LoadTest-Main.ipynb)"
 Push-Location $RepoRoot
 try {
     & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
@@ -296,7 +306,8 @@ function Deploy-Notebook {
     param(
         [Parameter(Mandatory)] [string]$Name,
         [Parameter(Mandatory)] [string]$IpynbPath,
-        [string]$Description = ""
+        [string]$Description = "",
+        [switch]$Force
     )
     Step "Deploying notebook '$Name'"
     if (-not (Test-Path $IpynbPath)) { throw "Notebook source missing: $IpynbPath" }
@@ -332,8 +343,12 @@ function Deploy-Notebook {
         } else {
             Info "Create returned $($r.StatusCode) (synchronous), id=$($r.Body.id)"
         }
+    } elseif (-not $Force) {
+        Info "Found existing notebook id=$($existing.id) — leaving in place"
+        Info "  (pass -ForceNotebook to overwrite; runtime behavior ships via the wheel"
+        Info "   in loadgen-bin.zip, which was refreshed earlier this run)"
     } else {
-        Info "Reusing notebook id=$($existing.id) — updating definition"
+        Info "Reusing notebook id=$($existing.id) — updating definition (-ForceNotebook)"
         $body = @{ definition = $definition }
         $url = "$ApiBase/v1/workspaces/$wsId/notebooks/$($existing.id)/updateDefinition"
         $r = Invoke-FabricRaw -Method POST -Url $url -Body $body
@@ -348,8 +363,9 @@ function Deploy-Notebook {
     }
 }
 
-Deploy-Notebook -Name "LoadTest - Template" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Template.ipynb") `
-                -Description "FabricDaxLoadTest runner — TEMPLATE. Save As before editing/running."
+Deploy-Notebook -Name "LoadTest - Main" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Main.ipynb") `
+                -Description "FabricDaxLoadTest runner — edit cell 1 and Run All." `
+                -Force:$ForceNotebook
 
 # ---- summary ----------------------------------------------------------------
 Step "Done"
@@ -357,10 +373,14 @@ Write-Host ""
 Write-Host "Workspace : $Workspace ($wsId)" -ForegroundColor Green
 Write-Host "Folder    : LoadTests ($folderId)" -ForegroundColor Green
 Write-Host "Lakehouse : LoadTests.Lakehouse ($lhId)" -ForegroundColor Green
-Write-Host "Notebooks : LoadTest - Template" -ForegroundColor Green
+Write-Host "Notebooks : LoadTest - Main" -ForegroundColor Green
 Write-Host ""
-Write-Host "To start a new load test:" -ForegroundColor White
-Write-Host "  1. Open 'LoadTest - Template' in the workspace." -ForegroundColor White
-Write-Host "  2. File -> Save As -> 'LoadTest - <descriptive name>'." -ForegroundColor White
-Write-Host "  3. Edit cell 1 in the copy and Run All." -ForegroundColor White
+Write-Host "Minimal use case:" -ForegroundColor White
+Write-Host "  1. Open 'LoadTest - Main' in the workspace." -ForegroundColor White
+Write-Host "  2. Drag a Power BI Desktop Performance Analyzer .json onto the" -ForegroundColor White
+Write-Host "     notebook's Resources panel (left sidebar)." -ForegroundColor White
+Write-Host "  3. Edit TARGET_DATASET in cell 1 (or leave None to auto-pick" -ForegroundColor White
+Write-Host "     the only model in the workspace) and Run All." -ForegroundColor White
+Write-Host ""
+Write-Host "Save As 'LoadTest - <name>' to add additional Load Tests." -ForegroundColor White
 Write-Host "https://app.powerbi.com/groups/$wsId/list" -ForegroundColor White
