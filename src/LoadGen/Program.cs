@@ -6,8 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
-using Azure.Core;
-using Azure.Identity;
 using FabricDaxLoadTest;
 
 namespace FabricDaxLoadTest;
@@ -50,10 +48,8 @@ class Program
         var usersFileOption = new Option<FileInfo>("--users-file", "Path to users.json") { IsRequired = true };
         var logDirOption = new Option<string>("--log-dir", () => "./logs", "Directory for telemetry CSV logs");
         var logFileOption = new Option<string>("--log-file", () => "", "Log filename (auto-generated if empty)");
-        var tokenOption = new Option<string?>("--token", "Access token (prefer --token-file or --auth)");
+        var tokenOption = new Option<string?>("--token", "Access token (prefer --token-file or $PBI_TOKEN)");
         var tokenFileOption = new Option<FileInfo?>("--token-file", "Path to file containing access token");
-        var authOption = new Option<string?>("--auth",
-            "Azure auth method: 'default', 'browser', 'devicecode', 'cli', 'env', or 'managedidentity'");
         var skipResultsOption = new Option<bool>("--skip-results", () => false, "Drain response without parsing rows");
         var noAuthOption = new Option<bool>("--no-auth", () => false,
             "Connect with integrated/Windows auth instead of a bearer token. Intended for local SSAS or " +
@@ -67,7 +63,7 @@ class Program
             xmlaOption, datasetOption, durationOption, usersOption,
             queriesPerBatchOption, pauseIterOption, pauseQueryOption,
             rampOption, replicaOption, queriesFileOption, usersFileOption,
-            logDirOption, logFileOption, tokenOption, tokenFileOption, authOption,
+            logDirOption, logFileOption, tokenOption, tokenFileOption,
             skipResultsOption, noAuthOption, jsonProgressOption,
         };
 
@@ -88,14 +84,13 @@ class Program
             var logFile = ctx.ParseResult.GetValueForOption(logFileOption)!;
             var tokenDirect = ctx.ParseResult.GetValueForOption(tokenOption);
             var tokenFile = ctx.ParseResult.GetValueForOption(tokenFileOption);
-            var auth = ctx.ParseResult.GetValueForOption(authOption);
             var skipResults = ctx.ParseResult.GetValueForOption(skipResultsOption);
             var noAuth = ctx.ParseResult.GetValueForOption(noAuthOption);
             var jsonProgress = ctx.ParseResult.GetValueForOption(jsonProgressOption);
 
             ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
-                logDir, logFile, tokenDirect, tokenFile, auth, skipResults, noAuth, jsonProgress);
+                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress);
         });
 
         return rootCommand.Invoke(args);
@@ -112,13 +107,13 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        string? auth, bool skipResults, bool noAuth, bool jsonProgress)
+        bool skipResults, bool noAuth, bool jsonProgress)
     {
         try
         {
             return Run(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
-                logDir, logFile, tokenDirect, tokenFile, auth, skipResults, noAuth, jsonProgress);
+                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress);
         }
         catch (Exception ex)
         {
@@ -143,7 +138,7 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        string? auth, bool skipResults, bool noAuth, bool jsonProgress)
+        bool skipResults, bool noAuth, bool jsonProgress)
     {
         TextWriter info = jsonProgress ? Console.Error : Console.Out;
 
@@ -155,11 +150,11 @@ class Program
         }
         else
         {
-            var resolved = ResolveToken(tokenDirect, tokenFile, auth, info);
+            var resolved = ResolveToken(tokenDirect, tokenFile, info);
             if (resolved == null)
             {
                 EmitError(jsonProgress, "no_token",
-                    "No access token provided. Use --auth, --token-file, --token, set PBI_TOKEN, or pass --no-auth for integrated auth.");
+                    "No access token provided. Use --token, --token-file, set $PBI_TOKEN, or pass --no-auth for integrated auth.");
                 return 1;
             }
             token = resolved;
@@ -487,44 +482,18 @@ class Program
         }
     }
 
-    static string? ResolveToken(string? direct, FileInfo? file, string? auth, TextWriter info)
+    // Token must be supplied by the caller (--token / --token-file /
+    // $PBI_TOKEN). LoadGen does not mint tokens itself — the notebook
+    // gets one via notebookutils.credentials.getToken("pbi"); local
+    // smoke gets one via Az CLI in scripts/local_smoke.py. This keeps
+    // the Azure.Identity dependency tree out of the staged bundle.
+    static string? ResolveToken(string? direct, FileInfo? file, TextWriter info)
     {
         if (!string.IsNullOrWhiteSpace(direct)) return direct.Trim();
         if (file != null && file.Exists) return File.ReadAllText(file.FullName).Trim();
         var envToken = Environment.GetEnvironmentVariable("PBI_TOKEN");
         if (!string.IsNullOrWhiteSpace(envToken)) return envToken.Trim();
-        if (!string.IsNullOrWhiteSpace(auth)) return AcquireToken(auth.Trim().ToLowerInvariant(), info);
         return null;
-    }
-
-    static string AcquireToken(string method, TextWriter info)
-    {
-        var scope = "https://analysis.windows.net/powerbi/api/.default";
-        info.WriteLine($"Acquiring token via Azure {method} credential...");
-
-        TokenCredential credential = method switch
-        {
-            "default" => new DefaultAzureCredential(),
-            "browser" => new InteractiveBrowserCredential(),
-            "devicecode" => new DeviceCodeCredential(new DeviceCodeCredentialOptions
-            {
-                DeviceCodeCallback = (deviceInfo, cancel) =>
-                {
-                    info.WriteLine(deviceInfo.Message);
-                    return System.Threading.Tasks.Task.CompletedTask;
-                }
-            }),
-            "cli" => new AzureCliCredential(),
-            "env" => new EnvironmentCredential(),
-            "managedidentity" => new ManagedIdentityCredential(),
-            _ => throw new ArgumentException(
-                $"Unknown auth method '{method}'. Use: default, browser, devicecode, cli, env, managedidentity")
-        };
-
-        var tokenResult = credential.GetToken(
-            new TokenRequestContext(new[] { scope }), CancellationToken.None);
-        info.WriteLine($"Token acquired, expires {tokenResult.ExpiresOn:HH:mm:ss UTC}");
-        return tokenResult.Token;
     }
 
     static string[] ParseQueries(string json)
