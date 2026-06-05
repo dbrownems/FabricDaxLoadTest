@@ -38,6 +38,7 @@ class LakehouseInfo:
     lakehouse_name: str
     abfss: str
     schema: str  # "" for flat lakehouses, "dbo" (or other) for schema-enabled
+    sql_endpoint_id: Optional[str] = None  # parent SQL analytics endpoint, when known
 
     @property
     def table_base(self) -> str:
@@ -77,11 +78,15 @@ def discover_lakehouse(
 
     if schema_override is None:
         schema = ""
+        sql_endpoint_id: Optional[str] = None
         try:
             lh = requests.get(
                 f"{FABRIC_API}/workspaces/{workspace_id}/lakehouses/{lh_id}",
                 headers=headers, timeout=30).json()
-            schema = (lh.get("properties") or {}).get("defaultSchema") or ""
+            props = lh.get("properties") or {}
+            schema = props.get("defaultSchema") or ""
+            sep = props.get("sqlEndpointProperties") or {}
+            sql_endpoint_id = sep.get("id")
         except Exception:
             schema = ""
         if not schema and list_tables is not None:
@@ -93,6 +98,15 @@ def discover_lakehouse(
                 pass
     else:
         schema = schema_override
+        sql_endpoint_id = None
+        try:
+            lh = requests.get(
+                f"{FABRIC_API}/workspaces/{workspace_id}/lakehouses/{lh_id}",
+                headers=headers, timeout=30).json()
+            sql_endpoint_id = ((lh.get("properties") or {})
+                               .get("sqlEndpointProperties") or {}).get("id")
+        except Exception:
+            pass
 
     return LakehouseInfo(
         workspace_id=workspace_id,
@@ -101,7 +115,46 @@ def discover_lakehouse(
         lakehouse_name=lakehouse_name,
         abfss=abfss,
         schema=schema,
+        sql_endpoint_id=sql_endpoint_id,
     )
+
+
+def refresh_sql_endpoint_metadata(
+    workspace_id: str,
+    sql_endpoint_id: str,
+    token: str,
+    *,
+    timeout: int = 60,
+) -> dict:
+    """Force the lakehouse SQL analytics endpoint to refresh its catalog.
+
+    Without this call, newly written/altered Delta tables become visible
+    to T-SQL/PBI only after the background metadata sync catches up
+    (anywhere from seconds to minutes). Calling this after every notebook
+    write means the SQL endpoint and Direct Lake report see the new data
+    immediately.
+
+    Best-effort: raises only on 4xx/5xx HTTP errors that aren't 202
+    (Accepted = LRO started, also success). Caller should wrap in try.
+
+    Docs: https://learn.microsoft.com/rest/api/fabric/sqlendpoint/items/refresh-sql-endpoint-metadata
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    url = (f"{FABRIC_API}/workspaces/{workspace_id}/sqlEndpoints/"
+           f"{sql_endpoint_id}/refreshMetadata")
+    r = requests.post(url, headers=headers, json={}, timeout=timeout)
+    # 200 = synchronous completion; 202 = LRO accepted (we don't poll, the
+    # background process finishes within seconds for our table count)
+    if r.status_code in (200, 202):
+        try:
+            return {"status_code": r.status_code, "body": r.json()}
+        except Exception:
+            return {"status_code": r.status_code, "body": None}
+    r.raise_for_status()
+    return {"status_code": r.status_code, "body": None}
 
 
 @dataclass

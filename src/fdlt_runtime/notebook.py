@@ -243,6 +243,29 @@ def run(
               f"({boot.lakehouse.lakehouse_id})  "
               f"base={boot.lakehouse.table_base}")
 
+        # Force the SQL analytics endpoint to refresh its catalog so the
+        # tables we just wrote are queryable from T-SQL / Direct Lake
+        # immediately, without waiting for the background metadata sync.
+        sep_id = boot.lakehouse.sql_endpoint_id
+        if sep_id:
+            try:
+                from .env import refresh_sql_endpoint_metadata
+                resp = refresh_sql_endpoint_metadata(
+                    boot.workspace_id, sep_id, boot.token)
+                code = resp.get("status_code")
+                if code == 200:
+                    body = resp.get("body") or {}
+                    statuses = body.get("value") or []
+                    ok = sum(1 for s in statuses if s.get("status") == "Success")
+                    print(f"  SQL sync   : refreshed {ok}/{len(statuses)} tables "
+                          f"({sep_id})")
+                else:
+                    print(f"  SQL sync   : accepted (LRO, {sep_id})")
+            except Exception as ex:  # noqa: BLE001 — best-effort
+                print(f"  SQL sync   : (warning: refreshMetadata failed: {ex})")
+        else:
+            print("  SQL sync   : (skipped — no sqlEndpointId on lakehouse)")
+
     return RunOutcome(
         result=rr, write_summary=write_summary,
         load_test_name=resolved_name, cfg=cfg, run_dest=run_dest)
