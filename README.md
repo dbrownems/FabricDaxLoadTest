@@ -2,7 +2,7 @@
 
 A load testing tool for Microsoft Fabric and Power BI semantic models. Simulates concurrent users executing DAX queries against the **XMLA endpoint** using ADOMD.NET, then lands per-query telemetry in Delta tables for analysis in Power BI.
 
-Designed to run **inside a Fabric notebook** — no Spark cluster, no separate VM, no `dotnet build` required for end users. A deploy script (or a few manual portal steps) drops a `LoadTest - Template` notebook + `LoadTests` lakehouse into your workspace; users **Save As** the template per test and run.
+Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dotnet build` required for end users. A deploy script (or a few manual portal steps) drops a `LoadTest - Template` notebook + `LoadTests` lakehouse into your workspace; users **Save As** the template per test and run.
 
 > ⚠️ **Active rewrite (2026 H1).** This branch replaces the original
 > [FabricLoadTestTool](https://github.com/microsoft/fabric-toolbox/tree/main/tools/FabricLoadTestTool).
@@ -25,10 +25,9 @@ This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a rea
 | Piece | What it is |
 |---|---|
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
-| `LoadGen.dll` / `LoadGen.exe` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` from the notebook (Linux Spark host) or as `LoadGen.exe` locally. |
-| `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → edit cell 1 → Run All. |
-| `notebooks/Queries.ipynb` | Deployed as `Queries`. Editor for the **shared** lakehouse `Files/queries.json` fallback. (Per-test corpora live in each `LoadTest - <name>` notebook's Resources panel.) |
-| `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, creates the folder + lakehouse, uploads bits, deploys both notebooks. |
+| `LoadGen.dll` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` (Linux Spark host inside the notebook, or anywhere `dotnet` is installed locally). |
+| `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → drop `PowerBiPerformance.json` onto Resources → edit cell 1 → Run All. |
+| `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, zips it, creates the folder + lakehouse, uploads `loadgen-bin.zip`, deploys the template notebook. |
 
 ## Status
 
@@ -50,19 +49,17 @@ The tool deploys a single self-contained bundle into a workspace folder:
 └── LoadTests/                         ← workspace folder
     ├── LoadTests (Lakehouse)
     │   ├── Files/
-    │   │   ├── bin/                   ← LoadGen.dll + ADOMD client deps
-    │   │   ├── queries.json           ← DAX corpus
+    │   │   ├── loadgen-bin.zip        ← LoadGen + ADOMD assemblies (unzipped to /tmp by cell 2)
     │   │   └── runs/<RunId>/          ← per-run telemetry CSVs
     │   └── Tables/dbo/
     │       ├── LoadTests
     │       ├── LoadTestRuns
     │       ├── LoadTestQueries
     │       └── LoadTestQueryExecutions
-    ├── LoadTest - Template (Notebook) ← Save-As to start each run
-    └── Queries (Notebook)
+    └── LoadTest - Template (Notebook) ← Save-As to start each run; drop PowerBiPerformance.json onto Resources
 ```
 
-Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder so the notebook can self-discover the lakehouse from its own runtime context.
+Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder. The runner notebook **auto-discovers the workspace's `LoadTests` lakehouse** via the Fabric items API and uses it as the default storage for assemblies, telemetry, and Delta output — no UI lakehouse-attach step is required.
 
 ### Option A — Scripted (recommended)
 
@@ -88,22 +85,14 @@ The script is fully idempotent — re-run any time to refresh the LoadGen bits o
 
 - the `LoadTests` workspace folder
 - `LoadTests.Lakehouse`
-- `LoadTest - Template` and `Queries` notebooks
-- `Files/bin/*` and a default `Files/queries.json`
+- the `LoadTest - Template` notebook
+- `Files/loadgen-bin.zip` (the LoadGen + ADOMD assemblies)
 
-Useful flags:
+Useful flag:
 
 | Flag | Effect |
 |---|---|
-| `-FolderName "X"` | Use a different folder name (default `LoadTests`). |
-| `-LakehouseName "X"` | Use a different lakehouse name (default `LoadTests`). |
-| `-SkipPublish` | Skip `dotnet publish`; reuse the existing publish output. |
-| `-SkipNotebooks` | Skip `build_notebooks.py`; deploy whatever `notebooks/*.ipynb` already exists on disk. |
-
-> **Migration from earlier deploys.** The script renames any pre-existing
-> `Run` notebook in the `LoadTests` folder to `LoadTest - Template`
-> automatically (the user's customizations would have been wiped on every
-> redeploy anyway — this just normalizes the new name).
+| `-SkipPublish` | Skip `dotnet publish`; reuse the existing publish output and just re-zip + re-upload. |
 
 ### Option B — Manual setup
 
@@ -113,34 +102,24 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
 
    | Asset | Purpose |
    |---|---|
-   | `loadgen-bin.zip` | The LoadGen binaries (~3.5 MB, .NET 8, Linux). |
+   | `loadgen-bin.zip` | The LoadGen binaries (~3.5 MB, .NET 8, Linux). Upload as-is to the lakehouse — cell 2 of the notebook unzips it on each kernel start. |
    | `LoadTest-Template.ipynb` | The runner template (imports as `LoadTest - Template`). |
-   | `Queries.ipynb` | Editor for the DAX query corpus. |
-   | `queries.starter.json` | A one-line corpus to seed `queries.json`. |
-
-   Extract `loadgen-bin.zip` into a local folder — you should see `LoadGen.dll`, `QueryRunner.dll`, `Microsoft.AnalysisServices.AdomdClient.dll`, and ~9 other dependency DLLs.
 
 2. **In your Fabric workspace** (portal): create a workspace folder named **`LoadTests`** (workspace top bar → **New folder**).
 
 3. **Inside that folder**, create a Lakehouse named **`LoadTests`** (**+ New item → Lakehouse**, schema preview off is fine).
 
-4. **Upload the LoadGen bundle** to `LoadTests.Lakehouse/Files/bin/`:
+4. **Upload `loadgen-bin.zip`** to `LoadTests.Lakehouse/Files/`:
 
-   - In the lakehouse explorer, right-click **Files → New folder** → `bin`.
-   - Right-click `bin` → **Upload → Upload files** and select all DLLs from the extracted `loadgen-bin.zip`.
+   - In the lakehouse explorer, right-click **Files → Upload → Upload files** and select `loadgen-bin.zip`. Don't extract — the notebook unzips it on each kernel.
 
-   Alternative: [OneLake File Explorer](https://www.microsoft.com/download/details.aspx?id=105222) (Windows) — sync the workspace, then drag-drop the extracted folder into `LoadTests/LoadTests.Lakehouse/Files/bin/`.
+   Alternative: [OneLake File Explorer](https://www.microsoft.com/download/details.aspx?id=105222) (Windows) — sync the workspace and drop the zip into `LoadTests/LoadTests.Lakehouse/Files/`.
 
-5. **Seed `queries.json`** at `LoadTests.Lakehouse/Files/queries.json`: rename the downloaded `queries.starter.json` to `queries.json` and upload it directly under `Files/`. (You'll edit the corpus from the `Queries` notebook later.)
-
-6. **Import the notebooks** (workspace top bar → **Import → Notebook → From this computer**), placing both **inside the `LoadTests` folder**. After import:
-
-   - Rename the imported `LoadTest-Template` to **`LoadTest - Template`** (with spaces around the hyphen — that's what cell 2 of the notebook checks for, and what the Save-As workflow expects).
-   - Leave `Queries` named as-is.
+5. **Import the notebook** (workspace top bar → **Import → Notebook → From this computer**), placing it **inside the `LoadTests` folder**. After import, rename the imported `LoadTest-Template` to **`LoadTest - Template`** (with spaces around the hyphen — that's what cell 2 of the notebook checks for, and what the Save-As workflow expects).
 
 You're done. Verify by opening `LoadTest - Template` — cell 2 will detect the template name and refuse to run, prompting Save-As.
 
-> **Updating later.** When a new release ships, repeat steps 1, 4, and 6 only — the folder, lakehouse, and `queries.json` you already have stay put. Saved `LoadTest - <name>` notebooks are untouched.
+> **Updating later.** When a new release ships, repeat steps 1, 4, and 5 only — the folder and lakehouse stay put. Saved `LoadTest - <name>` notebooks (and their attached Resources) are untouched.
 
 ---
 
@@ -150,7 +129,9 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
 
 1. Open `LoadTest - Template` in the workspace.
 2. **File → Save As** (or right-click in the workspace → **Duplicate**) and rename the copy to something descriptive — e.g. `LoadTest - DIAD 5u baseline`. Keep it in the `LoadTests` folder.
-3. **Drag your `queries.json` onto the *Resources* panel** in the saved copy (left sidebar in the notebook). This is the canonical workflow — the corpus travels with the saved notebook so each `LoadTest - <name>` is reproducible without coupling to the shared catalog. Skip this step to use the shared `Files/queries.json` fallback.
+3. **Set up the query corpus.** Two options:
+   - **Drag a `PowerBiPerformance.json` onto the saved copy's *Resources* panel** (left sidebar in the notebook). Power BI Desktop's *Performance Analyzer* exports query traces in this exact format; the runner accepts it verbatim. This is the canonical workflow — the corpus travels with the saved notebook so each `LoadTest - <name>` is reproducible.
+   - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The template ships with a 3-query model-agnostic warm-up corpus that's only useful for smoke-testing the pipeline.
 4. Open the copy. Edit cell **1**:
 
    ```python
@@ -169,13 +150,17 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
    TARGET_REPLICA           = ""        # "readonly" → scale-out read replica
    SKIP_RESULTS             = False
 
-   QUERIES_INLINE = []                  # [] → read QUERIES_FILE
-   QUERIES_FILE   = "queries.json"      # path under Files/ (e.g. "tests/diad/queries.json")
+   QUERIES_INLINE = [                   # used only when QUERIES_FILE isn't found
+       "EVALUATE ROW(\"ping\", 1)",
+       "EVALUATE INFO.TABLES()",
+       "EVALUATE INFO.MEASURES()",
+   ]
+   QUERIES_FILE   = "PowerBiPerformance.json"  # filename in this notebook's Resources panel
    USERS_INLINE   = []                  # [] → all users share the interactive identity
    ```
 
 4. **Run All**. Cell 4 prints a live status line every second; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly.
-5. Cell **5b** writes the run into the four Delta tables (idempotent — safe to re-run; rows for this `RunId` are deleted and rewritten).
+5. Cell **5b** writes the run into the four Delta tables. Every notebook execution mints a fresh `RunId`, so prior runs are preserved untouched — re-running is purely additive. Re-executing **only cell 5b** (after a completed run) is also safe: it overwrites just that one `RunId`'s fact rows in place.
 6. Cell **6** plots latency / QPS / users from the per-run CSV.
 
 After the run, the Delta tables are queryable as a Direct Lake source — point a semantic model + Power BI report at them for cross-run analysis.
@@ -184,22 +169,10 @@ After the run, the Delta tables are queryable as a Direct Lake source — point 
 
 Two patterns:
 
-- **Per-test corpus (canonical, recommended).** In your saved
-  `LoadTest - <name>` copy, drag a `queries.json` onto the notebook's
-  **Resources** panel (left sidebar). Cell 3 finds it at
-  `builtin/queries.json` automatically — the corpus travels with the
-  saved notebook so each test stays reproducible. Use a different
-  filename and set `QUERIES_FILE = "<name>.json"` in cell 1 if you
-  prefer.
-- **Shared fallback.** If no resource is attached, cell 3 falls back to
-  `LoadTests.Lakehouse/Files/queries.json`. Edit that file via the
-  `Queries` notebook to set the default seen by every newly-created
-  `LoadTest - …` copy that hasn't yet attached its own.
+- **Per-test corpus (canonical, recommended).** In your saved `LoadTest - <name>` copy, drag a `PowerBiPerformance.json` onto the notebook's **Resources** panel (left sidebar). Cell 3 finds it at `builtin/PowerBiPerformance.json` automatically. The runner accepts the Power BI *Performance Analyzer* JSON format directly, or a plain `[{ "query": "EVALUATE …" }, …]` list, or a plain `["EVALUATE …", …]` list. Set `QUERIES_FILE = "<name>.json"` in cell 1 if you prefer a different filename.
+- **Inline.** Edit `QUERIES_INLINE` in cell 1. Fine for one-offs; doesn't scale to large corpora. The template ships with a 3-query warm-up set that runs against any model.
 
-`QUERIES_INLINE` in the runner notebook overrides both — useful for
-one-off runs that don't justify a corpus file. An absolute `abfss://…`
-URL in `QUERIES_FILE` is also accepted as an escape hatch for
-cross-lakehouse references.
+An absolute `abfss://…` URL in `QUERIES_FILE` is also accepted as an escape hatch for cross-lakehouse references.
 
 ### RLS / impersonation
 
@@ -286,11 +259,11 @@ All tables include `OwnerType` / `OwnerId` / `OwnerKey` columns so future trace 
 
 Two engineering details worth calling out:
 
-1. **ThreadPool pre-warm.** A 2-core Python notebook host has `MinThreads = 2` by default and grows the worker pool at ~1 thread/sec. With 100 sync-blocking ADOMD.NET drivers, ramp would otherwise serialize to ~100 seconds. `QueryRunner` calls `ThreadPool.SetMinThreads(nUsers + 32, ...)` up front, so workers are eager-allocated and ramp follows the configured `--ramp-time`.
+1. **ThreadPool pre-warm.** Without intervention, the Spark driver's .NET ThreadPool starts at `MinThreads = <core-count>` and grows the worker pool at ~1 thread/sec. With 100 sync-blocking ADOMD.NET drivers, ramp would otherwise serialize to ~100 seconds. `QueryRunner` calls `ThreadPool.SetMinThreads(nUsers + 32, ...)` up front, so workers are eager-allocated and ramp follows the configured `--ramp-time`.
 
 2. **Pre-warm connection.** The first connection to a cold model pays the engine cold-start (50–100 s on a cold capacity). `QueryRunner` opens one warmup connection on the main thread before launching user tasks, so per-user `Open()` times reflect socket cost only — clean numbers for capacity planning.
 
-3. **Out-of-process orchestration.** The notebook launches `dotnet LoadGen.dll` as a subprocess and parses NDJSON envelopes from its stdout. This avoids fighting with sempy over CLR initialization in the notebook host and keeps the kernel responsive (Ctrl+C reliably cancels, status updates render in real time).
+3. **Out-of-process orchestration.** The notebook launches `dotnet LoadGen.dll` as a subprocess and parses NDJSON envelopes from its stdout. This avoids fighting with sempy over CLR initialization in the Spark driver and keeps the kernel responsive (Ctrl+C reliably cancels, status updates render in real time).
 
 ---
 
@@ -298,12 +271,11 @@ Two engineering details worth calling out:
 
 ```pwsh
 dotnet build -c Release                                       # build everything
-dotnet publish src/LoadGen -c Release -r win-x64              # local LoadGen.exe
 dotnet publish src/LoadGen -c Release -r linux-x64 `
   -p:SelfContained=false -p:UseAppHost=false                  # what Deploy-LoadTests.ps1 does
 ```
 
-Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits and refresh `Files/bin/` in the lakehouse.
+Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits and refresh `Files/loadgen-bin.zip` in the lakehouse.
 
 To regenerate the notebooks from `scripts/build_notebooks.py`:
 
@@ -322,7 +294,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, packages `loadgen-bin.zip` + the regenerated notebooks + a starter `queries.json`, and creates a GitHub Release with auto-generated notes. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
+The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, packages `loadgen-bin.zip` + the regenerated notebook, and creates a GitHub Release with auto-generated notes. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
 
 ## License
 

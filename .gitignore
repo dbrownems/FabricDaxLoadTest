@@ -26,3 +26,7 @@ AGENTS.local.md
 # Local smoke artifacts
 artifacts/
 tmp/
+
+# build artifact from Deploy-LoadTests.ps1
+loadgen-bin.zip
+

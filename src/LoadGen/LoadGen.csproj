@@ -26,17 +26,10 @@
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
   </ItemGroup>
 
-  <!-- Exclude the WAM broker artifacts from the publish output entirely
-       (BEFORE the single-file bundler runs, so they don't end up
-       embedded in LoadGen.exe when a self-contained single-file build
-       is requested). We never invoke the WAM broker — callers always
-       pass a bearer token via token-file / PBI_TOKEN / token. The
-       native msalruntime DLLs and the broker bridge DLLs are pure dead
-       weight.
-
-       Using <RuntimeHostConfigurationOption> + <ResolvedFileToPublish>
-       Remove= is the supported pattern for excluding files before the
-       single-file bundler runs. See plan.md § 2.7. -->
+  <!-- Exclude the WAM broker artifacts from the publish output entirely.
+       We never invoke the WAM broker — callers always pass a bearer
+       token via token-file / PBI_TOKEN / token. The native msalruntime
+       DLLs and the broker bridge DLLs are pure dead weight. -->
   <Target Name="TrimBrokerArtifactsBeforeBundle"
           AfterTargets="ComputeFilesToPublish"
           BeforeTargets="GenerateSingleFileBundle">

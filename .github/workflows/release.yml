@@ -69,12 +69,10 @@ jobs:
           zip -r "$GITHUB_WORKSPACE/loadgen-bin.zip" .
           ls -lh "$GITHUB_WORKSPACE/loadgen-bin.zip"
 
-      - name: Stage notebook + starter assets
+      - name: Stage notebook + LoadGen zip
         run: |
           cp notebooks/LoadTest-Template.ipynb ./LoadTest-Template.ipynb
-          cp notebooks/Queries.ipynb           ./Queries.ipynb
-          printf '["EVALUATE ROW(\\"x\\", 1)"]' > queries.starter.json
-          ls -l LoadTest-Template.ipynb Queries.ipynb queries.starter.json
+          ls -l LoadTest-Template.ipynb loadgen-bin.zip
 
       - name: Resolve release tag
         id: tag
@@ -95,16 +93,12 @@ jobs:
           files: |
             loadgen-bin.zip
             LoadTest-Template.ipynb
-            Queries.ipynb
-            queries.starter.json
           body: |
             **Manual-deployment artifacts** (see [README — Option B: Manual setup](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/README.md#option-b--manual-setup)).
 
             | Asset | Where it goes |
             |---|---|
-            | `loadgen-bin.zip` | Extract → `LoadTests.Lakehouse/Files/bin/` |
-            | `queries.starter.json` | Rename to `queries.json` → `LoadTests.Lakehouse/Files/queries.json` |
+            | `loadgen-bin.zip` | Upload as-is to `LoadTests.Lakehouse/Files/loadgen-bin.zip` (cell 2 of the notebook unzips it on each kernel start). |
             | `LoadTest-Template.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Template`** automatically. |
-            | `Queries.ipynb` | Import to the `LoadTests` workspace folder, keep the name `Queries` |
 
             For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.

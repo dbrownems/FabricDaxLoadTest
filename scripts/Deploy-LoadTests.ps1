@@ -7,35 +7,25 @@
     Creates (or updates, idempotently) the following items in the target
     workspace, all inside a workspace folder named `LoadTests`:
 
-      * LoadTests.Lakehouse  — holds Files/bin/QueryRunner.dll + dependencies,
-                                Files/queries.json (DAX corpus),
-                                Files/runs/<runId>/ (per-run telemetry),
+      * LoadTests.Lakehouse  — holds Files/loadgen-bin.zip (LoadGen +
+                                ADOMD assemblies), Files/runs/<runId>/
+                                (per-run telemetry), and
                                 Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}.
       * LoadTest - Template  — the runner template; users do **Save As** in the
                                 portal to produce per-test copies
                                 (`LoadTest - <descriptive name>`). Redeploys
                                 only overwrite the template, never user copies.
-      * Queries.Notebook     — read/edit Files/queries.json.
 
     Everything is idempotent — re-run any time to refresh assemblies or
-    notebook content.
+    notebook content. Folder and lakehouse names are always `LoadTests`;
+    the notebook auto-discovers the lakehouse from the workspace.
 
 .PARAMETER Workspace
     Display name of the target workspace.
 
-.PARAMETER FolderName
-    Workspace-folder name. Default: 'LoadTests'.
-
-.PARAMETER LakehouseName
-    Lakehouse display name. Default: 'LoadTests'.
-
 .PARAMETER SkipPublish
     Skip `dotnet publish`; reuse the existing publish output under
-    src/QueryRunner/bin/Release/net8.0/publish/.
-
-.PARAMETER SkipNotebooks
-    Skip rebuilding notebooks/LoadTest-Template.ipynb + notebooks/Queries.ipynb. The
-    deployed notebooks always come from the most-recent files on disk.
+    src/LoadGen/bin/Release/net8.0/linux-x64/publish/.
 
 .EXAMPLE
     pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Verbose
@@ -43,10 +33,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Workspace,
-    [string] $FolderName    = "LoadTests",
-    [string] $LakehouseName = "LoadTests",
-    [switch] $SkipPublish,
-    [switch] $SkipNotebooks
+    [switch] $SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -153,7 +140,7 @@ if (-not $SkipPublish) {
     Step "dotnet publish LoadGen (Release, linux-x64, framework-dependent)"
     # Notebook deployment runs `dotnet LoadGen.dll` on Fabric Spark
     # nodes — Linux only, .NET 8 runtime already present via sempy.
-    # Framework-dependent (no SC) keeps the Files/bin payload at ~3.5 MB
+    # Framework-dependent (no SC) keeps the zip payload at ~3.5 MB
     # instead of ~67 MB; UseAppHost=false skips the apphost binary so we
     # don't need a chmod step after OneLake stages the files (and
     # cross-platform the same DLLs run unchanged).
@@ -170,14 +157,19 @@ $published = Get-ChildItem -Recurse -File $PublishDir
 $totalKb = [int](( $published | Measure-Object Length -Sum).Sum / 1024)
 Info "Publish output: $($published.Count) files, $totalKb KiB"
 
-if (-not $SkipNotebooks) {
-    Step "Rebuilding notebooks (LoadTest-Template.ipynb + Queries.ipynb)"
-    Push-Location $RepoRoot
-    try {
-        & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "build_notebooks.py failed" }
-    } finally { Pop-Location }
-}
+Step "Packaging loadgen-bin.zip"
+$ZipPath = Join-Path $RepoRoot "loadgen-bin.zip"
+if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+Compress-Archive -Path (Join-Path $PublishDir "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+$zipKb = [int]((Get-Item $ZipPath).Length / 1024)
+Info "Built $ZipPath ($zipKb KiB)"
+
+Step "Rebuilding notebook (LoadTest-Template.ipynb)"
+Push-Location $RepoRoot
+try {
+    & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "build_notebooks.py failed" }
+} finally { Pop-Location }
 
 # ---- resolve workspace ------------------------------------------------------
 Step "Resolving workspace '$Workspace'"
@@ -190,13 +182,13 @@ $wsId = $ws.id
 Info "WorkspaceId: $wsId"
 
 # ---- folder -----------------------------------------------------------------
-Step "Get-or-create folder '$FolderName'"
+Step "Get-or-create folder 'LoadTests'"
 $folders = Invoke-Fabric GET "/v1/workspaces/$wsId/folders"
 $folder = $folders.value | Where-Object {
-    $_.displayName -eq $FolderName -and -not ($_.PSObject.Properties.Name -contains 'parentFolderId')
+    $_.displayName -eq "LoadTests" -and -not ($_.PSObject.Properties.Name -contains 'parentFolderId')
 }
 if (-not $folder) {
-    $folder = Invoke-Fabric POST "/v1/workspaces/$wsId/folders" @{ displayName = $FolderName }
+    $folder = Invoke-Fabric POST "/v1/workspaces/$wsId/folders" @{ displayName = "LoadTests" }
     Info "Created folder $($folder.id)"
 } else {
     Info "Reusing folder $($folder.id)"
@@ -204,11 +196,11 @@ if (-not $folder) {
 $folderId = $folder.id
 
 # ---- lakehouse --------------------------------------------------------------
-Step "Get-or-create lakehouse '$LakehouseName'"
+Step "Get-or-create lakehouse 'LoadTests'"
 $items = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Lakehouse"
-$lh = $items.value | Where-Object { $_.displayName -eq $LakehouseName }
+$lh = $items.value | Where-Object { $_.displayName -eq "LoadTests" }
 if (-not $lh) {
-    $body = @{ displayName = $LakehouseName; type = "Lakehouse"; folderId = $folderId }
+    $body = @{ displayName = "LoadTests"; type = "Lakehouse"; folderId = $folderId }
     $lh = Invoke-Fabric POST "/v1/workspaces/$wsId/items" $body
     Info "Created lakehouse $($lh.id)"
 } else {
@@ -220,40 +212,22 @@ if (-not $lh) {
 }
 $lhId = $lh.id
 
-# ---- upload assemblies via fab cp ------------------------------------------
-Step "Uploading assemblies to LoadTests.Lakehouse/Files/bin"
-$lhBin = "/$Workspace.workspace/$LakehouseName.lakehouse/Files/bin"
-& fab mkdir "$lhBin" 2>&1 | Out-Null
-$createdDirs = @{ $lhBin = $true }
-foreach ($f in $published) {
-    $rel = $f.FullName.Substring($PublishDir.Length).TrimStart('\','/').Replace('\','/')
-    $destPath = "$lhBin/$rel"
-    # Ensure every ancestor directory exists (fab mkdir is one-level-only).
-    $segments = ($rel -split '/')
-    for ($i = 0; $i -lt $segments.Count - 1; $i++) {
-        $dir = "$lhBin/" + ($segments[0..$i] -join '/')
-        if (-not $createdDirs.ContainsKey($dir)) {
-            & fab mkdir $dir 2>&1 | Out-Null
-            $createdDirs[$dir] = $true
-        }
-    }
-    & fab cp $f.FullName $destPath -f 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $($f.FullName) -> $destPath" }
-}
-Info "Uploaded $($published.Count) files"
+# ---- upload loadgen-bin.zip via fab cp -------------------------------------
+Step "Uploading loadgen-bin.zip to LoadTests.Lakehouse/Files/"
+$lhZipDest = "/$Workspace.workspace/LoadTests.lakehouse/Files/loadgen-bin.zip"
+& fab cp $ZipPath $lhZipDest -f 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $ZipPath -> $lhZipDest" }
+Info "Uploaded loadgen-bin.zip ($zipKb KiB)"
 
-# ---- seed empty queries.json if absent --------------------------------------
-$qPath = "/$Workspace.workspace/$LakehouseName.lakehouse/Files/queries.json"
-$qExists = & fab exists $qPath 2>&1 | Select-String -Pattern '"data": true' -Quiet
-if (-not $qExists) {
-    Step "Seeding empty queries.json"
-    $tmp = New-TemporaryFile
-    '["EVALUATE ROW(\"x\", 1)"]' | Out-File $tmp -Encoding utf8 -NoNewline
-    & fab cp $tmp.FullName $qPath -f 2>&1 | Out-Null
-    Remove-Item $tmp -Force
+# Best-effort cleanup of legacy per-DLL Files/bin/ layout from older deploys.
+$legacyBin = "/$Workspace.workspace/LoadTests.lakehouse/Files/bin"
+$legacyExists = & fab exists $legacyBin 2>&1 | Select-String -Pattern '"data": true' -Quiet
+if ($legacyExists) {
+    Info "Removing legacy Files/bin/ tree"
+    & fab rm -r $legacyBin -f 2>&1 | Out-Null
 }
 
-# ---- create/update notebooks via REST (folderId at create time) -------------
+# ---- create/update notebook via REST (folderId at create time) --------------
 function Deploy-Notebook {
     param(
         [Parameter(Mandatory)] [string]$Name,
@@ -310,31 +284,16 @@ function Deploy-Notebook {
     }
 }
 
-# ---- migration: rename pre-template "Run" notebook --------------------------
-# Prior versions deployed this as displayName="Run". Rename in-place so the
-# Deploy-Notebook call below updates the same item instead of leaving an
-# orphan. Safe to repeat: skipped after the first run.
-$preItems = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Notebook"
-$preRun   = $preItems.value | Where-Object { $_.displayName -eq "Run" -and $_.folderId -eq $folderId }
-if ($preRun) {
-    Step "Renaming legacy 'Run' notebook to 'LoadTest - Template'"
-    $body = @{ displayName = "LoadTest - Template" }
-    $null = Invoke-Fabric PATCH "/v1/workspaces/$wsId/notebooks/$($preRun.id)" -Body $body
-    Info "  Renamed id=$($preRun.id)"
-}
-
 Deploy-Notebook -Name "LoadTest - Template" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Template.ipynb") `
                 -Description "FabricDaxLoadTest runner — TEMPLATE. Save As before editing/running."
-Deploy-Notebook -Name "Queries" -IpynbPath (Join-Path $NotebooksDir "Queries.ipynb") `
-                -Description "FabricDaxLoadTest query catalog editor (Files/queries.json)."
 
 # ---- summary ----------------------------------------------------------------
 Step "Done"
 Write-Host ""
 Write-Host "Workspace : $Workspace ($wsId)" -ForegroundColor Green
-Write-Host "Folder    : $FolderName ($folderId)" -ForegroundColor Green
-Write-Host "Lakehouse : $LakehouseName.Lakehouse ($lhId)" -ForegroundColor Green
-Write-Host "Notebooks : LoadTest - Template, Queries" -ForegroundColor Green
+Write-Host "Folder    : LoadTests ($folderId)" -ForegroundColor Green
+Write-Host "Lakehouse : LoadTests.Lakehouse ($lhId)" -ForegroundColor Green
+Write-Host "Notebooks : LoadTest - Template" -ForegroundColor Green
 Write-Host ""
 Write-Host "To start a new load test:" -ForegroundColor White
 Write-Host "  1. Open 'LoadTest - Template' in the workspace." -ForegroundColor White

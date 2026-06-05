@@ -1,11 +1,12 @@
-"""Generate notebooks/LoadTest-Template.ipynb and notebooks/Queries.ipynb.
+"""Generate notebooks/LoadTest-Template.ipynb.
 
-The notebooks are deployed into a `LoadTests` workspace folder by
+The notebook is deployed into a `LoadTests` workspace folder by
 scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
-holds QueryRunner.dll under Files/bin/ and run logs under Files/runs/.
+holds Files/loadgen-bin.zip (the LoadGen+ADOMD assemblies) and per-run
+telemetry under Files/runs/.
 
-The notebooks self-discover the workspace + lakehouse at run time via
-`notebookutils.runtime.context`, so they are workspace-portable and do
+The notebook self-discovers the workspace + lakehouse at run time via
+`notebookutils.runtime.context`, so it is workspace-portable and does
 not need rewriting per deployment.
 
 Run from repo root:
@@ -20,10 +21,10 @@ OUT  = REPO / "notebooks"
 OUT.mkdir(exist_ok=True, parents=True)
 
 FABRIC_NB_METADATA = {
+    "kernelspec":    {"display_name": "Synapse PySpark", "name": "synapse_pyspark", "language": "Python"},
+    "kernel_info":   {"name": "synapse_pyspark"},
     "language_info": {"name": "python"},
-    "kernel_info":   {"name": "jupyter", "jupyter_kernel_name": "python3.11"},
-    "kernelspec":    {"display_name": "Jupyter", "language": None, "name": "jupyter"},
-    "microsoft":     {"language": "python", "language_group": "jupyter_python"},
+    "microsoft":     {"language": "python", "language_group": "synapse_pyspark"},
     "dependencies":  {},
     "spark_compute": {"compute_id": "/trident/default"},
 }
@@ -85,35 +86,46 @@ def build_run():
 
 Drives concurrent DAX queries against a Power BI / Fabric semantic model via
 the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
-subprocess (run on the kernel's bundled .NET 8 runtime).
+subprocess (run on the Spark driver's bundled .NET 8 runtime).
 
-This notebook lives in the workspace folder **`LoadTests`** alongside the
-**`LoadTests`** lakehouse, which holds:
+The notebook auto-discovers the workspace's **`LoadTests`** lakehouse — no
+UI attach step required. The lakehouse is the default storage for
+everything:
 
-- `Files/bin/`   — `LoadGen.dll` + ADOMD client dependencies (framework-dependent publish)
+- `Files/loadgen-bin.zip` — LoadGen + ADOMD assemblies; cell 2 downloads
+  and unzips this into a `/tmp` staging dir on the Spark driver
 - `Files/runs/`  — per-run telemetry CSVs (created on first run)
-- `Files/queries.json` — *fallback* shared DAX corpus (managed via `Queries.ipynb`); used when the saved copy has no resource attached
 - `Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables fed by cell 5b
 
 ## How to use (in your saved copy)
 
-1. **Drop your DAX corpus onto the notebook's *Resources* panel** as
-   `queries.json` (or any name; set `QUERIES_FILE` in cell 1 to match).
-   This is the canonical workflow — the corpus travels with the saved
-   notebook so each `LoadTest - <name>` is reproducible without coupling
-   to the shared catalog. If the file is absent from resources, cell 3
-   falls back to `LoadTests.Lakehouse/Files/<QUERIES_FILE>`.
+1. **Set up the query corpus.** Cell 1 ships with a tiny `QUERIES_INLINE`
+   fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
+   testing the pipeline. For a real test you have two options:
+
+   - **Drag a `PowerBiPerformance.json` onto the notebook's *Resources*
+     panel** (left sidebar). This is the canonical workflow — the corpus
+     travels with the saved `LoadTest - <name>` notebook so each test is
+     reproducible. (Power BI Desktop's *Performance Analyzer* exports
+     query traces in this exact format; the runner accepts that file
+     verbatim, plus simpler list-of-strings JSON.)
+   - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
+     Fine for one-off tests; doesn't scale to large corpora.
+
 2. Edit cell **1** to point at the target workspace + dataset and tweak
    load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
    these land in the `LoadTests` dim and surface in the Power BI report.
 3. **Run All**. Cell **4** prints a live status line every second; press
    **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT
    and drains cleanly.
-4. Cell **5b** writes the run into the four Delta tables (idempotent —
-   safe to re-run; rows for this `RunId` are replaced).
+4. Cell **5b** writes the run into the four Delta tables. Every
+   notebook execution mints a fresh `RunId`, so prior runs are
+   preserved untouched — re-running the notebook is purely additive.
+   Re-executing **only cell 5b** (after a completed run) is also safe:
+   it overwrites just that one `RunId`'s fact rows in place.
 5. Cell **6** plots latency / QPS / users from the per-run CSV.
 
-> Re-deploy / upgrade the bits in `Files/bin/` by re-running
+> Re-deploy / upgrade `Files/loadgen-bin.zip` by re-running
 > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
 > `LoadTest - …` notebooks are not touched by the deploy.
 """)
@@ -136,21 +148,30 @@ USER_RAMP_TIME_SEC       = 15
 TARGET_REPLICA           = ""       # "readonly" → scale-out read replica
 SKIP_RESULTS             = False    # True drains rows without parsing
 
-# Optional inline override; if non-empty wins over QUERIES_FILE below.
-QUERIES_INLINE = []     # e.g. ["EVALUATE ROW(\"x\", 1)"]
+# A small, model-agnostic warm-up corpus used when no resource file is
+# attached (see QUERIES_FILE below). Useful for smoke testing the
+# pipeline; replace with real queries — either inline here or by
+# uploading a `PowerBiPerformance.json` to this notebook's Resources
+# panel — before drawing any performance conclusions.
+QUERIES_INLINE = [
+    "EVALUATE ROW(\"ping\", 1)",
+    "EVALUATE INFO.TABLES()",
+    "EVALUATE INFO.MEASURES()",
+]
 
 # Path to the DAX query corpus.
 #
-# Canonical workflow: drop the file onto this notebook's *Resources* panel
-# as `queries.json` (or any name — set this parameter to match). Cell 3
-# resolves `QUERIES_FILE` in this order:
+# Canonical workflow: drag a `PowerBiPerformance.json` file onto this
+# notebook's *Resources* panel (left sidebar). Power BI Desktop's
+# *Performance Analyzer* exports query traces in this exact format; the
+# runner also accepts a plain JSON list of DAX strings. Cell 3 resolves
+# `QUERIES_FILE` in this order:
 #
 #   1. notebook resources (`builtin/<QUERIES_FILE>`) — preferred; the
 #      corpus travels with the saved `LoadTest - <name>` notebook.
-#   2. lakehouse `Files/<QUERIES_FILE>` — fallback; shared catalog edited
-#      via the `Queries` notebook.
-#   3. literal `abfss://…` URL — escape hatch for cross-lakehouse refs.
-QUERIES_FILE = "queries.json"
+#   2. literal `abfss://…` URL — escape hatch for cross-lakehouse refs.
+#   3. fall back to `QUERIES_INLINE` above.
+QUERIES_FILE = "PowerBiPerformance.json"
 
 # Optional inline users; if empty, all virtual users share the interactive
 # token's identity (no role / CustomData impersonation). Each entry is
@@ -161,12 +182,18 @@ USERS_INLINE = []
 
     # 2. Auto-discover lakehouse + stage LoadGen + dotnet preflight
     code(nb, r"""
-# ── 2. Stage LoadGen.dll from Files/bin and locate dotnet ────────────────────
-# This notebook lives in the workspace folder `LoadTests`. The companion
-# lakehouse (also `LoadTests`) is in the same folder and holds the assemblies.
-# We run LoadGen out-of-process (`dotnet LoadGen.dll`) to avoid the pythonnet/
-# CLR-init footguns that come with sharing the kernel's CLR with sempy.
-import os, json, shutil, subprocess
+# ── 2. Download + unzip LoadGen and locate dotnet ────────────────────────────
+# This is a Fabric **PySpark** notebook. The workspace contains exactly one
+# `LoadTests` lakehouse (created by `scripts/Deploy-LoadTests.ps1` or the
+# manual setup) — we discover it via the Fabric items API and use it as the
+# default storage. The LoadGen assemblies live in a single zip at
+# `Files/loadgen-bin.zip`; cell 2 downloads it once per kernel and unzips
+# into `/tmp/fdlt-bin/`.
+#
+# We run LoadGen out-of-process (`dotnet LoadGen.dll`) to avoid the
+# pythonnet / CLR-init footguns that come with sharing the Spark driver's
+# CLR with sempy.
+import os, json, shutil, subprocess, zipfile
 import notebookutils
 
 ctx = notebookutils.runtime.context
@@ -198,34 +225,29 @@ if not _match:
 LH_ID = _match[0]["id"]
 LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}"
 
-# Stage the entire publish output to /tmp. We list and copy per-file
-# (recursing manually) because notebookutils.fs.cp with recurse=True does a
-# HEAD/getStatus on the source directory which OneLake currently rejects
-# with HTTP 400 for Files/* directories.
+# Download Files/loadgen-bin.zip → local /tmp, then extract. Reuses the
+# previous extraction across cell re-runs within a kernel session (cheap
+# mtime check) but always re-downloads if missing.
 STAGE = "/tmp/fdlt-bin"
+ZIP_LOCAL = "/tmp/fdlt-loadgen-bin.zip"
+ZIP_REMOTE = f"{LH_ABFSS}/Files/loadgen-bin.zip"
+if os.path.exists(ZIP_LOCAL):
+    os.remove(ZIP_LOCAL)
+notebookutils.fs.cp(ZIP_REMOTE, f"file://{ZIP_LOCAL}")
+shutil.rmtree(STAGE, ignore_errors=True)
 os.makedirs(STAGE, exist_ok=True)
-
-def _stage_dir(src_abfss, dst_local):
-    os.makedirs(dst_local, exist_ok=True)
-    for entry in notebookutils.fs.ls(src_abfss):
-        name = entry.name
-        sp   = f"{src_abfss.rstrip('/')}/{name}"
-        dp   = os.path.join(dst_local, name)
-        if entry.isDir:
-            _stage_dir(sp, dp)
-        else:
-            notebookutils.fs.cp(sp, f"file://{dp}")
-
-_stage_dir(f"{LH_ABFSS}/Files/bin", STAGE)
+with zipfile.ZipFile(ZIP_LOCAL, "r") as zf:
+    zf.extractall(STAGE)
 
 LOADGEN_DLL = os.path.join(STAGE, "LoadGen.dll")
 if not os.path.exists(LOADGEN_DLL):
     raise FileNotFoundError(
-        f"LoadGen.dll not found under {STAGE}. Re-run scripts/Deploy-LoadTests.ps1 "
-        f"from a repo clone to populate {LH_ABFSS}/Files/bin."
+        f"LoadGen.dll not found under {STAGE} after extracting {ZIP_REMOTE}. "
+        f"Re-run scripts/Deploy-LoadTests.ps1 from a repo clone to refresh "
+        f"the lakehouse zip."
     )
 
-# Locate dotnet. Fabric Spark nodes ship the .NET 8 runtime under sempy's
+# Locate dotnet. Fabric Spark drivers ship the .NET 8 runtime under sempy's
 # trident_env. Prefer that over $PATH so version mismatches with whatever
 # the user happens to have don't bite us.
 _DOTNET_CANDIDATES = [
@@ -259,28 +281,25 @@ print(f"dotnet    : {DOTNET}")
 import time, uuid
 from datetime import datetime, timezone
 
-# Queries — inline override; else notebook resources (canonical); else
-# lakehouse Files/ fallback; else literal abfss:// URL.
-if QUERIES_INLINE:
-    queries = list(QUERIES_INLINE)
-    queries_source = "(inline)"
-else:
+# Queries — try notebook resources first (canonical); else literal abfss://;
+# else fall back to QUERIES_INLINE (the model-agnostic warm-up corpus).
+def _load_queries():
     if QUERIES_FILE.startswith("abfss://"):
         raw = notebookutils.fs.head(QUERIES_FILE, 1024 * 1024 * 4)
-        queries_source = QUERIES_FILE
-    else:
-        # Notebook resources are mounted at ./builtin/ in the kernel's CWD.
-        res_path = f"builtin/{QUERIES_FILE.lstrip('/')}"
-        if os.path.exists(res_path):
-            with open(res_path, "r", encoding="utf-8") as f:
-                raw = f.read()
-            queries_source = f"resources:{res_path}"
-        else:
-            qpath = f"{LH_ABFSS}/Files/{QUERIES_FILE.lstrip('/')}"
-            raw = notebookutils.fs.head(qpath, 1024 * 1024 * 4)
-            queries_source = qpath
-    queries = [q if isinstance(q, str) else q["query"] for q in json.loads(raw)]
+        return [q if isinstance(q, str) else q["query"] for q in json.loads(raw)], QUERIES_FILE
+    # Notebook resources are mounted at ./builtin/ in the kernel's CWD.
+    res_path = f"builtin/{QUERIES_FILE.lstrip('/')}"
+    if os.path.exists(res_path):
+        with open(res_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        return [q if isinstance(q, str) else q["query"] for q in json.loads(raw)], f"resources:{res_path}"
+    return list(QUERIES_INLINE), "(QUERIES_INLINE fallback)"
+
+queries, queries_source = _load_queries()
 print(f"Queries : {len(queries)}  from {queries_source}")
+if queries_source.startswith("(QUERIES_INLINE"):
+    print("          ⚠ no resource file attached — using model-agnostic warm-up queries only.")
+    print("          Attach `PowerBiPerformance.json` to the notebook Resources panel for a real test.")
 
 # Users — round-robin to CONCURRENT_USERS
 if USERS_INLINE:
@@ -516,7 +535,10 @@ if result_envelope is not None:
 #   LoadTests                 — 1 row per logical test (MERGE on LoadTestId)
 #   LoadTestRuns              — 1 row per run (MERGE on RunId; OwnerType-keyed for §1.6)
 #   LoadTestQueries           — 1 row per (LoadTestId, QueryIndex) (insert-only)
-#   LoadTestQueryExecutions   — 1 row per query attempt (DELETE WHERE RunId / INSERT)
+#   LoadTestQueryExecutions   — 1 row per query attempt. Idempotent only
+#       for re-runs of cell 5b alone (DELETE WHERE RunId / INSERT). Each
+#       full notebook execution mints a fresh RunId, so prior runs are
+#       preserved untouched and re-running the notebook is purely additive.
 #
 # TraceEvents / QueryCompleted / SecondBuckets tables are intentionally NOT
 # written here — those require Phase-1 trace capture, which is a separate
@@ -779,107 +801,5 @@ plt.tight_layout(); plt.show()
     write(nb, OUT / "LoadTest-Template.ipynb")
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Queries.ipynb — query catalog editor
-# ────────────────────────────────────────────────────────────────────────────
-def build_queries():
-    nb = new_notebook()
-
-    md(nb, r"""
-# FabricDaxLoadTest — Queries
-
-Editor for the **shared** DAX query catalog at
-`LoadTests.Lakehouse/Files/queries.json`. This file is the *fallback*
-that `LoadTest - <name>` notebooks use when no `queries.json` is
-attached to their own *Resources* panel.
-
-> **Per-test corpora belong in notebook resources, not here.** The
-> canonical workflow is: in your `LoadTest - <name>` copy, drag the
-> per-test `queries.json` onto the Resources panel — it travels with
-> the saved notebook and the run is reproducible without depending on
-> the shared catalog.
->
-> Use this notebook only to edit the shared default that newly-created
-> `LoadTest - <name>` copies pick up before they're customised.
-
-The catalog file is either:
-
-- a JSON list of strings: `["EVALUATE ROW(\"x\", 1)", ...]`, or
-- a JSON list of objects with a `query` key:
-  `[{"query": "EVALUATE ...", "name": "...", "tags": [...]}]` — extra
-  fields are preserved on round-trip but ignored by the runner.
-""")
-
-    code(nb, r"""
-# ── 1. Configuration ──────────────────────────────────────────────────────────
-# Path to the query corpus, relative to `LoadTests.Lakehouse/Files/`. Use
-# `queries.json` (default) for the shared catalog, or a per-test path like
-# `tests/diad-baseline/queries.json`. An absolute `abfss://…` URL is also
-# accepted as an escape hatch.
-QUERIES_FILE = "queries.json"
-
-import json, notebookutils
-ctx = notebookutils.runtime.context
-WS_ID = ctx["currentWorkspaceId"]
-LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/LoadTests.Lakehouse"
-QPATH = QUERIES_FILE if QUERIES_FILE.startswith("abfss://") else f"{LH_ABFSS}/Files/{QUERIES_FILE.lstrip('/')}"
-print(f"Lakehouse: {LH_ABFSS}")
-print(f"Catalog  : {QPATH}")
-""")
-
-    code(nb, r"""
-# ── 2. Read the current catalog ───────────────────────────────────────────────
-try:
-    raw = notebookutils.fs.head(QPATH, 1024 * 1024 * 4)
-    queries = json.loads(raw)
-    print(f"Loaded {len(queries)} queries from {QPATH}")
-except Exception as e:
-    print(f"(no existing catalog — will create on save: {e})")
-    queries = []
-
-import pandas as pd
-def to_df(qs):
-    rows = []
-    for i, q in enumerate(qs):
-        if isinstance(q, str):
-            rows.append({"i": i, "name": "", "tags": "", "query": q})
-        else:
-            rows.append({
-                "i":     i,
-                "name":  q.get("name", ""),
-                "tags":  ",".join(q.get("tags", [])) if isinstance(q.get("tags"), list) else (q.get("tags") or ""),
-                "query": q.get("query", ""),
-            })
-    return pd.DataFrame(rows)
-
-df = to_df(queries)
-display(df.head(50))
-""")
-
-    code(nb, r"""
-# ── 3. Edit the catalog ───────────────────────────────────────────────────────
-# Edit the Python literal below and re-run cells 3 + 4. Each entry is a string
-# (just the DAX) or a dict with optional name/tags. Strings work for simple
-# cases; switch to dicts when you want labels in the report.
-new_queries = [
-    # Replace these examples with your real corpus.
-    "EVALUATE ROW(\"x\", 1)",
-    {"name": "topn-sales", "tags": ["sales", "topn"],
-     "query": "EVALUATE TOPN(10, SUMMARIZECOLUMNS('Date'[Year], \"Sales\", [Sales Amount]))"},
-]
-print(f"Prepared {len(new_queries)} queries.")
-display(to_df(new_queries))
-""")
-
-    code(nb, r"""
-# ── 4. Save back to OneLake ───────────────────────────────────────────────────
-notebookutils.fs.put(QPATH, json.dumps(new_queries, indent=2), overwrite=True)
-print(f"Saved {len(new_queries)} queries to {QPATH}")
-""")
-
-    write(nb, OUT / "Queries.ipynb")
-
-
 if __name__ == "__main__":
     build_run()
-    build_queries()
