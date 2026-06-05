@@ -294,14 +294,17 @@ namespace FabricDaxLoadTest
 
     public static class QueryRunner
     {
-        private static QueryRunnerLogger _logger = new();
+        // Lazily initialized in RunLoadTestCore; null at type load (avoids
+        // a permanently-orphaned background writer thread from the prior
+        // eager `new()` initializer). Log() is null-safe.
+        private static QueryRunnerLogger? _logger;
 
         // Process-wide single-run gate. Static singletons (_logger,
         // QueryRunnerStatus.Instance) make concurrent runs unsafe;
         // StartLoadTest fails fast if a run is already in flight.
         private static int _activeRun;
 
-        private static void Log(string message) => _logger.Log(message);
+        private static void Log(string message) => _logger?.Log(message);
 
         /// <summary>
         /// Legacy entry point preserved for back-compat. Builds a
@@ -316,7 +319,8 @@ namespace FabricDaxLoadTest
             string? logDirectory = null, int userRampTimeSec = 0,
             string? logFileName = null,
             bool skipResults = false,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            ErrorPolicy errorPolicy = ErrorPolicy.Continue)
         {
             var config = new LoadTestConfig
             {
@@ -334,6 +338,7 @@ namespace FabricDaxLoadTest
                 UserRampTimeSec = userRampTimeSec,
                 LogFileName = logFileName,
                 SkipResults = skipResults,
+                ErrorPolicy = errorPolicy,
                 LogCallback = logCallback,
             };
             using var handle = StartLoadTest(config);
@@ -457,6 +462,10 @@ namespace FabricDaxLoadTest
                     : $"LoadTest.{testStartTime:yyyyMMdd-HHmmss}";
                 textLogPath = Path.Combine(logDirectory, baseName + ".log");
             }
+            // Belt-and-braces: dispose any prior logger before replacing.
+            // Normal flow disposes _logger at line ~819 after each run, but
+            // this guards against partial runs that bypassed cleanup.
+            try { _logger?.Dispose(); } catch { }
             _logger = new QueryRunnerLogger(textLogPath) { OnLogLine = logCallback };
 
             // Seed the initial snapshot so pythonnet callers polling
@@ -611,7 +620,8 @@ namespace FabricDaxLoadTest
                     SimulateUserWithConnections(userIdx, queries, userEmails[userIdx],
                         queriesPerBatch, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
-                        testStart, runId, testStartTime, telemetryQueue, cts.Token);
+                        testStart, runId, testStartTime, telemetryQueue,
+                        config.ErrorPolicy, cts.Token);
                 }, cts.Token));
             }
 
@@ -904,6 +914,7 @@ namespace FabricDaxLoadTest
             Stopwatch testStart,
             Guid runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
+            ErrorPolicy errorPolicy,
             CancellationToken ct)
         {
             try
@@ -916,7 +927,7 @@ namespace FabricDaxLoadTest
                         skipResults,
                         pauseBetweenQueriesMs, testStart,
                         runId, testStartUtc,
-                        telemetryQueue, ct);
+                        telemetryQueue, errorPolicy, ct);
                     if (ct.IsCancellationRequested) break;
 
                     try { Task.Delay(pauseMs, ct).Wait(ct); }
@@ -926,7 +937,7 @@ namespace FabricDaxLoadTest
             finally
             {
                 for (int c = 0; c < connections.Length; c++)
-                    if (connections[c] != null) { connections[c].Close(); connections[c].Dispose(); }
+                    if (connections[c] != null) { try { connections[c].Close(); } catch { } try { connections[c].Dispose(); } catch { } }
             }
         }
 
@@ -938,12 +949,16 @@ namespace FabricDaxLoadTest
             Stopwatch testStart,
             Guid runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
+            ErrorPolicy errorPolicy,
             CancellationToken ct)
         {
             var status = QueryRunnerStatus.Instance;
             int max = connections.Length;
             using var sem = new SemaphoreSlim(max);
-            var connSlots = new ConcurrentQueue<IDbConnection>(connections);
+            // Slot-index queue: each int identifies one entry in connections[].
+            // Reconnect updates connections[slot] in place so SimulateUser's
+            // cleanup loop disposes the live conn (not a disposed predecessor).
+            var connSlots = new ConcurrentQueue<int>(Enumerable.Range(0, max));
             var tasks = new List<Task>();
 
             for (int q = 0; q < queries.Length; q++)
@@ -955,12 +970,13 @@ namespace FabricDaxLoadTest
                 int qi = q; int iter = iteration;
                 tasks.Add(Task.Run(() =>
                 {
-                    IDbConnection? conn = null;
+                    int slot = -1;
                     try
                     {
-                        if (!connSlots.TryDequeue(out conn))
+                        if (!connSlots.TryDequeue(out slot))
                             throw new InvalidOperationException("No connection available");
 
+                        var conn = connections[slot];
                         var r = ExecuteQuery(userIndex, qi, iter, queries[qi], conn, skipResults, testStart);
                         if (r.Error != null && r.Error.Contains("timed out or was lost"))
                         {
@@ -968,16 +984,24 @@ namespace FabricDaxLoadTest
                             SubmitTelemetry(telemetryQueue, runId, testStartUtc, qi, userIndex, email, r);
 
                             Log($"[User {userIndex}] Q{qi} iter {iter} connection lost, reconnecting...");
+                            // Build+open new conn FIRST. Only swap into the
+                            // slot on success — failure rethrows as an infra
+                            // error (always fatal, regardless of ErrorPolicy).
+                            IDbConnection? newConn = null;
                             try
                             {
-                                conn.Close();
-                                conn.Dispose();
-                                conn = new AdomdConnection(connStr);
-                                conn.Open();
+                                newConn = new AdomdConnection(connStr);
+                                newConn.Open();
+                                var old = connections[slot];
+                                connections[slot] = newConn;
+                                try { old?.Close(); } catch { }
+                                try { old?.Dispose(); } catch { }
+                                conn = newConn;
                             }
                             catch (Exception reconEx)
                             {
                                 Log($"[User {userIndex}] Reconnect failed: {reconEx.Message}");
+                                try { newConn?.Dispose(); } catch { }
                                 throw;
                             }
 
@@ -991,7 +1015,10 @@ namespace FabricDaxLoadTest
                         if (r.Error != null)
                         {
                             Log($"[User {userIndex}] Q{qi} iter {iter} FAILED: {r.Error}");
-                            throw new Exception(r.Error);
+                            if (errorPolicy == ErrorPolicy.Abort)
+                                throw new Exception(r.Error);
+                            // Continue policy: error is already recorded.
+                            return;
                         }
                         if (pauseBetweenQueriesMs > 0)
                         {
@@ -1001,7 +1028,7 @@ namespace FabricDaxLoadTest
                     }
                     finally
                     {
-                        if (conn != null) connSlots.Enqueue(conn);
+                        if (slot >= 0) connSlots.Enqueue(slot);
                         sem.Release();
                     }
                 }));

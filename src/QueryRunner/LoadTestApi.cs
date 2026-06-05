@@ -5,6 +5,19 @@ using System.Threading.Tasks;
 namespace FabricDaxLoadTest
 {
     /// <summary>
+    /// Behavior when a query returns an error (DAX semantic error, query
+    /// timeout reported by AS, etc.). Infrastructure failures
+    /// (unrecoverable connection loss) always abort regardless of policy.
+    /// </summary>
+    public enum ErrorPolicy
+    {
+        /// <summary>Record the error and keep running. Default.</summary>
+        Continue = 0,
+        /// <summary>Throw on the first per-query error and fail the run.</summary>
+        Abort = 1,
+    }
+
+    /// <summary>
     /// All inputs to <see cref="QueryRunner.StartLoadTest(LoadTestConfig)"/>.
     /// Plain class with mutable properties so pythonnet callers can populate
     /// it field-by-field without dealing with positional record constructors.
@@ -25,6 +38,14 @@ namespace FabricDaxLoadTest
         public int UserRampTimeSec { get; set; }
         public string? LogFileName { get; set; }
         public bool SkipResults { get; set; }
+
+        /// <summary>
+        /// How to handle per-query errors. Default <see cref="ErrorPolicy.Continue"/>
+        /// so the run completes and the per-execution telemetry shows the
+        /// failure rate under load. Infrastructure failures (connect-then-fail,
+        /// reconnect-then-fail) still abort the run regardless of this setting.
+        /// </summary>
+        public ErrorPolicy ErrorPolicy { get; set; } = ErrorPolicy.Continue;
 
         /// <summary>
         /// Optional sink invoked from the .NET logger thread for every log

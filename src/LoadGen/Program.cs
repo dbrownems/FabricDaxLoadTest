@@ -57,6 +57,9 @@ class Program
         var jsonProgressOption = new Option<bool>("--json-progress", () => false,
             "Emit JSONL progress on stdout (one envelope per line) and route diagnostics + run logs to stderr. " +
             "Designed for programmatic callers (notebook subprocess); the human-readable mode stays the default.");
+        var errorPolicyOption = new Option<string>("--error-policy", () => "continue",
+            "How to handle per-query errors. 'continue' (default): record and keep running so the run reports an error rate. " +
+            "'abort': throw on the first per-query error and fail the run. Infrastructure failures always abort regardless.");
 
         var rootCommand = new RootCommand("LoadGen — DAX load test runner for Power BI / Fabric semantic models")
         {
@@ -65,6 +68,7 @@ class Program
             rampOption, replicaOption, queriesFileOption, usersFileOption,
             logDirOption, logFileOption, tokenOption, tokenFileOption,
             skipResultsOption, noAuthOption, jsonProgressOption,
+            errorPolicyOption,
         };
 
         rootCommand.SetHandler((InvocationContext ctx) =>
@@ -87,10 +91,18 @@ class Program
             var skipResults = ctx.ParseResult.GetValueForOption(skipResultsOption);
             var noAuth = ctx.ParseResult.GetValueForOption(noAuthOption);
             var jsonProgress = ctx.ParseResult.GetValueForOption(jsonProgressOption);
+            var errorPolicyStr = (ctx.ParseResult.GetValueForOption(errorPolicyOption) ?? "continue").Trim().ToLowerInvariant();
+            var errorPolicy = errorPolicyStr switch
+            {
+                "abort" => ErrorPolicy.Abort,
+                "continue" or "" => ErrorPolicy.Continue,
+                _ => throw new ArgumentException($"--error-policy must be 'continue' or 'abort', got '{errorPolicyStr}'"),
+            };
 
             ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
-                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress);
+                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
+                errorPolicy);
         });
 
         return rootCommand.Invoke(args);
@@ -107,13 +119,14 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        bool skipResults, bool noAuth, bool jsonProgress)
+        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy)
     {
         try
         {
             return Run(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
-                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress);
+                logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
+                errorPolicy);
         }
         catch (Exception ex)
         {
@@ -138,7 +151,7 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        bool skipResults, bool noAuth, bool jsonProgress)
+        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy)
     {
         TextWriter info = jsonProgress ? Console.Error : Console.Out;
 
@@ -225,6 +238,7 @@ class Program
             info.WriteLine($"  Ramp time:   {rampTime}s");
             info.WriteLine($"  Replica:     {(string.IsNullOrEmpty(replica) ? "(default)" : replica)}");
             info.WriteLine($"  SkipResults: {skipResults}");
+            info.WriteLine($"  ErrorPolicy: {errorPolicy}");
             info.WriteLine($"  Log dir:     {logDir}");
             info.WriteLine($"  Token:       {token.Length} chars");
             info.WriteLine("═══════════════════════════════════════════════");
@@ -255,10 +269,10 @@ class Program
         return jsonProgress
             ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
-                logDir, logFile, skipResults, users)
+                logDir, logFile, skipResults, errorPolicy, users)
             : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
-                logDir, logFile, skipResults, users);
+                logDir, logFile, skipResults, errorPolicy, users);
     }
 
     // Legacy human-readable mode: stdout banner + log echo + PrintResults
@@ -267,7 +281,7 @@ class Program
     static int RunHumanReadable(string[] queries, string xmlaEndpoint, string dataset,
         string token, string[] emailArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
-        string logDir, string logFile, bool skipResults,
+        string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         (string email, string role)[] users)
     {
         string resultJson;
@@ -280,7 +294,8 @@ class Program
                 pauseIter, pauseQuery,
                 logDir, rampTime, logFile,
                 skipResults,
-                Console.WriteLine);
+                Console.WriteLine,
+                errorPolicy);
         }
         catch (Exception ex)
         {
@@ -301,7 +316,7 @@ class Program
     static int RunJsonProgress(string[] queries, string xmlaEndpoint, string dataset,
         string token, string[] emailArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
-        string logDir, string logFile, bool skipResults,
+        string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         (string email, string role)[] users)
     {
         var config = new LoadTestConfig
@@ -320,6 +335,7 @@ class Program
             UserRampTimeSec = rampTime,
             LogFileName = logFile,
             SkipResults = skipResults,
+            ErrorPolicy = errorPolicy,
             // Echo every QueryRunner log line to stderr so notebook
             // diagnostics work even when JSON parsing fails. Redact
             // the token in case any log line embeds a connection string.
