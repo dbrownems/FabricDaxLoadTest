@@ -67,7 +67,21 @@ def build_run():
     nb = new_notebook()
 
     md(nb, r"""
-# FabricDaxLoadTest — Run
+# FabricDaxLoadTest — LoadTest Template
+
+> ⚠️ **This is the template — do not edit or run this notebook in place.**
+>
+> 1. **File → Save As** (or right-click the notebook in the workspace → **Duplicate**).
+> 2. Rename the copy to `LoadTest - <descriptive name>` (e.g.
+>    `LoadTest - DIAD 5u baseline`). Keep it in the same `LoadTests` folder
+>    so it can find `LoadTests.Lakehouse`.
+> 3. Open the copy, edit cell **1**, and run.
+>
+> Why: `scripts/Deploy-LoadTests.ps1` overwrites this template on every
+> redeploy. Saved copies are yours forever — they document the exact
+> configuration of each run and stay reproducible across upgrades.
+
+---
 
 Drives concurrent DAX queries against a Power BI / Fabric semantic model via
 the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
@@ -79,18 +93,23 @@ This notebook lives in the workspace folder **`LoadTests`** alongside the
 - `Files/bin/`   — `LoadGen.dll` + ADOMD client dependencies (framework-dependent publish)
 - `Files/runs/`  — per-run telemetry CSVs (created on first run)
 - `Files/queries.json` — the corpus of DAX queries (managed via `Queries.ipynb`)
+- `Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables fed by cell 5b
 
-## How to use
+## How to use (in your saved copy)
 
 1. Edit cell **1** to point at the target workspace + dataset and tweak load
-   parameters.
+   parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` — these land
+   in the `LoadTests` dim and surface in the Power BI report.
 2. **Run All**. Cell **4** prints a live status line every second; press
    **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and
    drains cleanly.
-3. Cell **6** plots latency / QPS / users from the per-run CSV.
+3. Cell **5b** writes the run into the four Delta tables (idempotent — safe
+   to re-run; rows for this `RunId` are replaced).
+4. Cell **6** plots latency / QPS / users from the per-run CSV.
 
 > Re-deploy / upgrade the bits in `Files/bin/` by re-running
-> `scripts/Deploy-LoadTests.ps1` from a clone of the repo.
+> `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
+> `LoadTest - …` notebooks are not touched by the deploy.
 """)
 
     # 1. Configuration
@@ -135,6 +154,15 @@ import notebookutils
 ctx = notebookutils.runtime.context
 WS_ID   = ctx["currentWorkspaceId"]
 WS_NAME = ctx.get("currentWorkspaceName", WS_ID)
+
+# Self-check: this is a template — refuse to run unless saved under a new name.
+_self_name = (ctx.get("currentNotebookName") or "").strip()
+if _self_name == "LoadTest - Template":
+    raise RuntimeError(
+        "This is the LoadTest template. Save As → 'LoadTest - <name>' "
+        "and run that copy. Edits to the template are wiped on every "
+        "scripts/Deploy-LoadTests.ps1 redeploy."
+    )
 
 # Resolve LoadTests lakehouse — friendly-name support is disabled on some
 # OneLake tenants, so we look up the GUID via the Fabric items API and use

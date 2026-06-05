@@ -9,9 +9,12 @@
 
       * LoadTests.Lakehouse  — holds Files/bin/QueryRunner.dll + dependencies,
                                 Files/queries.json (DAX corpus),
-                                Files/runs/<runId>/ (per-run telemetry).
-      * Run.Notebook         — the runner; auto-discovers the lakehouse and
-                                drives concurrent DAX queries.
+                                Files/runs/<runId>/ (per-run telemetry),
+                                Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}.
+      * LoadTest - Template  — the runner template; users do **Save As** in the
+                                portal to produce per-test copies
+                                (`LoadTest - <descriptive name>`). Redeploys
+                                only overwrite the template, never user copies.
       * Queries.Notebook     — read/edit Files/queries.json.
 
     Everything is idempotent — re-run any time to refresh assemblies or
@@ -307,8 +310,21 @@ function Deploy-Notebook {
     }
 }
 
-Deploy-Notebook -Name "Run"     -IpynbPath (Join-Path $NotebooksDir "Run.ipynb")     `
-                -Description "FabricDaxLoadTest runner — drives concurrent DAX queries via XMLA."
+# ---- migration: rename pre-template "Run" notebook --------------------------
+# Prior versions deployed this as displayName="Run". Rename in-place so the
+# Deploy-Notebook call below updates the same item instead of leaving an
+# orphan. Safe to repeat: skipped after the first run.
+$preItems = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Notebook"
+$preRun   = $preItems.value | Where-Object { $_.displayName -eq "Run" -and $_.folderId -eq $folderId }
+if ($preRun) {
+    Step "Renaming legacy 'Run' notebook to 'LoadTest - Template'"
+    $body = @{ displayName = "LoadTest - Template" }
+    $null = Invoke-Fabric PATCH "/v1/workspaces/$wsId/notebooks/$($preRun.id)" -Body $body
+    Info "  Renamed id=$($preRun.id)"
+}
+
+Deploy-Notebook -Name "LoadTest - Template" -IpynbPath (Join-Path $NotebooksDir "Run.ipynb") `
+                -Description "FabricDaxLoadTest runner — TEMPLATE. Save As before editing/running."
 Deploy-Notebook -Name "Queries" -IpynbPath (Join-Path $NotebooksDir "Queries.ipynb") `
                 -Description "FabricDaxLoadTest query catalog editor (Files/queries.json)."
 
@@ -318,7 +334,10 @@ Write-Host ""
 Write-Host "Workspace : $Workspace ($wsId)" -ForegroundColor Green
 Write-Host "Folder    : $FolderName ($folderId)" -ForegroundColor Green
 Write-Host "Lakehouse : $LakehouseName.Lakehouse ($lhId)" -ForegroundColor Green
-Write-Host "Notebooks : Run, Queries" -ForegroundColor Green
+Write-Host "Notebooks : LoadTest - Template, Queries" -ForegroundColor Green
 Write-Host ""
-Write-Host "Open the workspace and run the 'Run' notebook to start a load test." -ForegroundColor White
+Write-Host "To start a new load test:" -ForegroundColor White
+Write-Host "  1. Open 'LoadTest - Template' in the workspace." -ForegroundColor White
+Write-Host "  2. File -> Save As -> 'LoadTest - <descriptive name>'." -ForegroundColor White
+Write-Host "  3. Edit cell 1 in the copy and Run All." -ForegroundColor White
 Write-Host "https://app.powerbi.com/groups/$wsId/list" -ForegroundColor White
