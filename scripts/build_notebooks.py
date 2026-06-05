@@ -1,4 +1,4 @@
-"""Generate notebooks/Run.ipynb and notebooks/Queries.ipynb.
+"""Generate notebooks/LoadTest-Template.ipynb and notebooks/Queries.ipynb.
 
 The notebooks are deployed into a `LoadTests` workspace folder by
 scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
@@ -61,7 +61,7 @@ def write(nb, path: Path):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Run.ipynb — the runner
+# LoadTest-Template.ipynb — the runner template
 # ────────────────────────────────────────────────────────────────────────────
 def build_run():
     nb = new_notebook()
@@ -744,7 +744,7 @@ ax3.legend(loc="upper left"); ax3.grid(True, alpha=0.3); ax3.set_ylim(bottom=0)
 plt.tight_layout(); plt.show()
 """)
 
-    write(nb, OUT / "Run.ipynb")
+    write(nb, OUT / "LoadTest-Template.ipynb")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -759,8 +759,8 @@ def build_queries():
 Manages the DAX query corpus stored at `Files/queries.json` in the
 **`LoadTests`** lakehouse (same workspace folder as this notebook).
 
-The `Run.ipynb` notebook reads this file by default. Inline overrides
-on `Run.ipynb` (`QUERIES_INLINE`) take precedence when set.
+The `LoadTest - Template` notebook reads this file by default. Inline overrides
+on `LoadTest - Template` (`QUERIES_INLINE`) take precedence when set.
 
 `queries.json` is either:
 

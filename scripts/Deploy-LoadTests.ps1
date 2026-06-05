@@ -34,7 +34,7 @@
     src/QueryRunner/bin/Release/net8.0/publish/.
 
 .PARAMETER SkipNotebooks
-    Skip rebuilding notebooks/Run.ipynb + notebooks/Queries.ipynb. The
+    Skip rebuilding notebooks/LoadTest-Template.ipynb + notebooks/Queries.ipynb. The
     deployed notebooks always come from the most-recent files on disk.
 
 .EXAMPLE
@@ -171,7 +171,7 @@ $totalKb = [int](( $published | Measure-Object Length -Sum).Sum / 1024)
 Info "Publish output: $($published.Count) files, $totalKb KiB"
 
 if (-not $SkipNotebooks) {
-    Step "Rebuilding notebooks (Run.ipynb + Queries.ipynb)"
+    Step "Rebuilding notebooks (LoadTest-Template.ipynb + Queries.ipynb)"
     Push-Location $RepoRoot
     try {
         & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
@@ -323,7 +323,7 @@ if ($preRun) {
     Info "  Renamed id=$($preRun.id)"
 }
 
-Deploy-Notebook -Name "LoadTest - Template" -IpynbPath (Join-Path $NotebooksDir "Run.ipynb") `
+Deploy-Notebook -Name "LoadTest - Template" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Template.ipynb") `
                 -Description "FabricDaxLoadTest runner — TEMPLATE. Save As before editing/running."
 Deploy-Notebook -Name "Queries" -IpynbPath (Join-Path $NotebooksDir "Queries.ipynb") `
                 -Description "FabricDaxLoadTest query catalog editor (Files/queries.json)."

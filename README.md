@@ -26,7 +26,7 @@ This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a rea
 |---|---|
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
 | `LoadGen.dll` / `LoadGen.exe` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` from the notebook (Linux Spark host) or as `LoadGen.exe` locally. |
-| `notebooks/Run.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → edit cell 1 → Run All. |
+| `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → edit cell 1 → Run All. |
 | `notebooks/Queries.ipynb` | Deployed as `Queries`. Editor for the lakehouse `Files/queries.json` corpus. |
 | `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, creates the folder + lakehouse, uploads bits, deploys both notebooks. |
 
@@ -114,7 +114,7 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
    | Asset | Purpose |
    |---|---|
    | `loadgen-bin.zip` | The LoadGen binaries (~3.5 MB, .NET 8, Linux). |
-   | `Run.ipynb` | The runner notebook (gets imported as `LoadTest - Template`). |
+   | `LoadTest-Template.ipynb` | The runner template (imports as `LoadTest - Template`). |
    | `Queries.ipynb` | Editor for the DAX query corpus. |
    | `queries.starter.json` | A one-line corpus to seed `queries.json`. |
 
@@ -135,7 +135,7 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
 
 6. **Import the notebooks** (workspace top bar → **Import → Notebook → From this computer**), placing both **inside the `LoadTests` folder**. After import:
 
-   - Rename `Run` → **`LoadTest - Template`** (the import uses the file name).
+   - Rename the imported `LoadTest-Template` to **`LoadTest - Template`** (with spaces around the hyphen — that's what cell 2 of the notebook checks for, and what the Save-As workflow expects).
    - Leave `Queries` named as-is.
 
 You're done. Verify by opening `LoadTest - Template` — cell 2 will detect the template name and refuse to run, prompting Save-As.

@@ -71,10 +71,10 @@ jobs:
 
       - name: Stage notebook + starter assets
         run: |
-          cp notebooks/Run.ipynb     ./Run.ipynb
-          cp notebooks/Queries.ipynb ./Queries.ipynb
+          cp notebooks/LoadTest-Template.ipynb ./LoadTest-Template.ipynb
+          cp notebooks/Queries.ipynb           ./Queries.ipynb
           printf '["EVALUATE ROW(\\"x\\", 1)"]' > queries.starter.json
-          ls -l Run.ipynb Queries.ipynb queries.starter.json
+          ls -l LoadTest-Template.ipynb Queries.ipynb queries.starter.json
 
       - name: Resolve release tag
         id: tag
@@ -94,7 +94,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             loadgen-bin.zip
-            Run.ipynb
+            LoadTest-Template.ipynb
             Queries.ipynb
             queries.starter.json
           body: |
@@ -104,7 +104,7 @@ jobs:
             |---|---|
             | `loadgen-bin.zip` | Extract → `LoadTests.Lakehouse/Files/bin/` |
             | `queries.starter.json` | Rename to `queries.json` → `LoadTests.Lakehouse/Files/queries.json` |
-            | `Run.ipynb` | Import to the `LoadTests` workspace folder, rename to **`LoadTest - Template`** |
+            | `LoadTest-Template.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Template`** automatically. |
             | `Queries.ipynb` | Import to the `LoadTests` workspace folder, keep the name `Queries` |
 
             For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.
