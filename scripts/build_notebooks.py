@@ -96,6 +96,9 @@ This notebook lives in the workspace folder **`LoadTests`** alongside the
     # 1. Configuration
     code(nb, r"""
 # ── 1. Configuration ──────────────────────────────────────────────────────────
+LOAD_TEST_NAME           = "my-load-test"  # human label written to LoadTests.Name
+LOAD_TEST_DESCRIPTION    = ""              # optional free text
+
 TARGET_WORKSPACE = "MyWorkspace"        # workspace hosting the semantic model
 TARGET_DATASET   = "My Semantic Model"  # semantic model display name
 
@@ -435,6 +438,222 @@ if result_envelope is not None:
     print(f"Run artifacts    : {RUN_DEST}")
 """)
 
+    # 5b. Persist run to Lakehouse Delta tables (§1.6 unified-trace ready)
+    code(nb, r"""
+# ── 5b. Persist run to Lakehouse Delta tables ────────────────────────────────
+# Writes 4 tables into the host Lakehouse:
+#   LoadTests                 — 1 row per logical test (MERGE on LoadTestId)
+#   LoadTestRuns              — 1 row per run (MERGE on RunId; OwnerType-keyed for §1.6)
+#   LoadTestQueries           — 1 row per (LoadTestId, QueryIndex) (insert-only)
+#   LoadTestQueryExecutions   — 1 row per query attempt (DELETE WHERE RunId / INSERT)
+#
+# TraceEvents / QueryCompleted / SecondBuckets tables are intentionally NOT
+# written here — those require Phase-1 trace capture, which is a separate
+# milestone. The schema is forward-compatible with §1.6: facts that will join
+# to trace events carry OwnerType/OwnerId/OwnerKey columns so the eventual
+# TraceOwners-driven slicer works without a migration.
+import hashlib
+from pyspark.sql import Row
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, LongType,
+    DoubleType, TimestampType,
+)
+from delta.tables import DeltaTable
+
+# --- discover identifiers --------------------------------------------------
+# LoadTestId == the Fabric notebook item GUID per §1.6 §Table 1. Fall back
+# to a deterministic UUID derived from (workspace, notebook name) if the
+# runtime doesn't expose the notebook id (e.g. running inline from a Livy
+# session that isn't backed by a saved notebook).
+import uuid as _uuid
+_notebook_id = ctx.get("currentNotebookId") or ctx.get("notebookId")
+if _notebook_id:
+    LOAD_TEST_ID = str(_notebook_id)
+else:
+    LOAD_TEST_ID = str(_uuid.uuid5(_uuid.NAMESPACE_URL,
+        f"fdlt://{WS_ID}/{LOAD_TEST_NAME}"))
+_notebook_name = ctx.get("currentNotebookName") or LOAD_TEST_NAME
+
+# --- corpus hash + per-query hashes ----------------------------------------
+def _hash_query(text: str) -> str:
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+query_hashes = [_hash_query(q) for q in queries]
+corpus_hash  = hashlib.sha256(
+    ("\u0001".join(query_hashes)).encode("utf-8")
+).hexdigest()
+
+# --- run-level rollups from the result envelope ----------------------------
+_summary = (result_envelope or {}).get("summary", {}) if result_envelope else {}
+_lat     = _summary.get("latency", {}) or {}
+_run_status = "Aborted" if (error_envelope is not None) else (
+    "Cancelled" if returncode == 130 else "Completed")
+_abort_reason = (error_envelope or {}).get("message") if error_envelope else None
+
+started_at = datetime.now(timezone.utc)  # approximate; real start was earlier
+# Prefer the run's actual UTC start from the first CSV row below.
+
+# --- read the per-query CSV ------------------------------------------------
+import pandas as _pd
+csv_path = os.path.join(RUN_LOCAL, LOG_FILE)
+_df = _pd.read_csv(csv_path)
+if len(_df) > 0:
+    started_at = _pd.to_datetime(_df["StartUtc"].min(), utc=True).to_pydatetime()
+    ended_at   = _pd.to_datetime(_df["EndUtc"].max(),   utc=True).to_pydatetime()
+else:
+    ended_at = started_at
+
+# --- write the lakehouse tables --------------------------------------------
+LH_TABLE_BASE = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}/Tables"
+
+def _table_path(name): return f"{LH_TABLE_BASE}/{name}"
+
+def _upsert(df, name, merge_keys):
+    path = _table_path(name)
+    if DeltaTable.isDeltaTable(spark, path):
+        tgt = DeltaTable.forPath(spark, path)
+        on = " AND ".join(f"t.{k}=s.{k}" for k in merge_keys)
+        (tgt.alias("t")
+            .merge(df.alias("s"), on)
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute())
+    else:
+        df.write.format("delta").mode("overwrite").save(path)
+
+def _replace_for_run(df, name, run_id):
+    path = _table_path(name)
+    if DeltaTable.isDeltaTable(spark, path):
+        DeltaTable.forPath(spark, path).delete(f"RunId = '{run_id}'")
+        df.write.format("delta").mode("append")\
+            .option("mergeSchema", "true").save(path)
+    else:
+        df.write.format("delta").mode("overwrite")\
+            .option("mergeSchema", "true").save(path)
+
+# LoadTests --------------------------------------------------------------
+load_tests_df = spark.createDataFrame([Row(
+    LoadTestId        = LOAD_TEST_ID,
+    Name              = LOAD_TEST_NAME,
+    Description       = LOAD_TEST_DESCRIPTION,
+    WorkspaceId       = WS_ID,
+    WorkspaceName     = WS_NAME,
+    NotebookId        = LOAD_TEST_ID,
+    NotebookName      = _notebook_name,
+    TargetWorkspace   = TARGET_WORKSPACE,
+    TargetDataset     = TARGET_DATASET,
+    SourceType        = "HandAuthored",
+    QueryCount        = len(queries),
+    QueryCorpusHash   = corpus_hash,
+    LastRunAtUtc      = started_at,
+    LastRunId         = RUN_ID,
+    Status            = "Active",
+)])
+_upsert(load_tests_df, "LoadTests", ["LoadTestId"])
+
+# LoadTestRuns (carries OwnerType/OwnerId/OwnerKey per §1.6) -------------
+runs_df = spark.createDataFrame([Row(
+    RunId            = RUN_ID,
+    LoadTestId       = LOAD_TEST_ID,
+    RunName          = LOAD_TEST_NAME,
+    OwnerType        = "LoadTestRun",
+    OwnerId          = RUN_ID,
+    OwnerKey         = f"LoadTestRun/{RUN_ID}",
+    QueryCorpusHash  = corpus_hash,
+    StartedAtUtc     = started_at,
+    EndedAtUtc       = ended_at,
+    WorkspaceName    = TARGET_WORKSPACE,
+    DatasetName      = TARGET_DATASET,
+    XmlaEndpoint     = xmla,
+    Replica          = TARGET_REPLICA or "",
+    UserCount        = int(CONCURRENT_USERS),
+    DurationSec      = int(DURATION_SECONDS),
+    RampSec          = int(USER_RAMP_TIME_SEC),
+    QueriesPerBatch  = int(QUERIES_PER_BATCH),
+    PauseIterMs      = int(PAUSE_BETWEEN_ITERATIONS_MS),
+    PauseQueryMs     = int(PAUSE_BETWEEN_QUERIES_MS),
+    SkipResults      = bool(SKIP_RESULTS),
+    TotalQueries     = int(_summary.get("totalExecutions")     or len(_df)),
+    SuccessfulQueries= int(_summary.get("successfulExecutions") or int((_df["Outcome"]=="Success").sum()) if len(_df) else 0),
+    FailedQueries    = int(_summary.get("failedExecutions")    or int((_df["Outcome"]=="Error").sum())   if len(_df) else 0),
+    Qps              = float(_summary.get("qps") or 0.0),
+    Status           = _run_status,
+    AbortReason      = _abort_reason,
+    P50Ms            = float(_lat.get("median") or 0.0),
+    P95Ms            = float(_lat.get("p95")    or 0.0),
+    P99Ms            = float(_lat.get("p99")    or 0.0),
+    MeanMs           = float(_lat.get("mean")   or 0.0),
+)])
+_upsert(runs_df, "LoadTestRuns", ["RunId"])
+
+# LoadTestQueries (insert-only per LoadTestId/QueryIndex pair) -----------
+queries_rows = [Row(
+    LoadTestId = LOAD_TEST_ID,
+    QueryIndex = i,
+    QueryHash  = query_hashes[i],
+    QueryText  = queries[i],
+    SourceType = "HandAuthored",
+) for i in range(len(queries))]
+if queries_rows:
+    queries_df = spark.createDataFrame(queries_rows)
+    _upsert(queries_df, "LoadTestQueries", ["LoadTestId", "QueryIndex"])
+
+# LoadTestQueryExecutions (the big fact) ---------------------------------
+if len(_df) > 0:
+    _df2 = _df.copy()
+    _df2["StartUtc"] = _pd.to_datetime(_df2["StartUtc"], utc=True)
+    _df2["EndUtc"]   = _pd.to_datetime(_df2["EndUtc"],   utc=True)
+    # join QueryHash from the local list (notebook is authoritative)
+    _df2["QueryHash"] = _df2["QueryIndex"].apply(
+        lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
+    exec_schema = StructType([
+        StructField("RunId",              StringType(),    False),
+        StructField("LoadTestId",         StringType(),    False),
+        StructField("UserIndex",          IntegerType(),   False),
+        StructField("UserEmail",          StringType(),    True),
+        StructField("QueryIndex",         IntegerType(),   False),
+        StructField("QueryHash",          StringType(),    True),
+        StructField("Iteration",          IntegerType(),   False),
+        StructField("StartUtc",           TimestampType(), False),
+        StructField("EndUtc",             TimestampType(), True),
+        StructField("StartTimeMs",        DoubleType(),    True),
+        StructField("ClientDurationMs",   DoubleType(),    True),
+        StructField("Outcome",            StringType(),    False),
+        StructField("RowCount",           IntegerType(),   True),
+        StructField("ResponseBytes",      LongType(),      True),
+        StructField("ErrorMessage",       StringType(),    True),
+        StructField("ActiveUsersAtStart", IntegerType(),   True),
+    ])
+    rows = [Row(
+        RunId              = str(r["RunId"]),
+        LoadTestId         = LOAD_TEST_ID,
+        UserIndex          = int(r["UserIndex"]),
+        UserEmail          = str(r["UserEmail"]) if _pd.notna(r["UserEmail"]) else None,
+        QueryIndex         = int(r["QueryIndex"]),
+        QueryHash          = r["QueryHash"],
+        Iteration          = int(r["Iteration"]),
+        StartUtc           = r["StartUtc"].to_pydatetime(),
+        EndUtc             = r["EndUtc"].to_pydatetime() if _pd.notna(r["EndUtc"]) else None,
+        StartTimeMs        = float(r["StartTimeMs"]) if _pd.notna(r["StartTimeMs"]) else None,
+        ClientDurationMs   = float(r["DurationMs"])  if _pd.notna(r["DurationMs"]) else None,
+        Outcome            = str(r["Outcome"]),
+        RowCount           = int(r["RowCount"])      if _pd.notna(r["RowCount"]) else None,
+        ResponseBytes      = int(r["ResponseBytes"]) if _pd.notna(r["ResponseBytes"]) else None,
+        ErrorMessage       = (str(r["ErrorMessage"]) if _pd.notna(r["ErrorMessage"]) and str(r["ErrorMessage"]) else None),
+        ActiveUsersAtStart = int(r["ActiveUsersAtStart"]) if _pd.notna(r["ActiveUsersAtStart"]) else None,
+    ) for _, r in _df2.iterrows()]
+    exec_df = spark.createDataFrame(rows, schema=exec_schema)
+    _replace_for_run(exec_df, "LoadTestQueryExecutions", RUN_ID)
+
+print(f"\n=== Lakehouse write OK ===")
+print(f"  LoadTestId : {LOAD_TEST_ID}")
+print(f"  RunId      : {RUN_ID}")
+print(f"  Queries    : {len(queries)} (corpus hash {corpus_hash[:12]}...)")
+print(f"  Executions : {len(_df):,}")
+print(f"  Tables     : LoadTests, LoadTestRuns, LoadTestQueries, LoadTestQueryExecutions")
+print(f"  Lakehouse  : {LAKEHOUSE_NAME} ({LH_ID})")
+""")
+
     # 6. Charts
     code(nb, r"""
 # ── 6. Charts ─────────────────────────────────────────────────────────────────
@@ -458,7 +677,7 @@ agg = ok.groupby("bucket").agg(
     t=("StartTimeMs", "mean"),
 ).reset_index()
 errs  = err.groupby("bucket").agg(err_count=("DurationMs", "count")).reset_index()
-users = df.groupby("bucket").agg(active_users=("ActiveUsers", "max")).reset_index()
+users = df.groupby("bucket").agg(active_users=("ActiveUsersAtStart", "max")).reset_index()
 agg = agg.merge(errs, on="bucket", how="left").merge(users, on="bucket", how="left").fillna(0)
 agg["time_s"] = (agg.t - t_min) / 1000
 
@@ -469,7 +688,7 @@ ax1.plot(agg.time_s, agg.mean_ms, color="steelblue", linewidth=1.5, label="mean"
 ax1.plot(agg.time_s, agg.max_ms,  color="coral",     linewidth=0.8, alpha=0.7, label="max")
 ax1.set_ylabel("Latency (ms)"); ax1.legend(loc="upper left"); ax1.grid(True, alpha=0.3)
 ax1.set_title(f"Run {RUN_ID} — {len(df):,} queries / {duration_s:.0f}s / "
-              f"{int(df.ActiveUsers.max())} concurrent users")
+              f"{int(df.ActiveUsersAtStart.max())} concurrent users")
 
 bw = duration_s / n_buckets if n_buckets > 0 else 1
 ax2.bar(agg.time_s, agg["count"] / bw, width=bw * 0.9, color="steelblue", alpha=0.6, label="QPS (success)")
