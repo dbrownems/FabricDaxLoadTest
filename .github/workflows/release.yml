@@ -1,0 +1,110 @@
+name: Release
+
+# Cuts a GitHub Release with the artifacts needed for the manual setup
+# path documented in README.md. Trigger on a version tag:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Or run manually via workflow_dispatch with a tag input.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.0). Must already exist on the branch.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install notebook deps
+        run: pip install nbformat
+
+      - name: Publish LoadGen (linux-x64, framework-dependent)
+        # Same flags as scripts/Deploy-LoadTests.ps1 — Fabric Spark hosts
+        # have the .NET 8 runtime bundled via sempy. UseAppHost=false skips
+        # the per-RID native binary so no chmod is required after upload.
+        run: |
+          dotnet publish src/LoadGen/LoadGen.csproj \
+            -c Release -r linux-x64 \
+            -p:SelfContained=false \
+            -p:PublishSingleFile=false \
+            -p:UseAppHost=false \
+            --nologo
+
+      - name: Regenerate notebooks
+        # Build the .ipynb files from the in-repo Python source so the
+        # release artifacts match the tagged commit deterministically,
+        # regardless of whether contributors remembered to commit a fresh
+        # regeneration.
+        run: python scripts/build_notebooks.py
+
+      - name: Package loadgen-bin.zip
+        run: |
+          cd src/LoadGen/bin/Release/net8.0/linux-x64/publish
+          zip -r "$GITHUB_WORKSPACE/loadgen-bin.zip" .
+          ls -lh "$GITHUB_WORKSPACE/loadgen-bin.zip"
+
+      - name: Stage notebook + starter assets
+        run: |
+          cp notebooks/Run.ipynb     ./Run.ipynb
+          cp notebooks/Queries.ipynb ./Queries.ipynb
+          printf '["EVALUATE ROW(\\"x\\", 1)"]' > queries.starter.json
+          ls -l Run.ipynb Queries.ipynb queries.starter.json
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            loadgen-bin.zip
+            Run.ipynb
+            Queries.ipynb
+            queries.starter.json
+          body: |
+            **Manual-deployment artifacts** (see [README — Option B: Manual setup](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/README.md#option-b--manual-setup)).
+
+            | Asset | Where it goes |
+            |---|---|
+            | `loadgen-bin.zip` | Extract → `LoadTests.Lakehouse/Files/bin/` |
+            | `queries.starter.json` | Rename to `queries.json` → `LoadTests.Lakehouse/Files/queries.json` |
+            | `Run.ipynb` | Import to the `LoadTests` workspace folder, rename to **`LoadTest - Template`** |
+            | `Queries.ipynb` | Import to the `LoadTests` workspace folder, keep the name `Queries` |
+
+            For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.

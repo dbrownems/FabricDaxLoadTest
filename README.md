@@ -107,40 +107,40 @@ Useful flags:
 
 ### Option B — Manual setup
 
-If you can't run the deploy script (no local CLIs, restricted network, etc.), you can build the layout above by hand. You still need the .NET 8 SDK to build LoadGen once.
+For users who can't run the deploy script (no local CLIs, restricted network, no .NET SDK on their machine, etc.). Pre-built artifacts are attached to every [GitHub Release](https://github.com/dbrownems/FabricDaxLoadTest/releases) — no compilation required.
 
-1. **Build the LoadGen bundle** locally:
+1. **Download the latest release assets** from the [Releases page](https://github.com/dbrownems/FabricDaxLoadTest/releases/latest):
 
-   ```pwsh
-   git clone https://github.com/dbrownems/FabricDaxLoadTest.git
-   cd FabricDaxLoadTest
-   dotnet publish src/LoadGen/LoadGen.csproj -c Release -r linux-x64 `
-     -p:SelfContained=false -p:PublishSingleFile=false -p:UseAppHost=false
-   ```
+   | Asset | Purpose |
+   |---|---|
+   | `loadgen-bin.zip` | The LoadGen binaries (~3.5 MB, .NET 8, Linux). |
+   | `Run.ipynb` | The runner notebook (gets imported as `LoadTest - Template`). |
+   | `Queries.ipynb` | Editor for the DAX query corpus. |
+   | `queries.starter.json` | A one-line corpus to seed `queries.json`. |
 
-   Output ends up at `src\LoadGen\bin\Release\net8.0\linux-x64\publish\` — about 12 files, ~3.5 MB. (Linux because Fabric Spark hosts are Linux; framework-dependent because the .NET 8 runtime is already on the host. `UseAppHost=false` means no native binary, so no `chmod` step needed after upload.)
+   Extract `loadgen-bin.zip` into a local folder — you should see `LoadGen.dll`, `QueryRunner.dll`, `Microsoft.AnalysisServices.AdomdClient.dll`, and ~9 other dependency DLLs.
 
 2. **In your Fabric workspace** (portal): create a workspace folder named **`LoadTests`** (workspace top bar → **New folder**).
 
 3. **Inside that folder**, create a Lakehouse named **`LoadTests`** (**+ New item → Lakehouse**, schema preview off is fine).
 
-4. **Upload the LoadGen bundle** to `LoadTests.Lakehouse/Files/bin/`. Two easy options:
+4. **Upload the LoadGen bundle** to `LoadTests.Lakehouse/Files/bin/`:
 
-   - **OneLake File Explorer** (Windows) — sync the workspace, copy the publish output into `LoadTests/LoadTests.Lakehouse/Files/bin/`.
-   - **Fabric CLI** — `fab cp -R src/LoadGen/bin/Release/net8.0/linux-x64/publish/ "/<workspace>.workspace/LoadTests.lakehouse/Files/bin/"`.
+   - In the lakehouse explorer, right-click **Files → New folder** → `bin`.
+   - Right-click `bin` → **Upload → Upload files** and select all DLLs from the extracted `loadgen-bin.zip`.
 
-5. **Seed `queries.json`** at `LoadTests.Lakehouse/Files/queries.json` — start with a one-line corpus and edit later from the `Queries` notebook:
+   Alternative: [OneLake File Explorer](https://www.microsoft.com/download/details.aspx?id=105222) (Windows) — sync the workspace, then drag-drop the extracted folder into `LoadTests/LoadTests.Lakehouse/Files/bin/`.
 
-   ```json
-   ["EVALUATE ROW(\"x\", 1)"]
-   ```
+5. **Seed `queries.json`** at `LoadTests.Lakehouse/Files/queries.json`: rename the downloaded `queries.starter.json` to `queries.json` and upload it directly under `Files/`. (You'll edit the corpus from the `Queries` notebook later.)
 
-6. **Import the notebooks** from `notebooks/` in this repo (workspace top bar → **Import → Notebook → From this computer**), placing both **inside the `LoadTests` folder**. After import:
+6. **Import the notebooks** (workspace top bar → **Import → Notebook → From this computer**), placing both **inside the `LoadTests` folder**. After import:
 
    - Rename `Run` → **`LoadTest - Template`** (the import uses the file name).
    - Leave `Queries` named as-is.
 
 You're done. Verify by opening `LoadTest - Template` — cell 2 will detect the template name and refuse to run, prompting Save-As.
+
+> **Updating later.** When a new release ships, repeat steps 1, 4, and 6 only — the folder, lakehouse, and `queries.json` you already have stay put. Saved `LoadTest - <name>` notebooks are untouched.
 
 ---
 
@@ -293,6 +293,17 @@ python scripts/build_notebooks.py
 ```
 
 Always commit the regenerated `notebooks/*.ipynb` so non-builders can deploy from a fresh clone.
+
+### Cutting a release
+
+Releases are produced by `.github/workflows/release.yml` on any version tag push:
+
+```pwsh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, packages `loadgen-bin.zip` + the regenerated notebooks + a starter `queries.json`, and creates a GitHub Release with auto-generated notes. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
 
 ## License
 
