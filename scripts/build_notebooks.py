@@ -92,20 +92,26 @@ This notebook lives in the workspace folder **`LoadTests`** alongside the
 
 - `Files/bin/`   — `LoadGen.dll` + ADOMD client dependencies (framework-dependent publish)
 - `Files/runs/`  — per-run telemetry CSVs (created on first run)
-- `Files/queries.json` — the corpus of DAX queries (managed via `Queries.ipynb`)
+- `Files/queries.json` — *fallback* shared DAX corpus (managed via `Queries.ipynb`); used when the saved copy has no resource attached
 - `Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables fed by cell 5b
 
 ## How to use (in your saved copy)
 
-1. Edit cell **1** to point at the target workspace + dataset and tweak load
-   parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` — these land
-   in the `LoadTests` dim and surface in the Power BI report.
-2. **Run All**. Cell **4** prints a live status line every second; press
-   **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and
-   drains cleanly.
-3. Cell **5b** writes the run into the four Delta tables (idempotent — safe
-   to re-run; rows for this `RunId` are replaced).
-4. Cell **6** plots latency / QPS / users from the per-run CSV.
+1. **Drop your DAX corpus onto the notebook's *Resources* panel** as
+   `queries.json` (or any name; set `QUERIES_FILE` in cell 1 to match).
+   This is the canonical workflow — the corpus travels with the saved
+   notebook so each `LoadTest - <name>` is reproducible without coupling
+   to the shared catalog. If the file is absent from resources, cell 3
+   falls back to `LoadTests.Lakehouse/Files/<QUERIES_FILE>`.
+2. Edit cell **1** to point at the target workspace + dataset and tweak
+   load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
+   these land in the `LoadTests` dim and surface in the Power BI report.
+3. **Run All**. Cell **4** prints a live status line every second; press
+   **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT
+   and drains cleanly.
+4. Cell **5b** writes the run into the four Delta tables (idempotent —
+   safe to re-run; rows for this `RunId` are replaced).
+5. Cell **6** plots latency / QPS / users from the per-run CSV.
 
 > Re-deploy / upgrade the bits in `Files/bin/` by re-running
 > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
@@ -130,9 +136,21 @@ USER_RAMP_TIME_SEC       = 15
 TARGET_REPLICA           = ""       # "readonly" → scale-out read replica
 SKIP_RESULTS             = False    # True drains rows without parsing
 
-# Optional inline override; if empty, we read Files/queries.json from this
-# notebook's lakehouse.
+# Optional inline override; if non-empty wins over QUERIES_FILE below.
 QUERIES_INLINE = []     # e.g. ["EVALUATE ROW(\"x\", 1)"]
+
+# Path to the DAX query corpus.
+#
+# Canonical workflow: drop the file onto this notebook's *Resources* panel
+# as `queries.json` (or any name — set this parameter to match). Cell 3
+# resolves `QUERIES_FILE` in this order:
+#
+#   1. notebook resources (`builtin/<QUERIES_FILE>`) — preferred; the
+#      corpus travels with the saved `LoadTest - <name>` notebook.
+#   2. lakehouse `Files/<QUERIES_FILE>` — fallback; shared catalog edited
+#      via the `Queries` notebook.
+#   3. literal `abfss://…` URL — escape hatch for cross-lakehouse refs.
+QUERIES_FILE = "queries.json"
 
 # Optional inline users; if empty, all virtual users share the interactive
 # token's identity (no role / CustomData impersonation). Each entry is
@@ -241,14 +259,28 @@ print(f"dotnet    : {DOTNET}")
 import time, uuid
 from datetime import datetime, timezone
 
-# Queries — inline override or Files/queries.json
+# Queries — inline override; else notebook resources (canonical); else
+# lakehouse Files/ fallback; else literal abfss:// URL.
 if QUERIES_INLINE:
     queries = list(QUERIES_INLINE)
+    queries_source = "(inline)"
 else:
-    qpath = f"{LH_ABFSS}/Files/queries.json"
-    raw = notebookutils.fs.head(qpath, 1024 * 1024 * 4)   # up to 4 MB
+    if QUERIES_FILE.startswith("abfss://"):
+        raw = notebookutils.fs.head(QUERIES_FILE, 1024 * 1024 * 4)
+        queries_source = QUERIES_FILE
+    else:
+        # Notebook resources are mounted at ./builtin/ in the kernel's CWD.
+        res_path = f"builtin/{QUERIES_FILE.lstrip('/')}"
+        if os.path.exists(res_path):
+            with open(res_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+            queries_source = f"resources:{res_path}"
+        else:
+            qpath = f"{LH_ABFSS}/Files/{QUERIES_FILE.lstrip('/')}"
+            raw = notebookutils.fs.head(qpath, 1024 * 1024 * 4)
+            queries_source = qpath
     queries = [q if isinstance(q, str) else q["query"] for q in json.loads(raw)]
-print(f"Queries : {len(queries)}")
+print(f"Queries : {len(queries)}  from {queries_source}")
 
 # Users — round-robin to CONCURRENT_USERS
 if USERS_INLINE:
@@ -756,13 +788,21 @@ def build_queries():
     md(nb, r"""
 # FabricDaxLoadTest — Queries
 
-Manages the DAX query corpus stored at `Files/queries.json` in the
-**`LoadTests`** lakehouse (same workspace folder as this notebook).
+Editor for the **shared** DAX query catalog at
+`LoadTests.Lakehouse/Files/queries.json`. This file is the *fallback*
+that `LoadTest - <name>` notebooks use when no `queries.json` is
+attached to their own *Resources* panel.
 
-The `LoadTest - Template` notebook reads this file by default. Inline overrides
-on `LoadTest - Template` (`QUERIES_INLINE`) take precedence when set.
+> **Per-test corpora belong in notebook resources, not here.** The
+> canonical workflow is: in your `LoadTest - <name>` copy, drag the
+> per-test `queries.json` onto the Resources panel — it travels with
+> the saved notebook and the run is reproducible without depending on
+> the shared catalog.
+>
+> Use this notebook only to edit the shared default that newly-created
+> `LoadTest - <name>` copies pick up before they're customised.
 
-`queries.json` is either:
+The catalog file is either:
 
 - a JSON list of strings: `["EVALUATE ROW(\"x\", 1)", ...]`, or
 - a JSON list of objects with a `query` key:
@@ -771,12 +811,18 @@ on `LoadTest - Template` (`QUERIES_INLINE`) take precedence when set.
 """)
 
     code(nb, r"""
-# ── 1. Locate the LoadTests lakehouse ─────────────────────────────────────────
+# ── 1. Configuration ──────────────────────────────────────────────────────────
+# Path to the query corpus, relative to `LoadTests.Lakehouse/Files/`. Use
+# `queries.json` (default) for the shared catalog, or a per-test path like
+# `tests/diad-baseline/queries.json`. An absolute `abfss://…` URL is also
+# accepted as an escape hatch.
+QUERIES_FILE = "queries.json"
+
 import json, notebookutils
 ctx = notebookutils.runtime.context
 WS_ID = ctx["currentWorkspaceId"]
 LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/LoadTests.Lakehouse"
-QPATH = f"{LH_ABFSS}/Files/queries.json"
+QPATH = QUERIES_FILE if QUERIES_FILE.startswith("abfss://") else f"{LH_ABFSS}/Files/{QUERIES_FILE.lstrip('/')}"
 print(f"Lakehouse: {LH_ABFSS}")
 print(f"Catalog  : {QPATH}")
 """)

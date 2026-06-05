@@ -27,7 +27,7 @@ This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a rea
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
 | `LoadGen.dll` / `LoadGen.exe` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` from the notebook (Linux Spark host) or as `LoadGen.exe` locally. |
 | `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → edit cell 1 → Run All. |
-| `notebooks/Queries.ipynb` | Deployed as `Queries`. Editor for the lakehouse `Files/queries.json` corpus. |
+| `notebooks/Queries.ipynb` | Deployed as `Queries`. Editor for the **shared** lakehouse `Files/queries.json` fallback. (Per-test corpora live in each `LoadTest - <name>` notebook's Resources panel.) |
 | `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, creates the folder + lakehouse, uploads bits, deploys both notebooks. |
 
 ## Status
@@ -150,7 +150,8 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
 
 1. Open `LoadTest - Template` in the workspace.
 2. **File → Save As** (or right-click in the workspace → **Duplicate**) and rename the copy to something descriptive — e.g. `LoadTest - DIAD 5u baseline`. Keep it in the `LoadTests` folder.
-3. Open the copy. Edit cell **1**:
+3. **Drag your `queries.json` onto the *Resources* panel** in the saved copy (left sidebar in the notebook). This is the canonical workflow — the corpus travels with the saved notebook so each `LoadTest - <name>` is reproducible without coupling to the shared catalog. Skip this step to use the shared `Files/queries.json` fallback.
+4. Open the copy. Edit cell **1**:
 
    ```python
    LOAD_TEST_NAME           = "DIAD 5u baseline"
@@ -168,7 +169,8 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
    TARGET_REPLICA           = ""        # "readonly" → scale-out read replica
    SKIP_RESULTS             = False
 
-   QUERIES_INLINE = []                  # [] → read Files/queries.json
+   QUERIES_INLINE = []                  # [] → read QUERIES_FILE
+   QUERIES_FILE   = "queries.json"      # path under Files/ (e.g. "tests/diad/queries.json")
    USERS_INLINE   = []                  # [] → all users share the interactive identity
    ```
 
@@ -180,7 +182,24 @@ After the run, the Delta tables are queryable as a Direct Lake source — point 
 
 ### Editing the query corpus
 
-Open the `Queries` notebook to read or replace `Files/queries.json`. The runner notebook reads this file by default; setting `QUERIES_INLINE` in cell 1 overrides it for that one run only.
+Two patterns:
+
+- **Per-test corpus (canonical, recommended).** In your saved
+  `LoadTest - <name>` copy, drag a `queries.json` onto the notebook's
+  **Resources** panel (left sidebar). Cell 3 finds it at
+  `builtin/queries.json` automatically — the corpus travels with the
+  saved notebook so each test stays reproducible. Use a different
+  filename and set `QUERIES_FILE = "<name>.json"` in cell 1 if you
+  prefer.
+- **Shared fallback.** If no resource is attached, cell 3 falls back to
+  `LoadTests.Lakehouse/Files/queries.json`. Edit that file via the
+  `Queries` notebook to set the default seen by every newly-created
+  `LoadTest - …` copy that hasn't yet attached its own.
+
+`QUERIES_INLINE` in the runner notebook overrides both — useful for
+one-off runs that don't justify a corpus file. An absolute `abfss://…`
+URL in `QUERIES_FILE` is also accepted as an escape hatch for
+cross-lakehouse references.
 
 ### RLS / impersonation
 
