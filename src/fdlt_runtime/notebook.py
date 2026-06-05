@@ -129,6 +129,7 @@ def run(
     pause_between_queries_ms: int = 0,
     user_ramp_time_sec: int = 15,
     skip_results: bool = False,
+    enable_tracing: bool = True,
     # Scenario
     queries_file: Optional[str] = None,
     queries_inline: Optional[Sequence[str]] = None,
@@ -182,6 +183,7 @@ def run(
         pause_between_queries_ms=int(pause_between_queries_ms),
         user_ramp_time_sec=int(user_ramp_time_sec),
         skip_results=bool(skip_results),
+        enable_tracing=bool(enable_tracing),
         queries=queries, users=users,
         token=boot.token,
     )
@@ -234,8 +236,9 @@ def run(
         print(f"  Queries    : {write_summary.queries_written} "
               f"(scenario hash {write_summary.scenario_hash[:12]}...)")
         print(f"  Executions : {write_summary.executions_written:,}")
+        print(f"  Trace evts : {write_summary.trace_events_written:,}")
         print("  Tables     : LoadTests, LoadTestRuns, LoadTestQueries, "
-              "LoadTestQueryExecutions")
+              "LoadTestQueryExecutions, LoadTestTraceEvents")
         print(f"  Lakehouse  : {boot.lakehouse.lakehouse_name} "
               f"({boot.lakehouse.lakehouse_id})  "
               f"base={boot.lakehouse.table_base}")

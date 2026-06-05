@@ -60,6 +60,10 @@ class Program
         var errorPolicyOption = new Option<string>("--error-policy", () => "continue",
             "How to handle per-query errors. 'continue' (default): record and keep running so the run reports an error rate. " +
             "'abort': throw on the first per-query error and fail the run. Infrastructure failures always abort regardless.");
+        var noTraceOption = new Option<bool>("--no-trace", () => false,
+            "Disable XMLA trace subscription. By default, the run subscribes to engine trace events " +
+            "(QueryEnd, ExecutionMetrics, VertiPaq SE) for the dataset and writes them to a *.trace.csv. " +
+            "Use --no-trace if the principal lacks Build/Read trace permissions or the run is sensitive.");
 
         var rootCommand = new RootCommand("LoadGen — DAX load test runner for Power BI / Fabric semantic models")
         {
@@ -68,7 +72,7 @@ class Program
             rampOption, replicaOption, queriesFileOption, usersFileOption,
             logDirOption, logFileOption, tokenOption, tokenFileOption,
             skipResultsOption, noAuthOption, jsonProgressOption,
-            errorPolicyOption,
+            errorPolicyOption, noTraceOption,
         };
 
         rootCommand.SetHandler((InvocationContext ctx) =>
@@ -98,11 +102,12 @@ class Program
                 "continue" or "" => ErrorPolicy.Continue,
                 _ => throw new ArgumentException($"--error-policy must be 'continue' or 'abort', got '{errorPolicyStr}'"),
             };
+            var noTrace = ctx.ParseResult.GetValueForOption(noTraceOption);
 
             ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
                 logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
-                errorPolicy);
+                errorPolicy, enableTracing: !noTrace);
         });
 
         return rootCommand.Invoke(args);
@@ -119,14 +124,15 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy)
+        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy,
+        bool enableTracing)
     {
         try
         {
             return Run(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
                 logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
-                errorPolicy);
+                errorPolicy, enableTracing);
         }
         catch (Exception ex)
         {
@@ -151,7 +157,8 @@ class Program
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy)
+        bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy,
+        bool enableTracing)
     {
         TextWriter info = jsonProgress ? Console.Error : Console.Out;
 
@@ -239,6 +246,7 @@ class Program
             info.WriteLine($"  Replica:     {(string.IsNullOrEmpty(replica) ? "(default)" : replica)}");
             info.WriteLine($"  SkipResults: {skipResults}");
             info.WriteLine($"  ErrorPolicy: {errorPolicy}");
+            info.WriteLine($"  Tracing:     {(enableTracing ? "enabled" : "disabled")}");
             info.WriteLine($"  Log dir:     {logDir}");
             info.WriteLine($"  Token:       {token.Length} chars");
             info.WriteLine("═══════════════════════════════════════════════");
@@ -269,10 +277,10 @@ class Program
         return jsonProgress
             ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
-                logDir, logFile, skipResults, errorPolicy, users)
+                logDir, logFile, skipResults, errorPolicy, enableTracing, users)
             : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
-                logDir, logFile, skipResults, errorPolicy, users);
+                logDir, logFile, skipResults, errorPolicy, enableTracing, users);
     }
 
     // Legacy human-readable mode: stdout banner + log echo + PrintResults
@@ -282,6 +290,7 @@ class Program
         string token, string[] emailArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
+        bool enableTracing,
         (string email, string role)[] users)
     {
         string resultJson;
@@ -295,7 +304,8 @@ class Program
                 logDir, rampTime, logFile,
                 skipResults,
                 Console.WriteLine,
-                errorPolicy);
+                errorPolicy,
+                enableTracing);
         }
         catch (Exception ex)
         {
@@ -317,6 +327,7 @@ class Program
         string token, string[] emailArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
+        bool enableTracing,
         (string email, string role)[] users)
     {
         var config = new LoadTestConfig
@@ -336,6 +347,7 @@ class Program
             LogFileName = logFile,
             SkipResults = skipResults,
             ErrorPolicy = errorPolicy,
+            EnableTracing = enableTracing,
             // Echo every QueryRunner log line to stderr so notebook
             // diagnostics work even when JSON parsing fails. Redact
             // the token in case any log line embeds a connection string.

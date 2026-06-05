@@ -39,6 +39,7 @@ class WriteSummary:
     scenario_hash: str
     queries_written: int
     executions_written: int
+    trace_events_written: int
     table_base: str
 
 
@@ -275,6 +276,50 @@ def write_run(
         exec_df = None
         executions_written = 0
 
+    # LoadTestTraceEvents — engine-side XMLA trace events captured by
+    # TraceSubscriber (best-effort). Empty when --no-trace was set or
+    # the trace failed to start. Schema mirrors the C# CSV emitter.
+    trace_df = None
+    trace_events_written = 0
+    import os as _os
+    if run.trace_csv_path and _os.path.exists(run.trace_csv_path):
+        try:
+            tdf = pd.read_csv(run.trace_csv_path)
+        except pd.errors.EmptyDataError:
+            tdf = pd.DataFrame()
+        if len(tdf) > 0:
+            tdf["UtcTimestamp"] = pd.to_datetime(tdf["UtcTimestamp"], utc=True)
+            trace_schema = StructType([
+                StructField("RunId",            StringType(),    False),
+                StructField("LoadTestId",       StringType(),    False),
+                StructField("UtcTimestamp",     TimestampType(), False),
+                StructField("EventClass",       StringType(),    True),
+                StructField("DurationMs",       LongType(),      True),
+                StructField("CpuMs",            LongType(),      True),
+                StructField("ApplicationName",  StringType(),    True),
+                StructField("UserName",         StringType(),    True),
+                StructField("SessionId",        StringType(),    True),
+                StructField("RequestId",        StringType(),    True),
+                StructField("DatabaseName",     StringType(),    True),
+                StructField("TextData",         StringType(),    True),
+            ])
+            trace_rows = [Row(
+                RunId=run_id,
+                LoadTestId=load_test_id,
+                UtcTimestamp=r["UtcTimestamp"].to_pydatetime(),
+                EventClass=str(r["EventClass"]) if pd.notna(r["EventClass"]) else None,
+                DurationMs=int(r["DurationMs"]) if pd.notna(r["DurationMs"]) else None,
+                CpuMs=int(r["CpuMs"]) if pd.notna(r["CpuMs"]) else None,
+                ApplicationName=str(r["ApplicationName"]) if pd.notna(r["ApplicationName"]) else None,
+                UserName=str(r["UserName"]) if pd.notna(r["UserName"]) else None,
+                SessionId=str(r["SessionId"]) if pd.notna(r["SessionId"]) else None,
+                RequestId=str(r["RequestId"]) if pd.notna(r["RequestId"]) else None,
+                DatabaseName=str(r["DatabaseName"]) if pd.notna(r["DatabaseName"]) else None,
+                TextData=str(r["TextData"]) if pd.notna(r["TextData"]) else None,
+            ) for _, r in tdf.iterrows()]
+            trace_df = spark.createDataFrame(trace_rows, schema=trace_schema)
+            trace_events_written = len(trace_rows)
+
     # Fan out the writes. Each task is independent (different Delta path,
     # no foreign-key dependency between tables) so a ThreadPool gets the
     # benefit without any locking. We use a fair scheduling pool so a
@@ -292,6 +337,10 @@ def write_run(
         write_tasks.append(
             ("LoadTestQueryExecutions",
              lambda: _replace_for_run(exec_df, "LoadTestQueryExecutions", run_id)))
+    if trace_df is not None:
+        write_tasks.append(
+            ("LoadTestTraceEvents",
+             lambda: _replace_for_run(trace_df, "LoadTestTraceEvents", run_id)))
 
     # Hint the Spark scheduler to interleave jobs from concurrent threads
     # rather than queue them strictly FIFO. Safe to set per-call; reverts
@@ -321,5 +370,6 @@ def write_run(
         scenario_hash=scenario_hash,
         queries_written=len(queries_rows),
         executions_written=executions_written,
+        trace_events_written=trace_events_written,
         table_base=table_base,
     )

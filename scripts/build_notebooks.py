@@ -177,6 +177,12 @@ PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside a batc
 SKIP_RESULTS                 = False  # True → drain rows without parsing
                                       #   useful for stress-testing the engine
                                       #   when result-set parsing would dominate
+ENABLE_TRACING               = True   # subscribe to dataset XMLA trace and
+                                      #   capture engine events (QueryEnd,
+                                      #   ExecutionMetrics, VertiPaq SE) into
+                                      #   the LoadTestTraceEvents Delta table.
+                                      #   Requires Build/Read on the dataset.
+                                      #   Set False to skip tracing entirely.
 
 # ── Load Test Scenario (queries) ─────────────────────────────────────────────
 # QUERIES_FILE — name of a .json in this notebook's *Resources* panel
@@ -317,6 +323,7 @@ outcome = fdlt_nb.run(
     pause_between_queries_ms=PAUSE_BETWEEN_QUERIES_MS,
     user_ramp_time_sec=USER_RAMP_TIME_SEC,
     skip_results=SKIP_RESULTS,
+    enable_tracing=ENABLE_TRACING,
     queries_file=QUERIES_FILE,
     queries_inline=QUERIES_INLINE,
     users_file=USERS_FILE,

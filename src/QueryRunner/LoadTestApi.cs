@@ -48,6 +48,17 @@ namespace FabricDaxLoadTest
         public ErrorPolicy ErrorPolicy { get; set; } = ErrorPolicy.Continue;
 
         /// <summary>
+        /// When true (default), subscribe to the dataset's XMLA trace for
+        /// the duration of the run and capture engine-side events
+        /// (QueryEnd, ExecutionMetrics, VertiPaqSEQuery*, etc.) to
+        /// <c>{LogFileName}.trace.csv</c> alongside the executions CSV.
+        /// Best-effort — if trace setup fails (insufficient permissions,
+        /// dataset doesn't allow database-scoped traces, etc.) the run
+        /// proceeds without engine telemetry and a warning is logged.
+        /// </summary>
+        public bool EnableTracing { get; set; } = true;
+
+        /// <summary>
         /// Optional sink invoked from the .NET logger thread for every log
         /// line. Embedded callers (Livy / Jupyter notebooks) should leave
         /// this null and read the file log + <see cref="LoadTestHandle.LatestSnapshot"/>;

@@ -47,6 +47,10 @@ class RunConfig:
     user_ramp_time_sec: int = 15
     skip_results: bool = False
 
+    # When False, pass --no-trace so LoadGen skips the XMLA trace
+    # subscription. Default True preserves the engine-telemetry capture.
+    enable_tracing: bool = True
+
     # Materialized inputs
     queries: Sequence[str] = field(default_factory=list)
     users: Sequence[Mapping[str, str]] = field(default_factory=list)
@@ -72,6 +76,7 @@ class RunResult:
     staging_id: str
     run_local_dir: str
     csv_path: str
+    trace_csv_path: str
     log_file: str
     returncode: int
     started_at: datetime
@@ -136,6 +141,8 @@ def run_load_test(
         cmd += ["--replica", cfg.target_replica]
     if cfg.skip_results:
         cmd += ["--skip-results"]
+    if not cfg.enable_tracing:
+        cmd += ["--no-trace"]
 
     # Token via env, NOT argv: process listings on shared compute would
     # otherwise expose the bearer token.
@@ -205,6 +212,10 @@ def run_load_test(
         staging_id=staging_id,
         run_local_dir=run_local,
         csv_path=os.path.join(run_local, log_file),
+        trace_csv_path=os.path.join(
+            run_local,
+            (os.path.splitext(log_file)[0] if log_file else "LoadTest")
+            + ".trace.csv"),
         log_file=log_file,
         returncode=proc.returncode,
         started_at=started_at,

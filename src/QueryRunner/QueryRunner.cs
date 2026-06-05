@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using FabricDaxLoadTest.Tracing;
 using Microsoft.AnalysisServices.AdomdClient;
 
 namespace FabricDaxLoadTest
@@ -320,7 +321,8 @@ namespace FabricDaxLoadTest
             string? logFileName = null,
             bool skipResults = false,
             Action<string>? logCallback = null,
-            ErrorPolicy errorPolicy = ErrorPolicy.Continue)
+            ErrorPolicy errorPolicy = ErrorPolicy.Continue,
+            bool enableTracing = true)
         {
             var config = new LoadTestConfig
             {
@@ -339,6 +341,7 @@ namespace FabricDaxLoadTest
                 LogFileName = logFileName,
                 SkipResults = skipResults,
                 ErrorPolicy = errorPolicy,
+                EnableTracing = enableTracing,
                 LogCallback = logCallback,
             };
             using var handle = StartLoadTest(config);
@@ -507,6 +510,79 @@ namespace FabricDaxLoadTest
             Task? periodicReporter = null;
             Task? snapshotTask = null;
             string? builtResult = null;
+
+            // Trace subscription state. Best-effort — failure to start the
+            // trace logs a warning and the run proceeds without engine
+            // telemetry. Drained on a background task into a .trace.csv
+            // beside the executions CSV.
+            TraceSubscriber? trace = null;
+            string? traceFilePath = null;
+            Task? traceWriterTask = null;
+            long traceRowsWritten = 0;
+            string? traceWarning = null;
+
+            if (config.EnableTracing && !string.IsNullOrEmpty(logDirectory))
+            {
+                var traceBaseName = !string.IsNullOrEmpty(logFileName)
+                    ? Path.GetFileNameWithoutExtension(logFileName)
+                    : $"LoadTest.{testStartTime:yyyyMMdd-HHmmss}";
+                traceFilePath = Path.Combine(logDirectory!, traceBaseName + ".trace.csv");
+                var appFilter = $"FabricDaxLoadTest/{runId:D}";
+                try
+                {
+                    File.WriteAllText(traceFilePath,
+                        "RunId,UtcTimestamp,EventClass,DurationMs,CpuMs,ApplicationName,UserName,SessionId,RequestId,DatabaseName,TextData\n");
+
+                    trace = new TraceSubscriber(
+                        xmlaEndpoint: xmlaEndpoint,
+                        token: token,
+                        database: dataset,
+                        applicationFilter: appFilter,
+                        log: Log);
+                    trace.StartAsync(linkedCts.Token).GetAwaiter().GetResult();
+                    Log($"Tracing  : {traceFilePath} (filter ApplicationName={appFilter})");
+
+                    var traceCapture = trace; // capture for closure
+                    var traceFile = traceFilePath;
+                    var runIdLocal = runId;
+                    traceWriterTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await foreach (var ev in traceCapture.Events.ReadAllAsync().ConfigureAwait(false))
+                            {
+                                var line = new StringBuilder();
+                                line.Append(runIdLocal.ToString("D")).Append(',')
+                                    .Append(ev.UtcTimestamp.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
+                                    .Append(SanitizeCsvField(ev.EventClass)).Append(',')
+                                    .Append(ev.DurationMs).Append(',')
+                                    .Append(ev.CpuMs).Append(',')
+                                    .Append(SanitizeCsvField(ev.ApplicationName)).Append(',')
+                                    .Append(SanitizeCsvField(ev.UserName)).Append(',')
+                                    .Append(SanitizeCsvField(ev.SessionId)).Append(',')
+                                    .Append(SanitizeCsvField(ev.RequestId)).Append(',')
+                                    .Append(SanitizeCsvField(ev.DatabaseName)).Append(',')
+                                    .Append(SanitizeCsvField(ev.TextData)).Append('\n');
+                                File.AppendAllText(traceFile, line.ToString());
+                                Interlocked.Increment(ref traceRowsWritten);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"Trace writer error: {ex.GetType().Name}: {ex.Message}");
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    traceWarning = $"{ex.GetType().Name}: {ex.Message}";
+                    Log($"WARNING: Trace subscription failed (run will continue without engine telemetry): {traceWarning}");
+                    try { trace?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5)); } catch { }
+                    trace = null;
+                    traceFilePath = null;
+                }
+            }
+
             using var snapshotCts = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
             try
             {
@@ -540,7 +616,7 @@ namespace FabricDaxLoadTest
             for (int i = 0; i < nUsers; i++)
             {
                 connStrings[i] = BuildConnectionString(xmlaEndpoint, dataset, token,
-                    userEmails[i], userRoles[i]);
+                    userEmails[i], userRoles[i], runId);
             }
 
             // Pre-warm the model/gateway with a single shared warmup connection BEFORE
@@ -798,6 +874,24 @@ namespace FabricDaxLoadTest
                     Log($"Log written: {logFilePath}");
                 }
 
+                // Drop the trace subscription. DisposeAsync cancels the
+                // reader, issues the Delete on a fresh connection (bounded
+                // 15s), and completes the channel. The writer task then
+                // sees ReadAllAsync end and exits naturally.
+                if (trace != null)
+                {
+                    try { trace.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(20)); }
+                    catch (Exception ex) { Log($"Trace dispose warning: {ex.GetType().Name}: {ex.Message}"); }
+                }
+                if (traceWriterTask != null)
+                {
+                    try { traceWriterTask.Wait(TimeSpan.FromSeconds(5)); } catch { }
+                }
+                if (traceFilePath != null)
+                {
+                    Log($"Trace events written: {Interlocked.Read(ref traceRowsWritten)} rows -> {traceFilePath}");
+                }
+
                 // Resolve final phase: Failed (set above) > Cancelled
                 // (external or duration token fired) > Done.
                 var currentPhase = Volatile.Read(ref phase);
@@ -891,7 +985,7 @@ namespace FabricDaxLoadTest
             }
         }
 
-        private static string SanitizeCsvField(string value)
+        private static string SanitizeCsvField(string? value)
         {
             if (string.IsNullOrEmpty(value)) return "";
             // Truncate long messages
@@ -1120,11 +1214,17 @@ namespace FabricDaxLoadTest
 
         private static string BuildConnectionString(
             string xmlaEndpoint, string dataset, string token,
-            string userEmail, string userRole)
+            string userEmail, string userRole, Guid runId)
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={xmlaEndpoint};Initial Catalog={dataset};");
             sb.Append($"Timeout=7200;Connect Timeout=300;");
+            // ApplicationName lets the trace subscriber filter rows
+            // belonging to THIS run (PBI Service rejects most server-side
+            // <Filter> clauses on subscription traces, so we filter
+            // client-side on this exact value). Format must match
+            // TraceSubscriber's _applicationFilter.
+            sb.Append($"Application Name=FabricDaxLoadTest/{runId:D};");
             // Empty token => integrated/Windows auth (local SSAS or Power BI Desktop). For the
             // Power BI Service / Fabric XMLA endpoint a bearer token is required.
             if (!string.IsNullOrEmpty(token))
