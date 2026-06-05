@@ -694,7 +694,7 @@ namespace FabricDaxLoadTest
                         for (int s = 0; s < samples.Length; s++)
                         {
                             sb.AppendLine($"--- [{s + 1}/{samples.Length}] ---");
-                            sb.AppendLine(samples[s].ToString());
+                            sb.AppendLine(RedactToken(samples[s].ToString(), token));
                         }
                     }
                     throw new InvalidOperationException(sb.ToString(),
@@ -1043,6 +1043,22 @@ namespace FabricDaxLoadTest
                 result.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
             }
             return result;
+        }
+
+        // Redacts a known bearer token from a free-text string. Used
+        // before embedding ADOMD exception text into our error
+        // envelopes / log lines, since AS has historically been
+        // willing to surface the connection string (which contains
+        // `password=<token>`) inside exception messages.
+        internal static string RedactToken(string text, string? token)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (!string.IsNullOrEmpty(token) && text.Contains(token!, StringComparison.Ordinal))
+                text = text.Replace(token!, "***REDACTED-TOKEN***", StringComparison.Ordinal);
+            text = System.Text.RegularExpressions.Regex.Replace(text,
+                @"(?i)password\s*=\s*[^;\r\n]*",
+                "password=***REDACTED***");
+            return text;
         }
 
         private static string BuildConnectionString(

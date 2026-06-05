@@ -14,6 +14,27 @@ namespace FabricDaxLoadTest;
 
 class Program
 {
+    // Set once when the access token is resolved, so EmitErrorEnvelope /
+    // LogCallback can scrub it out of any string that gets shipped to
+    // stdout JSON or stderr. Connection strings include `password=<token>`
+    // and ADOMD has historically been willing to put connection strings
+    // into exception messages, so blind ex.ToString() is unsafe.
+    static string? _currentToken;
+    internal static string Redact(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        var t = _currentToken;
+        if (!string.IsNullOrEmpty(t) && s.Contains(t!, StringComparison.Ordinal))
+            s = s.Replace(t!, "***REDACTED-TOKEN***", StringComparison.Ordinal);
+        // Defence in depth: also kill any literal `password=...;` or
+        // `password=...<eol>` fragment, in case ADOMD/AS surfaces a
+        // connection-string clone we haven't anticipated.
+        s = System.Text.RegularExpressions.Regex.Replace(s,
+            @"(?i)password\s*=\s*[^;\r\n]*",
+            "password=***REDACTED***");
+        return s;
+    }
+
     static int Main(string[] args)
     {
         var xmlaOption = new Option<string>("--xmla", "XMLA endpoint (e.g. powerbi://api.powerbi.com/v1.0/myorg/Workspace)") { IsRequired = true };
@@ -72,12 +93,45 @@ class Program
             var noAuth = ctx.ParseResult.GetValueForOption(noAuthOption);
             var jsonProgress = ctx.ParseResult.GetValueForOption(jsonProgressOption);
 
-            ctx.ExitCode = Run(xmla, dataset, duration, userCount, queriesPerBatch,
+            ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
                 logDir, logFile, tokenDirect, tokenFile, auth, skipResults, noAuth, jsonProgress);
         });
 
         return rootCommand.Invoke(args);
+    }
+
+    // Wraps Run() with a guaranteed-terminal-envelope try/catch in JSON
+    // mode. Without this, anything that throws BEFORE the existing
+    // try/catches inside RunJsonProgress (e.g. Directory.CreateDirectory,
+    // ResolveToken, file I/O, even a malformed Run argument) would
+    // produce a non-zero exit and a stderr trail with no terminal `error`
+    // envelope on stdout — so the notebook subprocess reader would see
+    // the stream EOF without a result|error envelope and have to guess.
+    static int RunOuter(string xmla, string dataset, int duration, int userCount,
+        int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        string replica, FileInfo queriesFile, FileInfo usersFile,
+        string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
+        string? auth, bool skipResults, bool noAuth, bool jsonProgress)
+    {
+        try
+        {
+            return Run(xmla, dataset, duration, userCount, queriesPerBatch,
+                pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
+                logDir, logFile, tokenDirect, tokenFile, auth, skipResults, noAuth, jsonProgress);
+        }
+        catch (Exception ex)
+        {
+            if (jsonProgress)
+            {
+                EmitErrorEnvelope("fatal", ex);
+            }
+            else
+            {
+                Console.Error.WriteLine($"FATAL: {Redact(ex.ToString())}");
+            }
+            return 1;
+        }
     }
 
     // In --json-progress mode, *every* line written to the LoadGen
@@ -110,6 +164,8 @@ class Program
             }
             token = resolved;
         }
+        // Stash for redaction. Empty string => no-auth mode, no secret to protect.
+        _currentToken = string.IsNullOrEmpty(token) ? null : token;
 
         if (duration > 3000)
             info.WriteLine("Warning: Long duration requested. Token may expire during the test.");
@@ -270,8 +326,9 @@ class Program
             LogFileName = logFile,
             SkipResults = skipResults,
             // Echo every QueryRunner log line to stderr so notebook
-            // diagnostics work even when JSON parsing fails.
-            LogCallback = Console.Error.WriteLine,
+            // diagnostics work even when JSON parsing fails. Redact
+            // the token in case any log line embeds a connection string.
+            LogCallback = msg => Console.Error.WriteLine(Redact(msg)),
         };
 
         LoadTestHandle handle;
@@ -389,8 +446,8 @@ class Program
             ["type"] = "error",
             ["code"] = code,
             ["exceptionType"] = ex.GetType().FullName,
-            ["message"] = ex.Message,
-            ["exception"] = ex.ToString(),
+            ["message"] = Redact(ex.Message),
+            ["exception"] = Redact(ex.ToString()),
         });
     }
 
