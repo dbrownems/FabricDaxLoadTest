@@ -40,7 +40,11 @@ def normalize_queries(raw_json: str) -> list[str]:
     Accepted shapes:
 
       * Power BI Desktop *Performance Analyzer* export
-        (``{"version": ..., "events": [{"query": "..."}, ...]}``)
+        (``{"version": ..., "events": [...]}``). DAX text is pulled from
+        ``event.metrics.QueryText`` for events whose ``name`` is
+        ``"Execute DAX Query"`` (the actual DSE-issued DAX). Older /
+        alternative shapes (``event.query`` or ``event.Query.Query``)
+        are also accepted.
       * Object array: ``[{"query": "..."}, ...]`` or
         ``[{"Query": "..."}, ...]``
       * String array: ``["EVALUATE ...", ...]``
@@ -51,7 +55,19 @@ def normalize_queries(raw_json: str) -> list[str]:
     if isinstance(obj, dict) and isinstance(obj.get("events"), list):
         out: list[str] = []
         for ev in obj["events"]:
-            q = ev.get("query")
+            if not isinstance(ev, dict):
+                continue
+            # Power BI Desktop Performance Analyzer: DAX lives in
+            # metrics.QueryText on "Execute DAX Query" events.
+            q = None
+            metrics = ev.get("metrics")
+            if isinstance(metrics, dict):
+                if ev.get("name") == "Execute DAX Query":
+                    q = metrics.get("QueryText") or metrics.get("queryText")
+                if not q:
+                    q = metrics.get("QueryText") or metrics.get("queryText")
+            if not q:
+                q = ev.get("query") or ev.get("QueryText") or ev.get("queryText")
             if not q:
                 qd = ev.get("Query") or {}
                 if isinstance(qd, dict):
