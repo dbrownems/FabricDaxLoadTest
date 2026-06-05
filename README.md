@@ -129,9 +129,9 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
 
 1. Open `LoadTest - Template` in the workspace.
 2. **File → Save As** (or right-click in the workspace → **Duplicate**) and rename the copy to something descriptive — e.g. `LoadTest - DIAD 5u baseline`. Keep it in the `LoadTests` folder.
-3. **Set up the query corpus.** Two options:
-   - **Drop a queries `.json` onto the saved copy's *Resources* panel** (left sidebar in the notebook). If exactly one `.json` is attached, the notebook picks it up automatically. Power BI Desktop's *Performance Analyzer* exports work verbatim; plain DAX-string lists also work — see [Query corpus formats](#query-corpus-formats).
-   - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The template ships with a 3-query model-agnostic warm-up corpus that's only useful for smoke-testing the pipeline.
+3. **Set up the Load Test Scenario.** Two options:
+   - **Drop a queries `.json` onto the saved copy's *Resources* panel** (left sidebar in the notebook). If exactly one `.json` is attached, the notebook picks it up automatically. Power BI Desktop's *Performance Analyzer* exports work verbatim; plain DAX-string lists also work — see [Load Test Scenario formats](#load-test-scenario-formats).
+   - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The template ships with a 3-query model-agnostic warm-up scenario that's only useful for smoke-testing the pipeline.
 4. Open the copy. Edit cell **1**:
 
    ```python
@@ -182,7 +182,7 @@ LAKEHOUSE_SCHEMA = "loadtests"  # any other schema name works too
 
 If you point the notebook at a BYO lakehouse (by renaming `LAKEHOUSE_NAME` in cell 2), make sure that lakehouse contains `Files/loadgen-bin.zip` — the deploy script only writes the zip into the auto-managed `LoadTests` lakehouse.
 
-### Editing the query corpus
+### Editing the Load Test Scenario
 
 The runner loads queries from one of these sources, in order (cell 3):
 
@@ -191,9 +191,9 @@ The runner loads queries from one of these sources, in order (cell 3):
 3. `QUERIES_FILE = "abfss://…"` — escape hatch for cross-lakehouse references.
 4. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the template ships with).
 
-Per-test corpora travel with the saved `LoadTest - <name>` copy in Resources, so every saved test is reproducible without coupling to shared state.
+Per-test scenarios travel with the saved `LoadTest - <name>` copy in Resources, so every saved test is reproducible without coupling to shared state.
 
-#### Query corpus formats
+#### Load Test Scenario formats
 
 The notebook accepts any of these shapes for `queries.json`:
 
@@ -317,8 +317,8 @@ Cell 5b in the runner notebook MERGEs run metadata into three small dimensions a
 | Table | Grain | Notes |
 |---|---|---|
 | `LoadTests` | one row per logical test (`LoadTestId`) | Carries name + description from cell 1. |
-| `LoadTestRuns` | one row per `RunId` | All run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `QueryCorpusHash`) plus configuration snapshot. |
-| `LoadTestQueries` | one row per `(LoadTestId, QueryIndex)` | The DAX corpus that was used for this test, hashed for change-detection. |
+| `LoadTestRuns` | one row per `RunId` | All run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) plus configuration snapshot. |
+| `LoadTestQueries` | one row per `(LoadTestId, RunId, QueryHash)` | The Load Test Scenario (DAX queries) snapshot for this run, hashed for change-detection. |
 | `LoadTestQueryExecutions` | one row per query execution (the CSV, in Delta form) | Idempotent: existing rows for the run's `RunId` are deleted and rewritten. |
 
 All tables include `OwnerType` / `OwnerId` / `OwnerKey` columns so future trace facts (capture mode, monitor mode) can graft into the same star.

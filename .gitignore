@@ -37,3 +37,8 @@ build/
 *.egg-info/
 src/fdlt_runtime/_version.py
 
+
+# Python bytecode
+__pycache__/
+*.pyc
+

@@ -14,6 +14,19 @@ from .queries import (
     normalize_users,
 )
 from .analyze import plot_run
+from .env import (
+    LakehouseInfo,
+    DatasetInfo,
+    discover_lakehouse,
+    resolve_workspace,
+    resolve_target_dataset,
+    find_dotnet,
+    stage_loadgen_zip,
+    find_bundled_wheel,
+)
+from .runner import RunConfig, RunResult, run_load_test, render_progress
+from .persist import WriteSummary, write_run
+from . import notebook
 
 try:
     from ._version import version as __version__
@@ -27,4 +40,19 @@ __all__ = [
     "normalize_queries",
     "normalize_users",
     "plot_run",
+    "LakehouseInfo",
+    "DatasetInfo",
+    "discover_lakehouse",
+    "resolve_workspace",
+    "resolve_target_dataset",
+    "find_dotnet",
+    "stage_loadgen_zip",
+    "find_bundled_wheel",
+    "RunConfig",
+    "RunResult",
+    "run_load_test",
+    "render_progress",
+    "WriteSummary",
+    "write_run",
+    "notebook",
 ]

@@ -1,4 +1,4 @@
-"""Query and user corpus loading.
+"""Query and user scenario loading.
 
 Resolution order for a given filename:
 
@@ -117,7 +117,7 @@ def load_queries(
     *,
     read_abfss: ReadAbfss | None = None,
 ) -> tuple[list[str], str]:
-    """Resolve and load the query corpus.
+    """Resolve and load the Load Test Scenario query list.
 
     Returns ``(queries, source_label)``. ``source_label`` is a short
     human-readable description suitable for printing in the notebook.

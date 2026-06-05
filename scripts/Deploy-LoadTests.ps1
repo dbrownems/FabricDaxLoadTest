@@ -226,18 +226,52 @@ if (-not $folder) {
 $folderId = $folder.id
 
 # ---- lakehouse --------------------------------------------------------------
-Step "Get-or-create lakehouse 'LoadTests'"
+Step "Get-or-create lakehouse 'LoadTests' (schema-enabled)"
 $items = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Lakehouse"
 $lh = $items.value | Where-Object { $_.displayName -eq "LoadTests" }
 if (-not $lh) {
-    $body = @{ displayName = "LoadTests"; type = "Lakehouse"; folderId = $folderId }
-    $lh = Invoke-Fabric POST "/v1/workspaces/$wsId/items" $body
-    Info "Created lakehouse $($lh.id)"
+    # creationPayload.enableSchemas = $true opts into the schema-preview
+    # layout (Tables/dbo/<name>) so the notebook's Tables/dbo/* writes
+    # land in the canonical place. The notebook also handles flat
+    # lakehouses, but new deployments should always be schema-enabled.
+    # Schema-enabled creation is async (HTTP 202 + Location header); use
+    # Invoke-FabricRaw so we can poll the LRO to completion.
+    $body = @{
+        displayName     = "LoadTests"
+        type            = "Lakehouse"
+        folderId        = $folderId
+        creationPayload = @{ enableSchemas = $true }
+    }
+    $r = Invoke-FabricRaw -Method POST -Url "$ApiBase/v1/workspaces/$wsId/items" -Body $body
+    if ($r.StatusCode -eq 202) {
+        $loc = $r.Headers["Location"]
+        if ($loc -is [array]) { $loc = $loc[0] }
+        Info "Create returned 202 LRO; polling..."
+        $lh = Wait-LRO $loc
+    } else {
+        $lh = $r.Body
+    }
+    Info "Created schema-enabled lakehouse $($lh.id)"
 } else {
     if ($lh.folderId -ne $folderId) {
         Warn "Lakehouse exists but is in a different folder ($($lh.folderId) vs $folderId). Leaving in place."
     } else {
         Info "Reusing lakehouse $($lh.id)"
+    }
+    # Confirm the reused lakehouse is schema-enabled. We can't flip the
+    # bit retroactively (Fabric API has no "convert to schemas" path), so
+    # warn the user — the notebook will fall back to flat-Tables writes.
+    try {
+        $lhDetail = Invoke-Fabric GET "/v1/workspaces/$wsId/lakehouses/$($lh.id)"
+        $defaultSchema = $lhDetail.properties.defaultSchema
+        if ($defaultSchema) {
+            Info "Lakehouse is schema-enabled (defaultSchema=$defaultSchema)"
+        } else {
+            Warn "Lakehouse is NOT schema-enabled — notebook will write to Tables/ instead of Tables/dbo/."
+            Warn "  To migrate: delete the existing LoadTests lakehouse from the workspace and re-run this script."
+        }
+    } catch {
+        Warn "Could not read lakehouse properties to verify schema-enabled state: $($_.Exception.Message)"
     }
 }
 $lhId = $lh.id

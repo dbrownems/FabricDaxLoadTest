@@ -68,94 +68,110 @@ def build_run():
     nb = new_notebook()
 
     md(nb, r"""
-# FabricDaxLoadTest — LoadTest Template
+    # FabricDaxLoadTest — LoadTest Template
 
-> ⚠️ **This is the template — do not edit or run this notebook in place.**
->
-> 1. **File → Save As** (or right-click the notebook in the workspace → **Duplicate**).
-> 2. Rename the copy to `LoadTest - <descriptive name>` (e.g.
->    `LoadTest - DIAD 5u baseline`). Keep it in the same `LoadTests` folder
->    so it can find `LoadTests.Lakehouse`.
-> 3. Open the copy, edit cell **1**, and run.
->
-> Why: `scripts/Deploy-LoadTests.ps1` overwrites this template on every
-> redeploy. Saved copies are yours forever — they document the exact
-> configuration of each run and stay reproducible across upgrades.
+    > ⚠️ **This is the template — do not edit or run this notebook in place.**
+    >
+    > 1. **File → Save As** (or right-click the notebook in the workspace → **Duplicate**).
+    > 2. Rename the copy to `LoadTest - <descriptive name>` (e.g.
+    >    `LoadTest - DIAD 5u baseline`). Keep it in the same `LoadTests` folder
+    >    so it can find `LoadTests.Lakehouse`.
+    > 3. Open the copy, edit cell **1**, and run.
+    >
+    > Why: `scripts/Deploy-LoadTests.ps1` overwrites this template on every
+    > redeploy. Saved copies are yours forever — they document the exact
+    > configuration of each run and stay reproducible across upgrades.
 
----
+    ---
 
-Drives concurrent DAX queries against a Power BI / Fabric semantic model via
-the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
-subprocess (run on the Spark driver's bundled .NET 8 runtime).
+    Drives concurrent DAX queries against a Power BI / Fabric semantic model via
+    the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
+    subprocess (run on the Spark driver's bundled .NET 8 runtime).
 
-The notebook auto-discovers the workspace's **`LoadTests`** lakehouse — no
-UI attach step required. The lakehouse is the default storage for
-everything:
+    The notebook auto-discovers the workspace's **`LoadTests`** lakehouse — no
+    UI attach step required. The lakehouse is the default storage for
+    everything:
 
-- `Files/loadgen-bin.zip` — LoadGen + ADOMD assemblies; cell 2 downloads
-  and unzips this into a `/tmp` staging dir on the Spark driver
-- `Files/runs/`  — per-run telemetry CSVs (created on first run)
-- `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables
-  fed by cell 5b. The `dbo/` prefix is added automatically when the
-  lakehouse is schema-enabled; flat lakehouses write directly under
-  `Tables/`. Override with `LAKEHOUSE_SCHEMA` in cell 1.
+    - `Files/loadgen-bin.zip` — LoadGen + ADOMD assemblies + the
+      `fdlt_runtime` Python wheel; cell 2 downloads, unzips, and pip-installs
+      the wheel into the kernel
+    - `Files/runs/`  — per-run telemetry CSVs (created on first run)
+    - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables
+      written by cell 3. The `dbo/` prefix is added automatically when the
+      lakehouse is schema-enabled; flat lakehouses write directly under
+      `Tables/`. Override with `LAKEHOUSE_SCHEMA` in cell 1.
 
-## How to use (in your saved copy)
+    ## How to use (in your saved copy)
 
-1. **Set up the query corpus.** Cell 1 ships with a tiny `QUERIES_INLINE`
-   fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
-   testing the pipeline. For a real test you have two options:
+    1. **Set up the Load Test Scenario.** Cell 1 ships with a tiny `QUERIES_INLINE`
+       fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
+       testing the pipeline. For a real test you have two options:
 
-   - **Drop a `.json` onto the notebook's *Resources* panel** (left
-     sidebar). If exactly one `.json` is attached, cell 3 picks it up
-     automatically; otherwise set `QUERIES_FILE = "name.json"` in cell 1.
-     Accepted shapes: Power BI Desktop *Performance Analyzer* export,
-     `[{"query": "EVALUATE …"}, …]`, or `["EVALUATE …", …]`.
-   - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
-     Fine for one-off tests; doesn't scale to large corpora.
+       - **Drop a `.json` onto the notebook's *Resources* panel** (left
+         sidebar). If exactly one `.json` is attached, cell 3 picks it up
+         automatically; otherwise set `QUERIES_FILE = "name.json"` in cell 1.
+         Accepted shapes: Power BI Desktop *Performance Analyzer* export,
+         `[{"query": "EVALUATE …"}, …]`, or `["EVALUATE …", …]`.
+       - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
+         Fine for one-off tests; doesn't scale to large corpora.
 
-   Optional: drop a `users.json` onto Resources too and set
-   `USERS_FILE = "users.json"` in cell 1 to drive role / EffectiveUserName
-   impersonation. Accepted shapes: `[{"email": "...", "role": "..."}, …]`
-   or `["alice@contoso.com", "bob@contoso.com"]`.
+       Optional: drop a `users.json` onto Resources too and set
+       `USERS_FILE = "users.json"` in cell 1 to drive role / EffectiveUserName
+       impersonation. Accepted shapes: `[{"email": "...", "role": "..."}, …]`
+       or `["alice@contoso.com", "bob@contoso.com"]`.
 
-2. Edit cell **1** to point at the target workspace + dataset and tweak
-   load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
-   these land in the `LoadTests` dim and surface in the Power BI report.
-3. **Run All**. Cell **4** prints a live status line every second; press
-   **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT
-   and drains cleanly.
-4. Cell **5b** writes the run into the four Delta tables. Every
-   notebook execution mints a fresh `RunId`, so prior runs are
-   preserved untouched — re-running the notebook is purely additive.
-   Re-executing **only cell 5b** (after a completed run) is also safe:
-   it overwrites just that one `RunId`'s fact rows in place.
-5. Cell **6** plots latency / QPS / users from the per-run CSV.
+    2. Edit cell **1** to point at the target workspace + dataset and tweak
+       load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
+       these land in the `LoadTests` dim and surface in the Power BI report.
+    3. **Run All**. Cell **3** prints a live status line every second and
+       then writes the run into the four Delta tables; press **Interrupt
+       Kernel** (■) to cancel — the subprocess receives SIGINT and drains
+       cleanly. Each notebook execution mints a fresh `RunId`, so prior
+       runs are preserved untouched and re-running is purely additive.
+    4. Cell **4** plots latency / QPS / users for the run that just
+       completed, straight from the per-run CSV.
 
-> Re-deploy / upgrade `Files/loadgen-bin.zip` by re-running
-> `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
-> `LoadTest - …` notebooks are not touched by the deploy.
-""")
+    > Re-deploy / upgrade `Files/loadgen-bin.zip` by re-running
+    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. Your saved
+    > `LoadTest - …` notebooks are not touched by the deploy.
+    """)
 
     # 1. Configuration
     code(nb, r"""
 # ── 1. Configuration ──────────────────────────────────────────────────────────
-LOAD_TEST_NAME           = "my-load-test"  # human label written to LoadTests.Name
-LOAD_TEST_DESCRIPTION    = ""              # optional free text
+# Every knob the load test reads lives here. Cell 2 bootstraps the runtime
+# without touching any of these; cell 3 consumes them.
 
-TARGET_WORKSPACE = "MyWorkspace"        # workspace hosting the semantic model
-TARGET_DATASET   = "My Semantic Model"  # semantic model display name
+# ── Identity (human labels written to LoadTests / LoadTestRuns) ──────────────
+LOAD_TEST_NAME        = None             # short label — PK into LoadTests table
+                                         #   None → derived from notebook name
+                                         #          ("LoadTest - Foo" → "Foo")
+LOAD_TEST_DESCRIPTION = ""               # optional free-text notes for the run
 
-DURATION_SECONDS         = 60
-CONCURRENT_USERS         = 25
-QUERIES_PER_BATCH        = 1
-PAUSE_BETWEEN_ITERATIONS_MS = 1000
-PAUSE_BETWEEN_QUERIES_MS    = 0
-USER_RAMP_TIME_SEC       = 15
-TARGET_REPLICA           = ""       # "readonly" → scale-out read replica
-SKIP_RESULTS             = False    # True drains rows without parsing
+# ── Target semantic model ────────────────────────────────────────────────────
+TARGET_WORKSPACE = None  # workspace hosting the model under test
+                         #   None         → use the workspace this notebook lives in
+                         #   "Name"/GUID  → cross-workspace test (XMLA endpoint)
+TARGET_DATASET   = None  # semantic model display name
+                         #   None         → auto-pick the *only* semantic model in
+                         #                  TARGET_WORKSPACE; error if 0 or >1
+                         #   "Name"       → exact display-name match
+TARGET_REPLICA   = ""    # XMLA replica hint (no replica unless set)
+                         #   ""           → primary replica (default)
+                         #   "readonly"   → route to a scale-out read replica
 
-# ── Query corpus ──────────────────────────────────────────────────────────────
+# ── Load shape ───────────────────────────────────────────────────────────────
+DURATION_SECONDS             = 60     # how long virtual users execute queries
+CONCURRENT_USERS             = 25     # max concurrency at steady state
+USER_RAMP_TIME_SEC           = 15     # linear ramp from 0 → CONCURRENT_USERS
+QUERIES_PER_BATCH            = 1      # queries per user iteration (>1 = bursts)
+PAUSE_BETWEEN_ITERATIONS_MS  = 1000   # think-time between batches per user
+PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside a batch
+SKIP_RESULTS                 = False  # True → drain rows without parsing
+                                      #   useful for stress-testing the engine
+                                      #   when result-set parsing would dominate
+
+# ── Load Test Scenario (queries) ─────────────────────────────────────────────
 # QUERIES_FILE — name of a .json in this notebook's *Resources* panel
 # (left sidebar). Cell 3 resolves it in this order:
 #
@@ -164,14 +180,14 @@ SKIP_RESULTS             = False    # True drains rows without parsing
 #   3. "abfss://…" → cross-lakehouse / cross-workspace escape hatch.
 #   4. Nothing matches → fall back to `QUERIES_INLINE` below.
 #
-# Accepted JSON shapes (see README → "Query corpus formats"):
+# Accepted JSON shapes (see README → "Load Test Scenario formats"):
 #   • Power BI Desktop *Performance Analyzer* export (with `events[]`)
 #   • [{"query": "EVALUATE …"}, …]
 #   • ["EVALUATE …", …]
 QUERIES_FILE = None       # auto-pick single .json in Resources
 
 # Fallback used only when no resource file is attached. The default is a
-# tiny model-agnostic warm-up corpus useful only for smoke-testing the
+# tiny model-agnostic warm-up scenario useful only for smoke-testing the
 # pipeline — replace with real DAX, or attach a Performance Analyzer
 # export to the Resources panel, before drawing any conclusions.
 QUERIES_INLINE = [
@@ -180,7 +196,7 @@ QUERIES_INLINE = [
     "EVALUATE INFO.MEASURES()",
 ]
 
-# ── Users (optional impersonation corpus) ─────────────────────────────────────
+# ── Virtual users (optional impersonation list) ──────────────────────────────
 # USERS_FILE — name of a .json in this notebook's Resources panel
 # describing virtual-user identities for AS `EffectiveUserName=` /
 # `Roles=` impersonation. Resolution order:
@@ -195,685 +211,118 @@ QUERIES_INLINE = [
 # Accepted JSON shapes (see README → "User list formats"):
 #   • [{"email": "alice@contoso.com", "role": "Sales"}, …]
 #   • ["alice@contoso.com", "bob@contoso.com"]   (roles default to "")
-USERS_FILE = None
+USERS_FILE   = None
+USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 
-# Inline alternative when USERS_FILE is None. Empty list ⇒ all virtual
-# users share the notebook's interactive token (no impersonation).
-USERS_INLINE = []
-
-# ── Lakehouse layout ──────────────────────────────────────────────────────────
-# LAKEHOUSE_SCHEMA — destination schema for the 4 Delta tables.
-#
-#   None  → auto-detect: read the lakehouse `properties.defaultSchema`
-#           via the Fabric items API. Schema-enabled lakehouses default
-#           to "dbo"; classic (flat) lakehouses get "" (no schema dir).
-#   "dbo" (or any name) → force schema-enabled writes to Tables/<name>/.
-#   ""    → force flat writes to Tables/.
-#
-# Both layouts are first-class so the notebook works against the
-# auto-deployed `LoadTests` lakehouse and BYO lakehouses regardless of
-# which preview the user chose at create time.
-LAKEHOUSE_SCHEMA = None
+# ── Lakehouse (where the 4 Delta tables are written) ─────────────────────────
+LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
+                                #   created by scripts/Deploy-LoadTests.ps1
+                                #   override for BYO-lakehouse scenarios
+LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
+                                #   None        → auto-detect via Fabric API
+                                #                 (schema-enabled → "dbo",
+                                #                  flat lakehouse → "")
+                                #   "dbo"/other → force Tables/<name>/
+                                #   ""          → force flat Tables/
 """)
 
-    # 2. Auto-discover lakehouse + stage LoadGen + dotnet preflight
+    # 2. Bootstrap — download zip, install wheel, hand off to fdlt_runtime.notebook
     code(nb, r"""
-# ── 2. Download + unzip LoadGen and locate dotnet ────────────────────────────
-# This is a Fabric **PySpark** notebook. The workspace contains exactly one
-# `LoadTests` lakehouse (created by `scripts/Deploy-LoadTests.ps1` or the
-# manual setup) — we discover it via the Fabric items API and use it as the
-# default storage. The LoadGen assemblies live in a single zip at
-# `Files/loadgen-bin.zip`; cell 2 downloads it once per kernel and unzips
-# into `/tmp/fdlt-bin/`.
-#
-# We run LoadGen out-of-process (`dotnet LoadGen.dll`) to avoid the
-# pythonnet / CLR-init footguns that come with sharing the Spark driver's
-# CLR with sempy.
-import os, json, shutil, subprocess, zipfile
-import notebookutils
+# ── 2. Bootstrap: download LoadGen + wheel, install runtime, call bootstrap ──
+# Saved LoadTest notebooks are thin shims: this cell only does the
+# minimum needed to install the `fdlt_runtime` wheel from the lakehouse,
+# then hands off to `fdlt_runtime.notebook.bootstrap()`. All other logic
+# lives in the wheel, so a fresh `scripts/Deploy-LoadTests.ps1` redeploy
+# can ship behavior changes without re-saving this notebook.
+import os, sys, glob, subprocess, zipfile, importlib, shutil
+import notebookutils, requests
 
 ctx = notebookutils.runtime.context
-WS_ID   = ctx["currentWorkspaceId"]
-WS_NAME = ctx.get("currentWorkspaceName", WS_ID)
+WS_ID = ctx["currentWorkspaceId"]
+TOKEN = notebookutils.credentials.getToken("pbi")  # Fabric audience too
 
-# Self-check: this is a template — refuse to run unless saved under a new name.
-_self_name = (ctx.get("currentNotebookName") or "").strip()
-if _self_name == "LoadTest - Template":
-    raise RuntimeError(
-        "This is the LoadTest template. Save As → 'LoadTest - <name>' "
-        "and run that copy. Edits to the template are wiped on every "
-        "scripts/Deploy-LoadTests.ps1 redeploy."
-    )
-
-# Resolve LoadTests lakehouse — friendly-name support is disabled on some
-# OneLake tenants, so we look up the GUID via the Fabric items API and use
-# that in the abfss path. notebookutils Fabric audience is "pbi".
-LAKEHOUSE_NAME = "LoadTests"
-import requests
-_tok = notebookutils.credentials.getToken("pbi")
+# Resolve lakehouse GUID — friendly-name abfss paths are disabled on
+# some OneLake tenants (`abfss://…/Name.Lakehouse/…` returns 400).
 _r = requests.get(
     f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/items?type=Lakehouse",
-    headers={"Authorization": f"Bearer {_tok}"}, timeout=30)
+    headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30)
 _r.raise_for_status()
-_match = [i for i in _r.json().get("value", []) if i["displayName"] == LAKEHOUSE_NAME]
-if not _match:
-    raise RuntimeError(f"Lakehouse '{LAKEHOUSE_NAME}' not found in workspace {WS_ID}")
-LH_ID = _match[0]["id"]
-LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}"
+_matches = [i for i in _r.json().get("value", []) if i["displayName"] == LAKEHOUSE_NAME]
+if not _matches:
+    raise RuntimeError(
+        f"Lakehouse '{LAKEHOUSE_NAME}' not found in workspace {WS_ID}. "
+        "Run scripts/Deploy-LoadTests.ps1 to (re)create it.")
+_lh_id = _matches[0]["id"]
 
-# Detect schema-enabled lakehouse: GET /v1/workspaces/{ws}/lakehouses/{lh}
-# returns `properties.defaultSchema` only when the lakehouse was created
-# with the schema preview enabled. Fall back to a Tables/dbo existence
-# probe if the property isn't surfaced (older API revisions).
-if LAKEHOUSE_SCHEMA is None:
-    try:
-        _lh = requests.get(
-            f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/lakehouses/{LH_ID}",
-            headers={"Authorization": f"Bearer {_tok}"}, timeout=30).json()
-        _ds = (_lh.get("properties") or {}).get("defaultSchema")
-        LH_SCHEMA = _ds or ""
-    except Exception:
-        LH_SCHEMA = ""
-    if not LH_SCHEMA:
-        # Probe: schema-enabled lakehouses always have Tables/dbo.
-        try:
-            _entries = notebookutils.fs.ls(f"{LH_ABFSS}/Tables")
-            if any(e.name.rstrip("/") == "dbo" for e in _entries):
-                LH_SCHEMA = "dbo"
-        except Exception:
-            pass
-else:
-    LH_SCHEMA = LAKEHOUSE_SCHEMA
-
-LH_TABLE_BASE = f"{LH_ABFSS}/Tables" + (f"/{LH_SCHEMA}" if LH_SCHEMA else "")
-
-# Download Files/loadgen-bin.zip → local /tmp, then extract. Reuses the
-# previous extraction across cell re-runs within a kernel session (cheap
-# mtime check) but always re-downloads if missing.
-STAGE = "/tmp/fdlt-bin"
-ZIP_LOCAL = "/tmp/fdlt-loadgen-bin.zip"
-ZIP_REMOTE = f"{LH_ABFSS}/Files/loadgen-bin.zip"
+ZIP_LOCAL = "/tmp/loadgen-bin.zip"
+STAGE     = "/tmp/fdlt-bin"
 if os.path.exists(ZIP_LOCAL):
     os.remove(ZIP_LOCAL)
-notebookutils.fs.cp(ZIP_REMOTE, f"file://{ZIP_LOCAL}")
+notebookutils.fs.cp(
+    f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{_lh_id}/Files/loadgen-bin.zip",
+    f"file://{ZIP_LOCAL}")
+
 shutil.rmtree(STAGE, ignore_errors=True)
 os.makedirs(STAGE, exist_ok=True)
 with zipfile.ZipFile(ZIP_LOCAL, "r") as zf:
     zf.extractall(STAGE)
-
-LOADGEN_DLL = os.path.join(STAGE, "LoadGen.dll")
-if not os.path.exists(LOADGEN_DLL):
-    raise FileNotFoundError(
-        f"LoadGen.dll not found under {STAGE} after extracting {ZIP_REMOTE}. "
-        f"Re-run scripts/Deploy-LoadTests.ps1 from a repo clone to refresh "
-        f"the lakehouse zip."
-    )
-
-# Install the fdlt_runtime wheel that ships next to LoadGen.dll. The
-# wheel version is git-tag-driven via setuptools-scm so its banner +
-# the LoadTestRuns row both pin the exact code that produced the run.
-import glob, sys
 _wheels = sorted(glob.glob(os.path.join(STAGE, "fdlt_runtime-*.whl")))
 if not _wheels:
     raise FileNotFoundError(
-        f"No fdlt_runtime wheel found under {STAGE}. "
-        "Re-run scripts/Deploy-LoadTests.ps1 to rebuild loadgen-bin.zip."
-    )
+        f"No fdlt_runtime wheel under {STAGE}. Re-run scripts/Deploy-LoadTests.ps1 "
+        "to refresh the lakehouse zip.")
 _pip = subprocess.run(
-    [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall",
-     "--no-deps", _wheels[-1]],
-    capture_output=True, text=True, timeout=120,
-)
+    [sys.executable, "-m", "pip", "install", "--quiet",
+     "--force-reinstall", "--no-deps", _wheels[-1]],
+    capture_output=True, text=True, timeout=120)
 if _pip.returncode != 0:
     raise RuntimeError(f"pip install of {_wheels[-1]} failed:\n{_pip.stderr}")
-import importlib
-if "fdlt_runtime" in sys.modules:
-    importlib.reload(sys.modules["fdlt_runtime"])
-import fdlt_runtime  # noqa: E402
+for _m in [m for m in list(sys.modules) if m == "fdlt_runtime" or m.startswith("fdlt_runtime.")]:
+    del sys.modules[_m]
+import fdlt_runtime
+from fdlt_runtime import notebook as fdlt_nb
 
-# Locate dotnet. Fabric Spark drivers ship the .NET 8 runtime under sempy's
-# trident_env. Prefer that over $PATH so version mismatches with whatever
-# the user happens to have don't bite us.
-_DOTNET_CANDIDATES = [
-    os.environ.get("DOTNET_HOST_PATH"),
-    "/home/trusted-service-user/cluster-env/trident_env/bin/dotnet",
-    shutil.which("dotnet"),
-    "/usr/bin/dotnet",
-    "/usr/local/bin/dotnet",
-]
-DOTNET = next((p for p in _DOTNET_CANDIDATES if p and os.path.exists(p)), None)
-if DOTNET is None:
-    raise RuntimeError(
-        "Could not find a `dotnet` runtime on this kernel. LoadGen.dll is a "
-        "framework-dependent .NET 8 build and needs the runtime to be installed. "
-        f"Probed: {[c for c in _DOTNET_CANDIDATES if c]}"
-    )
-# Sanity check the runtime can actually load — fail fast if the host is broken.
-_info = subprocess.run([DOTNET, "--info"], capture_output=True, text=True, timeout=10)
-if _info.returncode != 0:
-    raise RuntimeError(f"`{DOTNET} --info` failed:\n{_info.stderr}")
-
-print(f"Workspace : {WS_NAME} ({WS_ID})")
-print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})  schema={LH_SCHEMA or '(flat / no schema)'}")
-print(f"LoadGen   : {LOADGEN_DLL}  ({os.path.getsize(LOADGEN_DLL):,} bytes)")
-print(f"Runtime   : fdlt_runtime {fdlt_runtime.__version__}")
-print(f"dotnet    : {DOTNET}")
-""")
-
-    # 3. Build run config (queries, users, paths, token)
-    code(nb, r"""
-# ── 3. Build the run config and resolve token ────────────────────────────────
-import time, uuid
-from datetime import datetime, timezone
-
-# Queries / Users — load via fdlt_runtime (installed in cell 2).
-# See cell 1 for the full resolution rules. Accepted JSON shapes are
-# documented in the README under "Query corpus formats" / "User list formats".
-def _read_abfss(path):
-    return notebookutils.fs.head(path, 1024 * 1024 * 4)
-
-queries, queries_source = fdlt_runtime.load_queries(
-    QUERIES_FILE, QUERIES_INLINE, read_abfss=_read_abfss)
-print(f"Queries : {len(queries)}  from {queries_source}")
-if queries_source.startswith("(QUERIES_INLINE"):
-    print("          ⚠ no resource file attached — using model-agnostic warm-up queries only.")
-    print("          Drop a Performance Analyzer .json onto the Resources panel for a real test.")
-
-base, users_source = fdlt_runtime.load_users(
-    USERS_FILE, USERS_INLINE, read_abfss=_read_abfss)
-print(f"Users   : pool={len(base)}  from {users_source}")
-users = [base[i % len(base)] for i in range(CONCURRENT_USERS)]
-
-# Run output dir under Files/runs/<runId>/ — LoadGen will write
-# LoadTest.*.csv, LoadTest.*.log, and result.json in here.
-# STAGING_ID is a short id used only for the local temp path; the canonical
-# RunId is the GUID LoadGen embeds in every telemetry row, captured from the
-# `started` envelope in cell 4.
-STAGING_ID = uuid.uuid4().hex[:8]
-RUN_ID     = None  # populated by cell 4 from the LoadGen `started` envelope
-RUN_LOCAL  = f"/tmp/fdlt-run-{STAGING_ID}"
-os.makedirs(RUN_LOCAL, exist_ok=True)
-LOG_FILE   = f"LoadTest.{CONCURRENT_USERS}u.{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
-
-# Token (Power BI XMLA audience — same `pbi` key as the Fabric REST call above).
-TOKEN = notebookutils.credentials.getToken("pbi")
-
-# Materialize queries.json + users.json next to the run dir. Passing them
-# as files (instead of CLI flags) keeps multi-line DAX intact and avoids
-# any quoting hazard on the subprocess command line.
-QUERIES_JSON = os.path.join(RUN_LOCAL, "queries.json")
-USERS_JSON   = os.path.join(RUN_LOCAL, "users.json")
-with open(QUERIES_JSON, "w", encoding="utf-8") as f:
-    json.dump(list(queries), f)
-with open(USERS_JSON, "w", encoding="utf-8") as f:
-    json.dump([{"email": u["email"], "role": u.get("role", "")} for u in users], f)
-
-xmla = f"powerbi://api.powerbi.com/v1.0/myorg/{TARGET_WORKSPACE}"
-
-print(f"Staging : {STAGING_ID} (RunId assigned by LoadGen)")
-print(f"Endpoint: {xmla}{('?' + TARGET_REPLICA) if TARGET_REPLICA else ''}")
-print(f"Users   : {len(users)} concurrent, ramp {USER_RAMP_TIME_SEC}s, duration {DURATION_SECONDS}s")
-print(f"Logs    : {RUN_LOCAL}/{LOG_FILE}")
-""")
-
-    # 4. Launch LoadGen subprocess + stream JSONL progress
-    code(nb, r"""
-# ── 4. Run the load test (out-of-process) ────────────────────────────────────
-# We launch `dotnet LoadGen.dll --json-progress ...` and read line-delimited
-# JSON envelopes from its stdout. Stderr (banner, .NET log lines, exception
-# dumps) is drained on a background thread and printed on failure.
-#
-# Press the ■ Interrupt Kernel button (or Esc, I-I) to cancel — we forward
-# SIGINT to the child, which calls handle.Cancel() and drains cleanly.
-import signal, threading, sys
-from collections import deque
-from IPython.display import display, update_display
-
-cmd = [
-    DOTNET, LOADGEN_DLL, "--json-progress",
-    "--xmla", xmla,
-    "--dataset", TARGET_DATASET,
-    "--duration", str(DURATION_SECONDS),
-    "--users", str(CONCURRENT_USERS),
-    "--queries-per-batch", str(QUERIES_PER_BATCH),
-    "--pause-iterations", str(PAUSE_BETWEEN_ITERATIONS_MS),
-    "--pause-queries", str(PAUSE_BETWEEN_QUERIES_MS),
-    "--ramp-time", str(USER_RAMP_TIME_SEC),
-    "--queries-file", QUERIES_JSON,
-    "--users-file", USERS_JSON,
-    "--log-dir", RUN_LOCAL,
-    "--log-file", LOG_FILE,
-]
-if TARGET_REPLICA:
-    cmd += ["--replica", TARGET_REPLICA]
-if SKIP_RESULTS:
-    cmd += ["--skip-results"]
-
-# Token via env, NOT argv: process listings on shared compute would otherwise
-# expose the bearer token.
-env = {**os.environ, "PBI_TOKEN": TOKEN}
-
-display({"text/plain": f"Starting (staging={STAGING_ID}) ..."}, raw=True, display_id="fdlt-status")
-
-proc = subprocess.Popen(
-    cmd, env=env,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    text=True, bufsize=1,                # line-buffered text streams
+boot = fdlt_nb.bootstrap(
+    lakehouse_name=LAKEHOUSE_NAME,
+    lakehouse_schema=LAKEHOUSE_SCHEMA,
+    stage_dir=STAGE,
 )
-
-# Drain stderr to a ring buffer so we can surface it on failure without
-# blocking the parent on a full pipe (CPython's small default pipe buffer
-# stalls the child if either stream is left unread).
-stderr_buf = deque(maxlen=1000)
-def _drain_stderr():
-    for line in proc.stderr:
-        stderr_buf.append(line.rstrip("\n"))
-threading.Thread(target=_drain_stderr, daemon=True).start()
-
-def _render(envelope):
-    if envelope is None:
-        return {"text/plain": "(initializing)"}
-    if envelope.get("type") == "progress":
-        return {"text/plain": (
-            f"[{envelope.get('phase','?'):<10}] "
-            f"elapsed={envelope.get('elapsed',0):6.1f}s  "
-            f"users={envelope.get('activeUsers',0)}/{envelope.get('targetUsers',0)}  "
-            f"ok={envelope.get('successful',0)}  err={envelope.get('failed',0)}  "
-            f"qps={envelope.get('qps',0):.1f}"
-        )}
-    return {"text/plain": json.dumps(envelope)}
-
-result_envelope = None
-error_envelope  = None
-
-try:
-    for line in proc.stdout:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            env_obj = json.loads(line)
-        except json.JSONDecodeError:
-            # Stray non-JSON output is unexpected in --json-progress mode but
-            # not fatal — log it via the live status line so it's visible.
-            update_display({"text/plain": f"(non-JSON stdout) {line}"},
-                           raw=True, display_id="fdlt-status")
-            continue
-        kind = env_obj.get("type")
-        if kind == "started" and env_obj.get("runId"):
-            # Second `started` envelope (post-StartLoadTest) carries the
-            # canonical RunId GUID that LoadGen wrote into the CSV. The
-            # first `started` envelope (parameter banner) lacks it.
-            RUN_ID = env_obj["runId"]
-            update_display({"text/plain": f"Started run {RUN_ID}"},
-                           raw=True, display_id="fdlt-status")
-        elif kind == "progress":
-            update_display(_render(env_obj), raw=True, display_id="fdlt-status")
-        elif kind == "result":
-            result_envelope = env_obj
-        elif kind == "error":
-            error_envelope = env_obj
-        # else: ignore unknown types (forward-compat)
-except KeyboardInterrupt:
-    print("Interrupt received — sending SIGINT to LoadGen to drain...")
-    try: proc.send_signal(signal.SIGINT)
-    except Exception: pass
-    # Give LoadGen up to 30s to drain; if it hangs, terminate.
-    try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        print("LoadGen did not exit in 30s after SIGINT — terminating.")
-        proc.terminate()
-        try: proc.wait(timeout=5)
-        except subprocess.TimeoutExpired: proc.kill()
-finally:
-    proc.wait()
-
-returncode = proc.returncode
 """)
 
-    # 5. Surface results / failure
+    # 3. Run + persist — single call into fdlt_runtime.notebook.run()
     code(nb, r"""
-# ── 5. Surface results (or failure detail) ──────────────────────────────────
-def _print_log_tail(label="LoadGen .log"):
-    try:
-        import glob as _glob
-        logs = sorted(_glob.glob(os.path.join(RUN_LOCAL, "*.log")))
-        if logs:
-            print(f"\n--- tail of {os.path.basename(logs[-1])} ({label}) ---")
-            with open(logs[-1], "r", encoding="utf-8", errors="replace") as _lf:
-                lines = _lf.readlines()
-            for _line in lines[-100:]:
-                print(_line.rstrip())
-    except Exception as _le:
-        print(f"(could not read log file: {_le})")
-
-def _print_stderr_tail(n=40):
-    if stderr_buf:
-        print(f"\n--- LoadGen stderr (last {min(n, len(stderr_buf))} lines) ---")
-        tail = list(stderr_buf)[-n:]
-        for line in tail:
-            print(line)
-
-# Persist run artifacts to OneLake under Files/runs/<RunId or staging id>/.
-RUN_DEST = f"{LH_ABFSS}/Files/runs/{RUN_ID or STAGING_ID}"
-try:
-    notebookutils.fs.cp(f"file://{RUN_LOCAL}", RUN_DEST, recurse=True)
-except Exception as _cp_ex:
-    print(f"(warning: failed to persist run artifacts to OneLake: {_cp_ex})")
-
-if error_envelope is not None or returncode not in (0, 130):
-    print()
-    print("=== Load test FAILED ===")
-    if error_envelope is not None:
-        print(f"code   : {error_envelope.get('code')}")
-        print(f"type   : {error_envelope.get('exceptionType')}")
-        print(f"message:")
-        for ml in str(error_envelope.get("message", "")).splitlines():
-            print(f"  {ml}")
-    print(f"exit code: {returncode}")
-    _print_stderr_tail(40)
-    _print_log_tail("on failure")
-    print(f"\nRun artifacts (partial): {RUN_DEST}")
-    raise RuntimeError(error_envelope.get("message", "LoadGen exited non-zero")
-                       if error_envelope else f"LoadGen exited with code {returncode}")
-
-if returncode == 130:
-    print("\n=== Load test CANCELLED ===")
-    if result_envelope is None:
-        # Cancelled before completion finalized stats.
-        _print_stderr_tail(20)
-        _print_log_tail("on cancel")
-        print(f"\nRun artifacts: {RUN_DEST}")
-        # Treat cancel as a clean exit from the notebook flow; no raise.
-    # else: fall through and print whatever stats we got.
-
-if result_envelope is not None:
-    summary = result_envelope.get("summary", {}) or {}
-    print()
-    print("=== Results ===")
-    print(f"Total executions : {summary.get('totalExecutions')}")
-    print(f"Successful       : {summary.get('successfulExecutions')}")
-    print(f"Failed           : {summary.get('failedExecutions')}")
-    print(f"QPS              : {summary.get('qps')}")
-    lat = summary.get("latency", {}) or {}
-    if lat:
-        print(f"Latency (ms)     : min={lat.get('min')}  median={lat.get('median')}  "
-              f"mean={lat.get('mean')}  p95={lat.get('p95')}  p99={lat.get('p99')}  max={lat.get('max')}")
-    print(f"\nFull result      : {result_envelope.get('resultFile')}")
-    print(f"Run artifacts    : {RUN_DEST}")
-""")
-
-    # 5b. Persist run to Lakehouse Delta tables (§1.6 unified-trace ready)
-    code(nb, r"""
-# ── 5b. Persist run to Lakehouse Delta tables ────────────────────────────────
-# Writes 4 tables into the host Lakehouse:
-#   LoadTests                 — 1 row per logical test (MERGE on LoadTestId)
-#   LoadTestRuns              — 1 row per run (MERGE on RunId; OwnerType-keyed for §1.6)
-#   LoadTestQueries           — 1 row per (LoadTestId, QueryIndex) (insert-only)
-#   LoadTestQueryExecutions   — 1 row per query attempt. Idempotent only
-#       for re-runs of cell 5b alone (DELETE WHERE RunId / INSERT). Each
-#       full notebook execution mints a fresh RunId, so prior runs are
-#       preserved untouched and re-running the notebook is purely additive.
-#
-# TraceEvents / QueryCompleted / SecondBuckets tables are intentionally NOT
-# written here — those require Phase-1 trace capture, which is a separate
-# milestone. The schema is forward-compatible with §1.6: facts that will join
-# to trace events carry OwnerType/OwnerId/OwnerKey columns so the eventual
-# TraceOwners-driven slicer works without a migration.
-import hashlib
-from pyspark.sql import Row
-from pyspark.sql.types import (
-    StructType, StructField, StringType, IntegerType, LongType,
-    DoubleType, TimestampType,
+# ── 3. Run the load test and persist results ─────────────────────────────────
+# Thin shim: every parameter from cell 1 is passed by keyword to
+# `fdlt_runtime.notebook.run()`, which loads the scenario, resolves
+# the target, runs LoadGen, streams progress, and writes 4 Delta tables.
+# Press the ■ Interrupt Kernel button to cancel.
+outcome = fdlt_nb.run(
+    boot,
+    load_test_name=LOAD_TEST_NAME,
+    load_test_description=LOAD_TEST_DESCRIPTION,
+    target_workspace=TARGET_WORKSPACE,
+    target_dataset=TARGET_DATASET,
+    target_replica=TARGET_REPLICA,
+    duration_seconds=DURATION_SECONDS,
+    concurrent_users=CONCURRENT_USERS,
+    queries_per_batch=QUERIES_PER_BATCH,
+    pause_between_iterations_ms=PAUSE_BETWEEN_ITERATIONS_MS,
+    pause_between_queries_ms=PAUSE_BETWEEN_QUERIES_MS,
+    user_ramp_time_sec=USER_RAMP_TIME_SEC,
+    skip_results=SKIP_RESULTS,
+    queries_file=QUERIES_FILE,
+    queries_inline=QUERIES_INLINE,
+    users_file=USERS_FILE,
+    users_inline=USERS_INLINE,
+    spark=spark,
 )
-from delta.tables import DeltaTable
-
-# --- discover identifiers --------------------------------------------------
-# LoadTestId == the Fabric notebook item GUID per §1.6 §Table 1. Fall back
-# to a deterministic UUID derived from (workspace, notebook name) if the
-# runtime doesn't expose the notebook id (e.g. running inline from a Livy
-# session that isn't backed by a saved notebook).
-import uuid as _uuid
-_notebook_id = ctx.get("currentNotebookId") or ctx.get("notebookId")
-if _notebook_id:
-    LOAD_TEST_ID = str(_notebook_id)
-else:
-    LOAD_TEST_ID = str(_uuid.uuid5(_uuid.NAMESPACE_URL,
-        f"fdlt://{WS_ID}/{LOAD_TEST_NAME}"))
-_notebook_name = ctx.get("currentNotebookName") or LOAD_TEST_NAME
-
-# --- corpus hash + per-query hashes ----------------------------------------
-def _hash_query(text: str) -> str:
-    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
-
-query_hashes = [_hash_query(q) for q in queries]
-corpus_hash  = hashlib.sha256(
-    ("\u0001".join(query_hashes)).encode("utf-8")
-).hexdigest()
-
-# --- run-level rollups from the result envelope ----------------------------
-_summary = (result_envelope or {}).get("summary", {}) if result_envelope else {}
-_lat     = _summary.get("latency", {}) or {}
-_run_status = "Aborted" if (error_envelope is not None) else (
-    "Cancelled" if returncode == 130 else "Completed")
-_abort_reason = (error_envelope or {}).get("message", "") if error_envelope else ""
-
-started_at = datetime.now(timezone.utc)  # approximate; real start was earlier
-# Prefer the run's actual UTC start from the first CSV row below.
-
-# --- read the per-query CSV ------------------------------------------------
-import pandas as _pd
-csv_path = os.path.join(RUN_LOCAL, LOG_FILE)
-_df = _pd.read_csv(csv_path)
-if len(_df) > 0:
-    started_at = _pd.to_datetime(_df["StartUtc"].min(), utc=True).to_pydatetime()
-    ended_at   = _pd.to_datetime(_df["EndUtc"].max(),   utc=True).to_pydatetime()
-else:
-    ended_at = started_at
-
-# --- write the lakehouse tables --------------------------------------------
-# LH_TABLE_BASE was computed in cell 2 with schema-aware suffix
-# (Tables/ for flat lakehouses, Tables/<schema>/ for schema-enabled).
-
-def _table_path(name): return f"{LH_TABLE_BASE}/{name}"
-
-def _upsert(df, name, merge_keys):
-    path = _table_path(name)
-    if DeltaTable.isDeltaTable(spark, path):
-        tgt = DeltaTable.forPath(spark, path)
-        on = " AND ".join(f"t.{k}=s.{k}" for k in merge_keys)
-        (tgt.alias("t")
-            .merge(df.alias("s"), on)
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute())
-    else:
-        df.write.format("delta").mode("overwrite").save(path)
-
-def _replace_for_run(df, name, run_id):
-    path = _table_path(name)
-    if DeltaTable.isDeltaTable(spark, path):
-        DeltaTable.forPath(spark, path).delete(f"RunId = '{run_id}'")
-        df.write.format("delta").mode("append")\
-            .option("mergeSchema", "true").save(path)
-    else:
-        df.write.format("delta").mode("overwrite")\
-            .option("mergeSchema", "true").save(path)
-
-# LoadTests --------------------------------------------------------------
-load_tests_df = spark.createDataFrame([Row(
-    LoadTestId        = LOAD_TEST_ID,
-    Name              = LOAD_TEST_NAME,
-    Description       = LOAD_TEST_DESCRIPTION,
-    WorkspaceId       = WS_ID,
-    WorkspaceName     = WS_NAME,
-    NotebookId        = LOAD_TEST_ID,
-    NotebookName      = _notebook_name,
-    TargetWorkspace   = TARGET_WORKSPACE,
-    TargetDataset     = TARGET_DATASET,
-    SourceType        = "HandAuthored",
-    QueryCount        = len(queries),
-    QueryCorpusHash   = corpus_hash,
-    LastRunAtUtc      = started_at,
-    LastRunId         = RUN_ID,
-    Status            = "Active",
-)])
-_upsert(load_tests_df, "LoadTests", ["LoadTestId"])
-
-# LoadTestRuns (carries OwnerType/OwnerId/OwnerKey per §1.6) -------------
-runs_df = spark.createDataFrame([Row(
-    RunId            = RUN_ID,
-    LoadTestId       = LOAD_TEST_ID,
-    RunName          = LOAD_TEST_NAME,
-    OwnerType        = "LoadTestRun",
-    OwnerId          = RUN_ID,
-    OwnerKey         = f"LoadTestRun/{RUN_ID}",
-    QueryCorpusHash  = corpus_hash,
-    StartedAtUtc     = started_at,
-    EndedAtUtc       = ended_at,
-    WorkspaceName    = TARGET_WORKSPACE,
-    DatasetName      = TARGET_DATASET,
-    XmlaEndpoint     = xmla,
-    Replica          = TARGET_REPLICA or "",
-    UserCount        = int(CONCURRENT_USERS),
-    DurationSec      = int(DURATION_SECONDS),
-    RampSec          = int(USER_RAMP_TIME_SEC),
-    QueriesPerBatch  = int(QUERIES_PER_BATCH),
-    PauseIterMs      = int(PAUSE_BETWEEN_ITERATIONS_MS),
-    PauseQueryMs     = int(PAUSE_BETWEEN_QUERIES_MS),
-    SkipResults      = bool(SKIP_RESULTS),
-    TotalQueries     = int(_summary.get("totalExecutions")     or len(_df)),
-    SuccessfulQueries= int(_summary.get("successfulExecutions") or int((_df["Outcome"]=="Success").sum()) if len(_df) else 0),
-    FailedQueries    = int(_summary.get("failedExecutions")    or int((_df["Outcome"]=="Error").sum())   if len(_df) else 0),
-    Qps              = float(_summary.get("qps") or 0.0),
-    Status           = _run_status,
-    AbortReason      = _abort_reason,
-    P50Ms            = float(_lat.get("median") or 0.0),
-    P95Ms            = float(_lat.get("p95")    or 0.0),
-    P99Ms            = float(_lat.get("p99")    or 0.0),
-    MeanMs           = float(_lat.get("mean")   or 0.0),
-    RuntimeVersion   = fdlt_runtime.__version__,
-)])
-_upsert(runs_df, "LoadTestRuns", ["RunId"])
-
-# LoadTestQueries (insert-only per LoadTestId/QueryIndex pair) -----------
-queries_rows = [Row(
-    LoadTestId = LOAD_TEST_ID,
-    QueryIndex = i,
-    QueryHash  = query_hashes[i],
-    QueryText  = queries[i],
-    SourceType = "HandAuthored",
-) for i in range(len(queries))]
-if queries_rows:
-    queries_df = spark.createDataFrame(queries_rows)
-    _upsert(queries_df, "LoadTestQueries", ["LoadTestId", "QueryIndex"])
-
-# LoadTestQueryExecutions (the big fact) ---------------------------------
-if len(_df) > 0:
-    _df2 = _df.copy()
-    _df2["StartUtc"] = _pd.to_datetime(_df2["StartUtc"], utc=True)
-    _df2["EndUtc"]   = _pd.to_datetime(_df2["EndUtc"],   utc=True)
-    # join QueryHash from the local list (notebook is authoritative)
-    _df2["QueryHash"] = _df2["QueryIndex"].apply(
-        lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
-    exec_schema = StructType([
-        StructField("RunId",              StringType(),    False),
-        StructField("LoadTestId",         StringType(),    False),
-        StructField("UserIndex",          IntegerType(),   False),
-        StructField("UserEmail",          StringType(),    True),
-        StructField("QueryIndex",         IntegerType(),   False),
-        StructField("QueryHash",          StringType(),    True),
-        StructField("Iteration",          IntegerType(),   False),
-        StructField("StartUtc",           TimestampType(), False),
-        StructField("EndUtc",             TimestampType(), True),
-        StructField("StartTimeMs",        DoubleType(),    True),
-        StructField("ClientDurationMs",   DoubleType(),    True),
-        StructField("Outcome",            StringType(),    False),
-        StructField("RowCount",           IntegerType(),   True),
-        StructField("ResponseBytes",      LongType(),      True),
-        StructField("ErrorMessage",       StringType(),    True),
-        StructField("ActiveUsersAtStart", IntegerType(),   True),
-    ])
-    rows = [Row(
-        RunId              = str(r["RunId"]),
-        LoadTestId         = LOAD_TEST_ID,
-        UserIndex          = int(r["UserIndex"]),
-        UserEmail          = str(r["UserEmail"]) if _pd.notna(r["UserEmail"]) else None,
-        QueryIndex         = int(r["QueryIndex"]),
-        QueryHash          = r["QueryHash"],
-        Iteration          = int(r["Iteration"]),
-        StartUtc           = r["StartUtc"].to_pydatetime(),
-        EndUtc             = r["EndUtc"].to_pydatetime() if _pd.notna(r["EndUtc"]) else None,
-        StartTimeMs        = float(r["StartTimeMs"]) if _pd.notna(r["StartTimeMs"]) else None,
-        ClientDurationMs   = float(r["DurationMs"])  if _pd.notna(r["DurationMs"]) else None,
-        Outcome            = str(r["Outcome"]),
-        RowCount           = int(r["RowCount"])      if _pd.notna(r["RowCount"]) else None,
-        ResponseBytes      = int(r["ResponseBytes"]) if _pd.notna(r["ResponseBytes"]) else None,
-        ErrorMessage       = (str(r["ErrorMessage"]) if _pd.notna(r["ErrorMessage"]) and str(r["ErrorMessage"]) else None),
-        ActiveUsersAtStart = int(r["ActiveUsersAtStart"]) if _pd.notna(r["ActiveUsersAtStart"]) else None,
-    ) for _, r in _df2.iterrows()]
-    exec_df = spark.createDataFrame(rows, schema=exec_schema)
-    _replace_for_run(exec_df, "LoadTestQueryExecutions", RUN_ID)
-
-print(f"\n=== Lakehouse write OK ===")
-print(f"  LoadTestId : {LOAD_TEST_ID}")
-print(f"  RunId      : {RUN_ID}")
-print(f"  Queries    : {len(queries)} (corpus hash {corpus_hash[:12]}...)")
-print(f"  Executions : {len(_df):,}")
-print(f"  Tables     : LoadTests, LoadTestRuns, LoadTestQueries, LoadTestQueryExecutions")
-print(f"  Lakehouse  : {LAKEHOUSE_NAME} ({LH_ID})")
 """)
 
-    # 6. Charts
+    # 4. Analyze (charts)
     code(nb, r"""
-# ── 6. Charts ─────────────────────────────────────────────────────────────────
-import pandas as pd, matplotlib.pyplot as plt
-
-csv = os.path.join(RUN_LOCAL, LOG_FILE)
-df  = pd.read_csv(csv)
-print(f"Records: {len(df):,}  Success: {(df.Outcome=='Success').sum():,}  "
-      f"Error: {(df.Outcome=='Error').sum():,}")
-
-t_min, t_max = df.StartTimeMs.min(), df.StartTimeMs.max()
-duration_s = max((t_max - t_min) / 1000, 1)
-n_buckets  = min(100, max(1, len(df)))
-df["bucket"] = pd.cut(df.StartTimeMs, bins=n_buckets, labels=False)
-
-ok  = df[df.Outcome == "Success"]
-err = df[df.Outcome == "Error"]
-agg = ok.groupby("bucket").agg(
-    count=("DurationMs", "count"), mean_ms=("DurationMs", "mean"),
-    min_ms=("DurationMs", "min"),  max_ms=("DurationMs", "max"),
-    t=("StartTimeMs", "mean"),
-).reset_index()
-errs  = err.groupby("bucket").agg(err_count=("DurationMs", "count")).reset_index()
-users = df.groupby("bucket").agg(active_users=("ActiveUsersAtStart", "max")).reset_index()
-agg = agg.merge(errs, on="bucket", how="left").merge(users, on="bucket", how="left").fillna(0)
-agg["time_s"] = (agg.t - t_min) / 1000
-
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 10), sharex=True,
-                                    gridspec_kw={"height_ratios": [3, 1, 1]})
-ax1.fill_between(agg.time_s, agg.min_ms, agg.max_ms, alpha=0.15, color="steelblue", label="min–max")
-ax1.plot(agg.time_s, agg.mean_ms, color="steelblue", linewidth=1.5, label="mean")
-ax1.plot(agg.time_s, agg.max_ms,  color="coral",     linewidth=0.8, alpha=0.7, label="max")
-ax1.set_ylabel("Latency (ms)"); ax1.legend(loc="upper left"); ax1.grid(True, alpha=0.3)
-ax1.set_title(f"Run {RUN_ID} — {len(df):,} queries / {duration_s:.0f}s / "
-              f"{int(df.ActiveUsersAtStart.max())} concurrent users")
-
-bw = duration_s / n_buckets if n_buckets > 0 else 1
-ax2.bar(agg.time_s, agg["count"] / bw, width=bw * 0.9, color="steelblue", alpha=0.6, label="QPS (success)")
-if agg.err_count.sum() > 0:
-    ax2.bar(agg.time_s, agg.err_count / bw, width=bw * 0.9,
-            bottom=agg["count"] / bw, color="red", alpha=0.6, label="QPS (error)")
-ax2.set_ylabel("Queries/sec"); ax2.legend(loc="upper left"); ax2.grid(True, alpha=0.3)
-
-ax3.plot(agg.time_s, agg.active_users, color="green", linewidth=1.5, label="Active users")
-ax3.fill_between(agg.time_s, 0, agg.active_users, alpha=0.1, color="green")
-ax3.set_ylabel("Users"); ax3.set_xlabel("Time (seconds)")
-ax3.legend(loc="upper left"); ax3.grid(True, alpha=0.3); ax3.set_ylim(bottom=0)
-
-plt.tight_layout(); plt.show()
+# ── 4. Charts ────────────────────────────────────────────────────────────────
+# Latency band + QPS + active-user figure from the per-run CSV.
+fdlt_nb.analyze(outcome)
 """)
 
     write(nb, OUT / "LoadTest-Template.ipynb")
