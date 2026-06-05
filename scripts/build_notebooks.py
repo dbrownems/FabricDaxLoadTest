@@ -95,7 +95,10 @@ everything:
 - `Files/loadgen-bin.zip` — LoadGen + ADOMD assemblies; cell 2 downloads
   and unzips this into a `/tmp` staging dir on the Spark driver
 - `Files/runs/`  — per-run telemetry CSVs (created on first run)
-- `Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables fed by cell 5b
+- `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables
+  fed by cell 5b. The `dbo/` prefix is added automatically when the
+  lakehouse is schema-enabled; flat lakehouses write directly under
+  `Tables/`. Override with `LAKEHOUSE_SCHEMA` in cell 1.
 
 ## How to use (in your saved copy)
 
@@ -103,14 +106,18 @@ everything:
    fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
    testing the pipeline. For a real test you have two options:
 
-   - **Drag a `PowerBiPerformance.json` onto the notebook's *Resources*
-     panel** (left sidebar). This is the canonical workflow — the corpus
-     travels with the saved `LoadTest - <name>` notebook so each test is
-     reproducible. (Power BI Desktop's *Performance Analyzer* exports
-     query traces in this exact format; the runner accepts that file
-     verbatim, plus simpler list-of-strings JSON.)
+   - **Drop a `.json` onto the notebook's *Resources* panel** (left
+     sidebar). If exactly one `.json` is attached, cell 3 picks it up
+     automatically; otherwise set `QUERIES_FILE = "name.json"` in cell 1.
+     Accepted shapes: Power BI Desktop *Performance Analyzer* export,
+     `[{"query": "EVALUATE …"}, …]`, or `["EVALUATE …", …]`.
    - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
      Fine for one-off tests; doesn't scale to large corpora.
+
+   Optional: drop a `users.json` onto Resources too and set
+   `USERS_FILE = "users.json"` in cell 1 to drive role / EffectiveUserName
+   impersonation. Accepted shapes: `[{"email": "...", "role": "..."}, …]`
+   or `["alice@contoso.com", "bob@contoso.com"]`.
 
 2. Edit cell **1** to point at the target workspace + dataset and tweak
    load parameters. Set `LOAD_TEST_NAME` / `LOAD_TEST_DESCRIPTION` —
@@ -148,36 +155,65 @@ USER_RAMP_TIME_SEC       = 15
 TARGET_REPLICA           = ""       # "readonly" → scale-out read replica
 SKIP_RESULTS             = False    # True drains rows without parsing
 
-# A small, model-agnostic warm-up corpus used when no resource file is
-# attached (see QUERIES_FILE below). Useful for smoke testing the
-# pipeline; replace with real queries — either inline here or by
-# uploading a `PowerBiPerformance.json` to this notebook's Resources
-# panel — before drawing any performance conclusions.
+# ── Query corpus ──────────────────────────────────────────────────────────────
+# QUERIES_FILE — name of a .json in this notebook's *Resources* panel
+# (left sidebar). Cell 3 resolves it in this order:
+#
+#   1. None  → if exactly one `*.json` is in Resources, use that file.
+#   2. "name.json" → load `builtin/name.json` from Resources.
+#   3. "abfss://…" → cross-lakehouse / cross-workspace escape hatch.
+#   4. Nothing matches → fall back to `QUERIES_INLINE` below.
+#
+# Accepted JSON shapes (see README → "Query corpus formats"):
+#   • Power BI Desktop *Performance Analyzer* export (with `events[]`)
+#   • [{"query": "EVALUATE …"}, …]
+#   • ["EVALUATE …", …]
+QUERIES_FILE = None       # auto-pick single .json in Resources
+
+# Fallback used only when no resource file is attached. The default is a
+# tiny model-agnostic warm-up corpus useful only for smoke-testing the
+# pipeline — replace with real DAX, or attach a Performance Analyzer
+# export to the Resources panel, before drawing any conclusions.
 QUERIES_INLINE = [
     "EVALUATE ROW(\"ping\", 1)",
     "EVALUATE INFO.TABLES()",
     "EVALUATE INFO.MEASURES()",
 ]
 
-# Path to the DAX query corpus.
+# ── Users (optional impersonation corpus) ─────────────────────────────────────
+# USERS_FILE — name of a .json in this notebook's Resources panel
+# describing virtual-user identities for AS `EffectiveUserName=` /
+# `Roles=` impersonation. Resolution order:
 #
-# Canonical workflow: drag a `PowerBiPerformance.json` file onto this
-# notebook's *Resources* panel (left sidebar). Power BI Desktop's
-# *Performance Analyzer* exports query traces in this exact format; the
-# runner also accepts a plain JSON list of DAX strings. Cell 3 resolves
-# `QUERIES_FILE` in this order:
+#   1. None       → use `USERS_INLINE` below (or a single anonymous user).
+#   2. "name.json" → load `builtin/name.json` from Resources.
+#   3. "abfss://…" → cross-lakehouse escape hatch.
 #
-#   1. notebook resources (`builtin/<QUERIES_FILE>`) — preferred; the
-#      corpus travels with the saved `LoadTest - <name>` notebook.
-#   2. literal `abfss://…` URL — escape hatch for cross-lakehouse refs.
-#   3. fall back to `QUERIES_INLINE` above.
-QUERIES_FILE = "PowerBiPerformance.json"
+# Auto-discovery does NOT pick up a stray .json for users — single-.json
+# Resources always go to QUERIES_FILE. Users must be named explicitly.
+#
+# Accepted JSON shapes (see README → "User list formats"):
+#   • [{"email": "alice@contoso.com", "role": "Sales"}, …]
+#   • ["alice@contoso.com", "bob@contoso.com"]   (roles default to "")
+USERS_FILE = None
 
-# Optional inline users; if empty, all virtual users share the interactive
-# token's identity (no role / CustomData impersonation). Each entry is
-# {"email": "...", "role": "..."} — the role string is forwarded to the AS
-# `Roles=` connection string property.
+# Inline alternative when USERS_FILE is None. Empty list ⇒ all virtual
+# users share the notebook's interactive token (no impersonation).
 USERS_INLINE = []
+
+# ── Lakehouse layout ──────────────────────────────────────────────────────────
+# LAKEHOUSE_SCHEMA — destination schema for the 4 Delta tables.
+#
+#   None  → auto-detect: read the lakehouse `properties.defaultSchema`
+#           via the Fabric items API. Schema-enabled lakehouses default
+#           to "dbo"; classic (flat) lakehouses get "" (no schema dir).
+#   "dbo" (or any name) → force schema-enabled writes to Tables/<name>/.
+#   ""    → force flat writes to Tables/.
+#
+# Both layouts are first-class so the notebook works against the
+# auto-deployed `LoadTests` lakehouse and BYO lakehouses regardless of
+# which preview the user chose at create time.
+LAKEHOUSE_SCHEMA = None
 """)
 
     # 2. Auto-discover lakehouse + stage LoadGen + dotnet preflight
@@ -225,6 +261,32 @@ if not _match:
 LH_ID = _match[0]["id"]
 LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}"
 
+# Detect schema-enabled lakehouse: GET /v1/workspaces/{ws}/lakehouses/{lh}
+# returns `properties.defaultSchema` only when the lakehouse was created
+# with the schema preview enabled. Fall back to a Tables/dbo existence
+# probe if the property isn't surfaced (older API revisions).
+if LAKEHOUSE_SCHEMA is None:
+    try:
+        _lh = requests.get(
+            f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/lakehouses/{LH_ID}",
+            headers={"Authorization": f"Bearer {_tok}"}, timeout=30).json()
+        _ds = (_lh.get("properties") or {}).get("defaultSchema")
+        LH_SCHEMA = _ds or ""
+    except Exception:
+        LH_SCHEMA = ""
+    if not LH_SCHEMA:
+        # Probe: schema-enabled lakehouses always have Tables/dbo.
+        try:
+            _entries = notebookutils.fs.ls(f"{LH_ABFSS}/Tables")
+            if any(e.name.rstrip("/") == "dbo" for e in _entries):
+                LH_SCHEMA = "dbo"
+        except Exception:
+            pass
+else:
+    LH_SCHEMA = LAKEHOUSE_SCHEMA
+
+LH_TABLE_BASE = f"{LH_ABFSS}/Tables" + (f"/{LH_SCHEMA}" if LH_SCHEMA else "")
+
 # Download Files/loadgen-bin.zip → local /tmp, then extract. Reuses the
 # previous extraction across cell re-runs within a kernel session (cheap
 # mtime check) but always re-downloads if missing.
@@ -270,7 +332,7 @@ if _info.returncode != 0:
     raise RuntimeError(f"`{DOTNET} --info` failed:\n{_info.stderr}")
 
 print(f"Workspace : {WS_NAME} ({WS_ID})")
-print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})")
+print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})  schema={LH_SCHEMA or '(flat / no schema)'}")
 print(f"LoadGen   : {LOADGEN_DLL}  ({os.path.getsize(LOADGEN_DLL):,} bytes)")
 print(f"dotnet    : {DOTNET}")
 """)
@@ -281,31 +343,83 @@ print(f"dotnet    : {DOTNET}")
 import time, uuid
 from datetime import datetime, timezone
 
-# Queries — try notebook resources first (canonical); else literal abfss://;
-# else fall back to QUERIES_INLINE (the model-agnostic warm-up corpus).
+# Queries / Users — load from the notebook Resources panel, an abfss URL,
+# or fall back to the inline corpus. See cell 1 for the full resolution
+# rules. Accepted JSON shapes are documented in the README under
+# "Query corpus formats" / "User list formats".
+
+def _read_text(path):
+    if path.startswith("abfss://"):
+        return notebookutils.fs.head(path, 1024 * 1024 * 4)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def _normalize_queries(raw_json):
+    obj = json.loads(raw_json)
+    # Power BI Performance Analyzer export
+    if isinstance(obj, dict) and isinstance(obj.get("events"), list):
+        out = []
+        for ev in obj["events"]:
+            q = ev.get("query") or (ev.get("Query") or {}).get("Query")
+            if q:
+                out.append(q)
+        return out
+    if isinstance(obj, list):
+        return [q if isinstance(q, str) else q.get("query") or q.get("Query") for q in obj]
+    raise ValueError("Unrecognized queries.json shape")
+
+def _normalize_users(raw_json):
+    obj = json.loads(raw_json)
+    if not isinstance(obj, list):
+        raise ValueError("users.json must be a JSON array")
+    out = []
+    for u in obj:
+        if isinstance(u, str):
+            out.append({"email": u, "role": ""})
+        elif isinstance(u, dict):
+            out.append({"email": u.get("email") or u.get("Email") or "",
+                        "role":  u.get("role")  or u.get("Role")  or ""})
+    return [u for u in out if u["email"]]
+
+def _resolve_resource(name, kind):
+    # Resolve a Resources-panel filename, abfss URL, or auto-discover.
+    # kind is "queries" or "users" (used only for messages).
+    # Returns (path-or-None, label).
+    if isinstance(name, str) and name.startswith("abfss://"):
+        return name, name
+    if isinstance(name, str) and name.strip():
+        p = f"builtin/{name.lstrip('/')}"
+        return (p, f"resources:{p}") if os.path.exists(p) else (None, f"(missing resource '{name}')")
+    if kind == "queries" and os.path.isdir("builtin"):
+        # Auto-discover: exactly one .json under Resources ⇒ that's the queries file.
+        candidates = sorted(f for f in os.listdir("builtin") if f.lower().endswith(".json"))
+        if len(candidates) == 1:
+            p = f"builtin/{candidates[0]}"
+            return p, f"resources:{p} (auto-discovered)"
+    return None, "(no resource)"
+
 def _load_queries():
-    if QUERIES_FILE.startswith("abfss://"):
-        raw = notebookutils.fs.head(QUERIES_FILE, 1024 * 1024 * 4)
-        return [q if isinstance(q, str) else q["query"] for q in json.loads(raw)], QUERIES_FILE
-    # Notebook resources are mounted at ./builtin/ in the kernel's CWD.
-    res_path = f"builtin/{QUERIES_FILE.lstrip('/')}"
-    if os.path.exists(res_path):
-        with open(res_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-        return [q if isinstance(q, str) else q["query"] for q in json.loads(raw)], f"resources:{res_path}"
+    p, src = _resolve_resource(QUERIES_FILE, "queries")
+    if p is not None:
+        return _normalize_queries(_read_text(p)), src
     return list(QUERIES_INLINE), "(QUERIES_INLINE fallback)"
+
+def _load_users():
+    p, src = _resolve_resource(USERS_FILE, "users")
+    if p is not None:
+        return _normalize_users(_read_text(p)), src
+    if USERS_INLINE:
+        return [dict(u) for u in USERS_INLINE], "(USERS_INLINE)"
+    return [{"email": "anonymous@local", "role": ""}], "(default anonymous user)"
 
 queries, queries_source = _load_queries()
 print(f"Queries : {len(queries)}  from {queries_source}")
 if queries_source.startswith("(QUERIES_INLINE"):
     print("          ⚠ no resource file attached — using model-agnostic warm-up queries only.")
-    print("          Attach `PowerBiPerformance.json` to the notebook Resources panel for a real test.")
+    print("          Drop a Performance Analyzer .json onto the Resources panel for a real test.")
 
-# Users — round-robin to CONCURRENT_USERS
-if USERS_INLINE:
-    base = list(USERS_INLINE)
-else:
-    base = [{"email": "anonymous@local", "role": ""}]
+base, users_source = _load_users()
+print(f"Users   : pool={len(base)}  from {users_source}")
 users = [base[i % len(base)] for i in range(CONCURRENT_USERS)]
 
 # Run output dir under Files/runs/<runId>/ — LoadGen will write
@@ -597,7 +711,8 @@ else:
     ended_at = started_at
 
 # --- write the lakehouse tables --------------------------------------------
-LH_TABLE_BASE = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}/Tables"
+# LH_TABLE_BASE was computed in cell 2 with schema-aware suffix
+# (Tables/ for flat lakehouses, Tables/<schema>/ for schema-enabled).
 
 def _table_path(name): return f"{LH_TABLE_BASE}/{name}"
 

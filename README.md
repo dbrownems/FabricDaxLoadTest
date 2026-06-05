@@ -26,7 +26,7 @@ This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a rea
 |---|---|
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
 | `LoadGen.dll` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` (Linux Spark host inside the notebook, or anywhere `dotnet` is installed locally). |
-| `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → drop `PowerBiPerformance.json` onto Resources → edit cell 1 → Run All. |
+| `notebooks/LoadTest-Template.ipynb` | Deployed as **`LoadTest - Template`**. Save-As → drop a queries `.json` onto Resources → edit cell 1 → Run All. |
 | `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, zips it, creates the folder + lakehouse, uploads `loadgen-bin.zip`, deploys the template notebook. |
 
 ## Status
@@ -51,12 +51,12 @@ The tool deploys a single self-contained bundle into a workspace folder:
     │   ├── Files/
     │   │   ├── loadgen-bin.zip        ← LoadGen + ADOMD assemblies (unzipped to /tmp by cell 2)
     │   │   └── runs/<RunId>/          ← per-run telemetry CSVs
-    │   └── Tables/dbo/
+    │   └── Tables[/dbo]/                ← /dbo/ added when lakehouse is schema-enabled
     │       ├── LoadTests
     │       ├── LoadTestRuns
     │       ├── LoadTestQueries
     │       └── LoadTestQueryExecutions
-    └── LoadTest - Template (Notebook) ← Save-As to start each run; drop PowerBiPerformance.json onto Resources
+    └── LoadTest - Template (Notebook) ← Save-As to start each run; drop a queries .json onto Resources
 ```
 
 Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder. The runner notebook **auto-discovers the workspace's `LoadTests` lakehouse** via the Fabric items API and uses it as the default storage for assemblies, telemetry, and Delta output — no UI lakehouse-attach step is required.
@@ -130,7 +130,7 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
 1. Open `LoadTest - Template` in the workspace.
 2. **File → Save As** (or right-click in the workspace → **Duplicate**) and rename the copy to something descriptive — e.g. `LoadTest - DIAD 5u baseline`. Keep it in the `LoadTests` folder.
 3. **Set up the query corpus.** Two options:
-   - **Drag a `PowerBiPerformance.json` onto the saved copy's *Resources* panel** (left sidebar in the notebook). Power BI Desktop's *Performance Analyzer* exports query traces in this exact format; the runner accepts it verbatim. This is the canonical workflow — the corpus travels with the saved notebook so each `LoadTest - <name>` is reproducible.
+   - **Drop a queries `.json` onto the saved copy's *Resources* panel** (left sidebar in the notebook). If exactly one `.json` is attached, the notebook picks it up automatically. Power BI Desktop's *Performance Analyzer* exports work verbatim; plain DAX-string lists also work — see [Query corpus formats](#query-corpus-formats).
    - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The template ships with a 3-query model-agnostic warm-up corpus that's only useful for smoke-testing the pipeline.
 4. Open the copy. Edit cell **1**:
 
@@ -150,13 +150,17 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
    TARGET_REPLICA           = ""        # "readonly" → scale-out read replica
    SKIP_RESULTS             = False
 
-   QUERIES_INLINE = [                   # used only when QUERIES_FILE isn't found
+   QUERIES_FILE   = None                # None = auto-pick the single .json in Resources;
+                                        # otherwise "name.json" or an "abfss://..." URL
+   QUERIES_INLINE = [                   # used only when no resource file is found
        "EVALUATE ROW(\"ping\", 1)",
        "EVALUATE INFO.TABLES()",
        "EVALUATE INFO.MEASURES()",
    ]
-   QUERIES_FILE   = "PowerBiPerformance.json"  # filename in this notebook's Resources panel
-   USERS_INLINE   = []                  # [] → all users share the interactive identity
+
+   USERS_FILE     = None                # None = no impersonation; "users.json" to load
+                                        # virtual users from Resources (not auto-discovered)
+   USERS_INLINE   = []                  # [] = all users share the interactive identity
    ```
 
 4. **Run All**. Cell 4 prints a live status line every second; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly.
@@ -165,18 +169,84 @@ The deployed `LoadTest - Template` notebook is **read-only by convention** — e
 
 After the run, the Delta tables are queryable as a Direct Lake source — point a semantic model + Power BI report at them for cross-run analysis.
 
+### Schema-enabled lakehouses (and BYO lakehouses)
+
+Both flat (`Tables/<TableName>`) and schema-enabled (`Tables/<schema>/<TableName>`) lakehouse layouts are supported. Cell 2 auto-detects via the Fabric `properties.defaultSchema` field — schema-enabled lakehouses write to `Tables/dbo/`, flat lakehouses write to `Tables/`. To override, set `LAKEHOUSE_SCHEMA` in cell 1:
+
+```python
+LAKEHOUSE_SCHEMA = None    # auto-detect (default)
+LAKEHOUSE_SCHEMA = "dbo"   # force schema-enabled writes to Tables/dbo/
+LAKEHOUSE_SCHEMA = ""      # force flat writes to Tables/
+LAKEHOUSE_SCHEMA = "loadtests"  # any other schema name works too
+```
+
+If you point the notebook at a BYO lakehouse (by renaming `LAKEHOUSE_NAME` in cell 2), make sure that lakehouse contains `Files/loadgen-bin.zip` — the deploy script only writes the zip into the auto-managed `LoadTests` lakehouse.
+
 ### Editing the query corpus
 
-Two patterns:
+The runner loads queries from one of these sources, in order (cell 3):
 
-- **Per-test corpus (canonical, recommended).** In your saved `LoadTest - <name>` copy, drag a `PowerBiPerformance.json` onto the notebook's **Resources** panel (left sidebar). Cell 3 finds it at `builtin/PowerBiPerformance.json` automatically. The runner accepts the Power BI *Performance Analyzer* JSON format directly, or a plain `[{ "query": "EVALUATE …" }, …]` list, or a plain `["EVALUATE …", …]` list. Set `QUERIES_FILE = "<name>.json"` in cell 1 if you prefer a different filename.
-- **Inline.** Edit `QUERIES_INLINE` in cell 1. Fine for one-offs; doesn't scale to large corpora. The template ships with a 3-query warm-up set that runs against any model.
+1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` is attached to the notebook's **Resources** panel — that file is auto-discovered.
+2. `QUERIES_FILE = "name.json"` — loads `builtin/name.json` from Resources.
+3. `QUERIES_FILE = "abfss://…"` — escape hatch for cross-lakehouse references.
+4. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the template ships with).
 
-An absolute `abfss://…` URL in `QUERIES_FILE` is also accepted as an escape hatch for cross-lakehouse references.
+Per-test corpora travel with the saved `LoadTest - <name>` copy in Resources, so every saved test is reproducible without coupling to shared state.
 
-### RLS / impersonation
+#### Query corpus formats
 
-Each entry in `USERS_INLINE` is `{"email": "...", "role": "..."}`. The email is forwarded to AS as `EffectiveUsername` and the role as `Roles=`. The interactive token holder needs **Build** permission on the model and the right to test as that role; otherwise leave the role empty.
+The notebook accepts any of these shapes for `queries.json`:
+
+- **Power BI Desktop Performance Analyzer export** (canonical):
+
+  ```json
+  { "version": "1.1.0",
+    "events": [
+      { "name": "Query End", "query": "EVALUATE TOPN(100, Sales)" },
+      { "name": "Query End", "query": "EVALUATE INFO.MEASURES()" }
+    ]
+  }
+  ```
+
+  In Power BI Desktop, *View → Performance Analyzer → Start recording → interact with report → Export*. Drop the file straight onto Resources.
+
+- **Object array** (one entry per query):
+
+  ```json
+  [
+    { "query": "EVALUATE ROW(\"x\", 1)" },
+    { "query": "EVALUATE INFO.TABLES()" }
+  ]
+  ```
+
+- **String array** (when you don't need any per-query metadata):
+
+  ```json
+  [ "EVALUATE ROW(\"x\", 1)", "EVALUATE INFO.TABLES()" ]
+  ```
+
+#### User list formats
+
+`USERS_FILE` (Resources panel) or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation). To exercise RLS:
+
+- **Object array** with email + role:
+
+  ```json
+  [
+    { "email": "alice@contoso.com", "role": "Sales East" },
+    { "email": "bob@contoso.com",   "role": "Sales West" }
+  ]
+  ```
+
+  `email` lands on the AS `EffectiveUserName=` connection property; `role` lands on `Roles=`. The notebook's token holder needs **Build** permission on the model and the right to test as those roles.
+
+- **String array** when you only care about `EffectiveUserName`:
+
+  ```json
+  [ "alice@contoso.com", "bob@contoso.com" ]
+  ```
+
+`USERS_FILE` is **not** auto-discovered — pass an explicit filename. (Auto-discovery of a single `.json` in Resources always goes to `QUERIES_FILE`.)
 
 ---
 
