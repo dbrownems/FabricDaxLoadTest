@@ -394,8 +394,8 @@ namespace FabricDaxLoadTest
                 throw new ArgumentException("XmlaEndpoint must be set.", nameof(config));
             if (string.IsNullOrEmpty(config.Dataset))
                 throw new ArgumentException("Dataset must be set.", nameof(config));
-            if (string.IsNullOrEmpty(config.Token))
-                throw new ArgumentException("Token must be set.", nameof(config));
+            // Token may be empty for integrated/Windows auth (local SSAS or Power BI Desktop).
+            // The Service / Fabric XMLA endpoint will reject an empty-token connection at Open().
             if (config.DurationSeconds <= 0)
                 throw new ArgumentException("DurationSeconds must be > 0.", nameof(config));
             if (config.QueriesPerBatch <= 0)
@@ -554,6 +554,12 @@ namespace FabricDaxLoadTest
             // arrivals at the exact rampIntervalMs cadence — no batched bursts.
             int connectedUsers = 0;
             int connectFailures = 0;
+            // First few connect exceptions are kept verbatim so we can surface
+            // them in the InvalidOperationException when *every* user fails —
+            // otherwise the caller only sees "No users connected" with no clue
+            // why (cert/auth/endpoint).
+            var connectExceptions = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+            const int MaxKeptConnectExceptions = 5;
             var userTasks = new List<Task>(nUsers);
             for (int i = 0; i < nUsers; i++)
             {
@@ -586,7 +592,9 @@ namespace FabricDaxLoadTest
                     catch (Exception ex)
                     {
                         Interlocked.Increment(ref connectFailures);
-                        Log($"ERROR connecting user {userIdx} ({userEmails[userIdx]}): {ex.Message}");
+                        if (connectExceptions.Count < MaxKeptConnectExceptions)
+                            connectExceptions.Enqueue(ex);
+                        Log($"ERROR connecting user {userIdx} ({userEmails[userIdx]}): {ex.GetType().Name}: {ex.Message}");
                         if (connections != null)
                             for (int c = 0; c < connections.Length; c++)
                                 try { connections[c]?.Dispose(); } catch { }
@@ -675,7 +683,22 @@ namespace FabricDaxLoadTest
                 }
                 else
                 {
-                    throw new InvalidOperationException("No users connected successfully — cannot run load test");
+                    var sb = new StringBuilder();
+                    sb.Append("No users connected successfully — cannot run load test. ");
+                    sb.Append($"({connectFailures} of {nUsers} users failed to connect).");
+                    var samples = connectExceptions.ToArray();
+                    if (samples.Length > 0)
+                    {
+                        sb.AppendLine();
+                        sb.AppendLine("Sample connect exceptions:");
+                        for (int s = 0; s < samples.Length; s++)
+                        {
+                            sb.AppendLine($"--- [{s + 1}/{samples.Length}] ---");
+                            sb.AppendLine(samples[s].ToString());
+                        }
+                    }
+                    throw new InvalidOperationException(sb.ToString(),
+                        samples.Length > 0 ? samples[0] : null);
                 }
             }
 
@@ -1028,7 +1051,11 @@ namespace FabricDaxLoadTest
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={xmlaEndpoint};Initial Catalog={dataset};");
-            sb.Append($"password={token};Timeout=7200;Connect Timeout=300;");
+            sb.Append($"Timeout=7200;Connect Timeout=300;");
+            // Empty token => integrated/Windows auth (local SSAS or Power BI Desktop). For the
+            // Power BI Service / Fabric XMLA endpoint a bearer token is required.
+            if (!string.IsNullOrEmpty(token))
+                sb.Append($"password={token};");
             if (!string.IsNullOrEmpty(userEmail))
                 sb.Append($"CustomData={userEmail};");
             if (!string.IsNullOrEmpty(userRole))

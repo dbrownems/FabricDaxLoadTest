@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
@@ -33,6 +34,12 @@ class Program
         var authOption = new Option<string?>("--auth",
             "Azure auth method: 'default', 'browser', 'devicecode', 'cli', 'env', or 'managedidentity'");
         var skipResultsOption = new Option<bool>("--skip-results", () => false, "Drain response without parsing rows");
+        var noAuthOption = new Option<bool>("--no-auth", () => false,
+            "Connect with integrated/Windows auth instead of a bearer token. Intended for local SSAS or " +
+            "Power BI Desktop smoke tests; not for Fabric/Power BI Service which require a token.");
+        var jsonProgressOption = new Option<bool>("--json-progress", () => false,
+            "Emit JSONL progress on stdout (one envelope per line) and route diagnostics + run logs to stderr. " +
+            "Designed for programmatic callers (notebook subprocess); the human-readable mode stays the default.");
 
         var rootCommand = new RootCommand("LoadGen — DAX load test runner for Power BI / Fabric semantic models")
         {
@@ -40,7 +47,7 @@ class Program
             queriesPerBatchOption, pauseIterOption, pauseQueryOption,
             rampOption, replicaOption, queriesFileOption, usersFileOption,
             logDirOption, logFileOption, tokenOption, tokenFileOption, authOption,
-            skipResultsOption,
+            skipResultsOption, noAuthOption, jsonProgressOption,
         };
 
         rootCommand.SetHandler((InvocationContext ctx) =>
@@ -62,36 +69,54 @@ class Program
             var tokenFile = ctx.ParseResult.GetValueForOption(tokenFileOption);
             var auth = ctx.ParseResult.GetValueForOption(authOption);
             var skipResults = ctx.ParseResult.GetValueForOption(skipResultsOption);
+            var noAuth = ctx.ParseResult.GetValueForOption(noAuthOption);
+            var jsonProgress = ctx.ParseResult.GetValueForOption(jsonProgressOption);
 
             ctx.ExitCode = Run(xmla, dataset, duration, userCount, queriesPerBatch,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
-                logDir, logFile, tokenDirect, tokenFile, auth, skipResults);
+                logDir, logFile, tokenDirect, tokenFile, auth, skipResults, noAuth, jsonProgress);
         });
 
         return rootCommand.Invoke(args);
     }
 
+    // In --json-progress mode, *every* line written to the LoadGen
+    // stdout stream is a JSON envelope the caller will parse line-by-line.
+    // Banner, info messages, and QueryRunner log echoes all go to stderr
+    // so they never collide with the JSON protocol. The notebook drains
+    // stderr concurrently and surfaces it on failure.
     static int Run(string xmla, string dataset, int duration, int userCount,
         int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
-        string? auth, bool skipResults)
+        string? auth, bool skipResults, bool noAuth, bool jsonProgress)
     {
-        var token = ResolveToken(tokenDirect, tokenFile, auth);
-        if (token == null)
+        TextWriter info = jsonProgress ? Console.Error : Console.Out;
+
+        string token;
+        if (noAuth)
         {
-            Console.Error.WriteLine("Error: No access token provided.");
-            Console.Error.WriteLine("  Use --auth <method>, --token-file <path>, --token <value>, or set PBI_TOKEN env var.");
-            Console.Error.WriteLine("  Auth methods: default, browser, devicecode, cli, env, managedidentity");
-            return 1;
+            token = "";  // QueryRunner.BuildConnectionString omits the password= clause when token is empty.
+            info.WriteLine("--no-auth: connecting with integrated auth (no bearer token).");
+        }
+        else
+        {
+            var resolved = ResolveToken(tokenDirect, tokenFile, auth, info);
+            if (resolved == null)
+            {
+                EmitError(jsonProgress, "no_token",
+                    "No access token provided. Use --auth, --token-file, --token, set PBI_TOKEN, or pass --no-auth for integrated auth.");
+                return 1;
+            }
+            token = resolved;
         }
 
         if (duration > 3000)
-            Console.WriteLine("Warning: Long duration requested. Token may expire during the test.");
+            info.WriteLine("Warning: Long duration requested. Token may expire during the test.");
 
         if (!queriesFile.Exists)
         {
-            Console.Error.WriteLine($"Error: Queries file not found: {queriesFile.FullName}");
+            EmitError(jsonProgress, "queries_file_not_found", $"Queries file not found: {queriesFile.FullName}");
             return 1;
         }
 
@@ -99,13 +124,13 @@ class Program
         try { queries = ParseQueries(File.ReadAllText(queriesFile.FullName)); }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Error parsing queries file: {ex.Message}");
+            EmitError(jsonProgress, "queries_parse", $"Error parsing queries file: {ex.Message}");
             return 1;
         }
 
         if (!usersFile.Exists)
         {
-            Console.Error.WriteLine($"Error: Users file not found: {usersFile.FullName}");
+            EmitError(jsonProgress, "users_file_not_found", $"Users file not found: {usersFile.FullName}");
             return 1;
         }
 
@@ -113,13 +138,13 @@ class Program
         try { allUsers = ParseUsers(File.ReadAllText(usersFile.FullName)); }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Error parsing users file: {ex.Message}");
+            EmitError(jsonProgress, "users_parse", $"Error parsing users file: {ex.Message}");
             return 1;
         }
 
         if (allUsers.Length == 0)
         {
-            Console.Error.WriteLine("Error: users.json contains no users.");
+            EmitError(jsonProgress, "no_users", "users.json contains no users.");
             return 1;
         }
 
@@ -128,35 +153,72 @@ class Program
             .ToArray();
 
         if (userCount > allUsers.Length)
-            Console.WriteLine($"Note: Reusing {allUsers.Length} users to fill {userCount} slots.");
+            info.WriteLine($"Note: Reusing {allUsers.Length} users to fill {userCount} slots.");
 
         var xmlaEndpoint = !string.IsNullOrEmpty(replica) ? $"{xmla}?{replica}" : xmla;
 
-        Console.WriteLine();
-        Console.WriteLine("═══════════════════════════════════════════════");
-        Console.WriteLine("  LoadGen — Power BI / Fabric DAX Load Test");
-        Console.WriteLine("═══════════════════════════════════════════════");
-        Console.WriteLine($"  Dataset:     {dataset}");
-        Console.WriteLine($"  Endpoint:    {xmlaEndpoint}");
-        Console.WriteLine($"  Duration:    {duration}s");
-        Console.WriteLine($"  Users:       {userCount} (from {allUsers.Length} in users.json)");
-        Console.WriteLine($"  Queries:     {queries.Length}");
-        Console.WriteLine($"  Per batch:   {queriesPerBatch}");
-        Console.WriteLine($"  Pause iter:  {pauseIter}ms");
-        Console.WriteLine($"  Pause query: {pauseQuery}ms");
-        Console.WriteLine($"  Ramp time:   {rampTime}s");
-        Console.WriteLine($"  Replica:     {(string.IsNullOrEmpty(replica) ? "(default)" : replica)}");
-        Console.WriteLine($"  SkipResults: {skipResults}");
-        Console.WriteLine($"  Log dir:     {logDir}");
-        Console.WriteLine($"  Token:       {token.Length} chars");
-        Console.WriteLine("═══════════════════════════════════════════════");
-        Console.WriteLine();
+        if (!jsonProgress)
+        {
+            info.WriteLine();
+            info.WriteLine("═══════════════════════════════════════════════");
+            info.WriteLine("  LoadGen — Power BI / Fabric DAX Load Test");
+            info.WriteLine("═══════════════════════════════════════════════");
+            info.WriteLine($"  Dataset:     {dataset}");
+            info.WriteLine($"  Endpoint:    {xmlaEndpoint}");
+            info.WriteLine($"  Duration:    {duration}s");
+            info.WriteLine($"  Users:       {userCount} (from {allUsers.Length} in users.json)");
+            info.WriteLine($"  Queries:     {queries.Length}");
+            info.WriteLine($"  Per batch:   {queriesPerBatch}");
+            info.WriteLine($"  Pause iter:  {pauseIter}ms");
+            info.WriteLine($"  Pause query: {pauseQuery}ms");
+            info.WriteLine($"  Ramp time:   {rampTime}s");
+            info.WriteLine($"  Replica:     {(string.IsNullOrEmpty(replica) ? "(default)" : replica)}");
+            info.WriteLine($"  SkipResults: {skipResults}");
+            info.WriteLine($"  Log dir:     {logDir}");
+            info.WriteLine($"  Token:       {token.Length} chars");
+            info.WriteLine("═══════════════════════════════════════════════");
+            info.WriteLine();
+        }
+        else
+        {
+            EmitEnvelope(new Dictionary<string, object?>
+            {
+                ["type"] = "started",
+                ["dataset"] = dataset,
+                ["endpoint"] = xmlaEndpoint,
+                ["duration"] = duration,
+                ["users"] = userCount,
+                ["queries"] = queries.Length,
+                ["queriesPerBatch"] = queriesPerBatch,
+                ["rampTime"] = rampTime,
+                ["logDir"] = logDir,
+                ["skipResults"] = skipResults,
+            });
+        }
 
         var emailArr = users.Select(u => u.email).ToArray();
         var roleArr = users.Select(u => u.role).ToArray();
 
         Directory.CreateDirectory(logDir);
 
+        return jsonProgress
+            ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
+                duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
+                logDir, logFile, skipResults, users)
+            : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
+                duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
+                logDir, logFile, skipResults, users);
+    }
+
+    // Legacy human-readable mode: stdout banner + log echo + PrintResults
+    // summary. Preserved 1:1 for CLI users so a `dotnet run` against the
+    // tool still feels familiar.
+    static int RunHumanReadable(string[] queries, string xmlaEndpoint, string dataset,
+        string token, string[] emailArr, string[] roleArr,
+        int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        string logDir, string logFile, bool skipResults,
+        (string email, string role)[] users)
+    {
         string resultJson;
         try
         {
@@ -181,20 +243,207 @@ class Program
         return 0;
     }
 
-    static string? ResolveToken(string? direct, FileInfo? file, string? auth)
+    // JSON-progress mode: stdout is JSONL only, stderr carries banner +
+    // log lines. Switches to StartLoadTest so we can wire Ctrl+C to a
+    // graceful Cancel() instead of letting the runtime kill the process
+    // mid-query and leak ADOMD connections.
+    static int RunJsonProgress(string[] queries, string xmlaEndpoint, string dataset,
+        string token, string[] emailArr, string[] roleArr,
+        int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        string logDir, string logFile, bool skipResults,
+        (string email, string role)[] users)
+    {
+        var config = new LoadTestConfig
+        {
+            Queries = queries,
+            XmlaEndpoint = xmlaEndpoint,
+            Dataset = dataset,
+            Token = token,
+            UserEmails = emailArr,
+            UserRoles = roleArr,
+            DurationSeconds = duration,
+            QueriesPerBatch = queriesPerBatch,
+            PauseBetweenIterationsMs = pauseIter,
+            PauseBetweenQueriesMs = pauseQuery,
+            LogDirectory = logDir,
+            UserRampTimeSec = rampTime,
+            LogFileName = logFile,
+            SkipResults = skipResults,
+            // Echo every QueryRunner log line to stderr so notebook
+            // diagnostics work even when JSON parsing fails.
+            LogCallback = Console.Error.WriteLine,
+        };
+
+        LoadTestHandle handle;
+        try
+        {
+            handle = QueryRunner.StartLoadTest(config);
+        }
+        catch (Exception ex)
+        {
+            EmitErrorEnvelope("start_failed", ex);
+            return 1;
+        }
+
+        // Wire SIGINT (and Ctrl+Break) to a single graceful Cancel.
+        // CancelKeyPress fires on the .NET thread-pool, so it's safe to
+        // call handle.Cancel() — it only sets the CTS, it does not block.
+        var sigintReceived = 0;
+        ConsoleCancelEventHandler cancelHandler = (s, e) =>
+        {
+            // Default behaviour is to terminate the process; we want
+            // to drain instead.
+            e.Cancel = true;
+            if (Interlocked.Exchange(ref sigintReceived, 1) == 0)
+            {
+                Console.Error.WriteLine("LoadGen: SIGINT received — requesting graceful cancel.");
+                try { handle.Cancel(); } catch { /* idempotent */ }
+            }
+        };
+        Console.CancelKeyPress += cancelHandler;
+
+        try
+        {
+            // Snapshot loop. Emit one JSONL "progress" envelope per
+            // second until the run completes. Polling LatestSnapshot is
+            // lock-free; sleeping 1s gives Steady-phase QPS a chance to
+            // accumulate without flooding stdout.
+            while (!handle.IsCompleted)
+            {
+                EmitSnapshot(handle);
+                if (handle.IsCompleted) break;
+                Thread.Sleep(1000);
+            }
+            // Final snapshot after IsCompleted=true so callers see the
+            // terminal phase + final counters.
+            EmitSnapshot(handle);
+
+            string resultJson;
+            try
+            {
+                resultJson = handle.Wait();
+            }
+            catch (Exception ex)
+            {
+                EmitErrorEnvelope("run_failed", ex);
+                return Volatile.Read(ref sigintReceived) != 0 ? 130 : 1;
+            }
+
+            // Persist the full result.json (includes raw executions
+            // timeline) next to the .csv/.log files so callers can do
+            // detailed analysis. The stdout envelope only carries the
+            // summary fields; raw executions can be megabytes.
+            var resultPath = Path.Combine(logDir, "result.json");
+            try { File.WriteAllText(resultPath, resultJson); } catch { /* best effort */ }
+
+            EmitResultEnvelope(resultJson, resultPath);
+            return Volatile.Read(ref sigintReceived) != 0 ? 130 : 0;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancelHandler;
+            try { handle.Dispose(); } catch { }
+        }
+    }
+
+    static void EmitSnapshot(LoadTestHandle handle)
+    {
+        var s = handle.LatestSnapshot;
+        EmitEnvelope(new Dictionary<string, object?>
+        {
+            ["type"] = "progress",
+            ["elapsed"] = s.Elapsed.TotalSeconds,
+            ["phase"] = s.Phase,
+            ["activeUsers"] = s.ActiveUsers,
+            ["targetUsers"] = s.TargetUsers,
+            ["successful"] = s.Successful,
+            ["failed"] = s.Failed,
+            ["qps"] = Math.Round(s.RollingQps, 2),
+        });
+    }
+
+    static void EmitResultEnvelope(string fullResultJson, string resultFilePath)
+    {
+        // Slim the on-stdout envelope: drop `executions[]` (can be
+        // very large) but keep summary scalars + latency block.
+        using var doc = JsonDocument.Parse(fullResultJson);
+        var root = doc.RootElement;
+        var summary = new Dictionary<string, object?>();
+        foreach (var prop in root.EnumerateObject())
+        {
+            if (prop.Name == "executions") continue;
+            summary[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+        }
+        EmitEnvelope(new Dictionary<string, object?>
+        {
+            ["type"] = "result",
+            ["resultFile"] = resultFilePath,
+            ["summary"] = summary,
+        });
+    }
+
+    static void EmitErrorEnvelope(string code, Exception ex)
+    {
+        EmitEnvelope(new Dictionary<string, object?>
+        {
+            ["type"] = "error",
+            ["code"] = code,
+            ["exceptionType"] = ex.GetType().FullName,
+            ["message"] = ex.Message,
+            ["exception"] = ex.ToString(),
+        });
+    }
+
+    // For pre-StartLoadTest fatal errors (config/file issues): emit a
+    // minimal error envelope or print to stderr depending on mode.
+    static void EmitError(bool jsonProgress, string code, string message)
+    {
+        if (jsonProgress)
+        {
+            EmitEnvelope(new Dictionary<string, object?>
+            {
+                ["type"] = "error",
+                ["code"] = code,
+                ["message"] = message,
+            });
+        }
+        else
+        {
+            Console.Error.WriteLine($"Error: {message}");
+        }
+    }
+
+    // Single Console.WriteLine call so the line is atomic — important
+    // when SIGINT can interleave with the snapshot loop.
+    private static readonly object _stdoutLock = new();
+    private static readonly JsonSerializerOptions _jsonOpts = new()
+    {
+        WriteIndented = false,
+    };
+    static void EmitEnvelope(Dictionary<string, object?> envelope)
+    {
+        var line = JsonSerializer.Serialize(envelope, _jsonOpts);
+        lock (_stdoutLock)
+        {
+            Console.Out.WriteLine(line);
+            Console.Out.Flush();
+        }
+    }
+
+    static string? ResolveToken(string? direct, FileInfo? file, string? auth, TextWriter info)
     {
         if (!string.IsNullOrWhiteSpace(direct)) return direct.Trim();
         if (file != null && file.Exists) return File.ReadAllText(file.FullName).Trim();
         var envToken = Environment.GetEnvironmentVariable("PBI_TOKEN");
         if (!string.IsNullOrWhiteSpace(envToken)) return envToken.Trim();
-        if (!string.IsNullOrWhiteSpace(auth)) return AcquireToken(auth.Trim().ToLowerInvariant());
+        if (!string.IsNullOrWhiteSpace(auth)) return AcquireToken(auth.Trim().ToLowerInvariant(), info);
         return null;
     }
 
-    static string AcquireToken(string method)
+    static string AcquireToken(string method, TextWriter info)
     {
         var scope = "https://analysis.windows.net/powerbi/api/.default";
-        Console.WriteLine($"Acquiring token via Azure {method} credential...");
+        info.WriteLine($"Acquiring token via Azure {method} credential...");
 
         TokenCredential credential = method switch
         {
@@ -202,9 +451,9 @@ class Program
             "browser" => new InteractiveBrowserCredential(),
             "devicecode" => new DeviceCodeCredential(new DeviceCodeCredentialOptions
             {
-                DeviceCodeCallback = (info, cancel) =>
+                DeviceCodeCallback = (deviceInfo, cancel) =>
                 {
-                    Console.WriteLine(info.Message);
+                    info.WriteLine(deviceInfo.Message);
                     return System.Threading.Tasks.Task.CompletedTask;
                 }
             }),
@@ -217,7 +466,7 @@ class Program
 
         var tokenResult = credential.GetToken(
             new TokenRequestContext(new[] { scope }), CancellationToken.None);
-        Console.WriteLine($"Token acquired, expires {tokenResult.ExpiresOn:HH:mm:ss UTC}");
+        info.WriteLine($"Token acquired, expires {tokenResult.ExpiresOn:HH:mm:ss UTC}");
         return tokenResult.Token;
     }
 

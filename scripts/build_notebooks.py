@@ -70,13 +70,13 @@ def build_run():
 # FabricDaxLoadTest — Run
 
 Drives concurrent DAX queries against a Power BI / Fabric semantic model via
-the **XMLA endpoint** using `QueryRunner.dll` (loaded in-process through
-pythonnet).
+the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
+subprocess (run on the kernel's bundled .NET 8 runtime).
 
 This notebook lives in the workspace folder **`LoadTests`** alongside the
 **`LoadTests`** lakehouse, which holds:
 
-- `Files/bin/`   — `QueryRunner.dll` + ADOMD client dependencies
+- `Files/bin/`   — `LoadGen.dll` + ADOMD client dependencies (framework-dependent publish)
 - `Files/runs/`  — per-run telemetry CSVs (created on first run)
 - `Files/queries.json` — the corpus of DAX queries (managed via `Queries.ipynb`)
 
@@ -84,8 +84,9 @@ This notebook lives in the workspace folder **`LoadTests`** alongside the
 
 1. Edit cell **1** to point at the target workspace + dataset and tweak load
    parameters.
-2. **Run All**. Cell **5** prints a live status line every second; press
-   **Interrupt Kernel** (■) to cancel — the run drains cleanly.
+2. **Run All**. Cell **4** prints a live status line every second; press
+   **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and
+   drains cleanly.
 3. Cell **6** plots latency / QPS / users from the per-run CSV.
 
 > Re-deploy / upgrade the bits in `Files/bin/` by re-running
@@ -118,12 +119,14 @@ QUERIES_INLINE = []     # e.g. ["EVALUATE ROW(\"x\", 1)"]
 USERS_INLINE = []
 """)
 
-    # 2. Auto-discover lakehouse + load QueryRunner.dll
+    # 2. Auto-discover lakehouse + stage LoadGen + dotnet preflight
     code(nb, r"""
-# ── 2. Mount the LoadTests lakehouse and load QueryRunner.dll ────────────────
+# ── 2. Stage LoadGen.dll from Files/bin and locate dotnet ────────────────────
 # This notebook lives in the workspace folder `LoadTests`. The companion
 # lakehouse (also `LoadTests`) is in the same folder and holds the assemblies.
-import os, glob, json
+# We run LoadGen out-of-process (`dotnet LoadGen.dll`) to avoid the pythonnet/
+# CLR-init footguns that come with sharing the kernel's CLR with sempy.
+import os, json, shutil, subprocess
 import notebookutils
 
 ctx = notebookutils.runtime.context
@@ -132,13 +135,10 @@ WS_NAME = ctx.get("currentWorkspaceName", WS_ID)
 
 # Resolve LoadTests lakehouse — friendly-name support is disabled on some
 # OneLake tenants, so we look up the GUID via the Fabric items API and use
-# that in the abfss path. We hit REST directly (rather than via
-# sempy.fabric.list_items) because importing sempy.fabric here pre-initializes
-# pythonnet and breaks namespace registration for our path-loaded assemblies
-# in the next cell.
+# that in the abfss path. notebookutils Fabric audience is "pbi".
 LAKEHOUSE_NAME = "LoadTests"
 import requests
-_tok = notebookutils.credentials.getToken("https://api.fabric.microsoft.com")
+_tok = notebookutils.credentials.getToken("pbi")
 _r = requests.get(
     f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/items?type=Lakehouse",
     headers={"Authorization": f"Bearer {_tok}"}, timeout=30)
@@ -149,11 +149,10 @@ if not _match:
 LH_ID = _match[0]["id"]
 LH_ABFSS = f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{LH_ID}"
 
-# Stage QueryRunner.dll + dependencies to a local /tmp dir. pythonnet's
-# AssemblyResolver wants a real filesystem path; abfss:// won't do.
-# We list and copy per-file (recursing manually) because notebookutils.fs.cp
-# with recurse=True does a HEAD/getStatus on the source directory which
-# OneLake currently rejects with HTTP 400 for Files/* directories.
+# Stage the entire publish output to /tmp. We list and copy per-file
+# (recursing manually) because notebookutils.fs.cp with recurse=True does a
+# HEAD/getStatus on the source directory which OneLake currently rejects
+# with HTTP 400 for Files/* directories.
 STAGE = "/tmp/fdlt-bin"
 os.makedirs(STAGE, exist_ok=True)
 
@@ -170,56 +169,48 @@ def _stage_dir(src_abfss, dst_local):
 
 _stage_dir(f"{LH_ABFSS}/Files/bin", STAGE)
 
-dll = os.path.join(STAGE, "QueryRunner.dll")
-if not os.path.exists(dll):
-    # Fallback search in case the layout changes.
-    cands = glob.glob(os.path.join(STAGE, "**", "QueryRunner.dll"), recursive=True)
-    dll = cands[0] if cands else dll
-if not os.path.exists(dll):
+LOADGEN_DLL = os.path.join(STAGE, "LoadGen.dll")
+if not os.path.exists(LOADGEN_DLL):
     raise FileNotFoundError(
-        f"QueryRunner.dll not found under {STAGE}. Re-run Deploy-LoadTests.ps1 "
-        f"to populate {LH_ABFSS}/Files/bin."
+        f"LoadGen.dll not found under {STAGE}. Re-run scripts/Deploy-LoadTests.ps1 "
+        f"from a repo clone to populate {LH_ABFSS}/Files/bin."
     )
+
+# Locate dotnet. Fabric Spark nodes ship the .NET 8 runtime under sempy's
+# trident_env. Prefer that over $PATH so version mismatches with whatever
+# the user happens to have don't bite us.
+_DOTNET_CANDIDATES = [
+    os.environ.get("DOTNET_HOST_PATH"),
+    "/home/trusted-service-user/cluster-env/trident_env/bin/dotnet",
+    shutil.which("dotnet"),
+    "/usr/bin/dotnet",
+    "/usr/local/bin/dotnet",
+]
+DOTNET = next((p for p in _DOTNET_CANDIDATES if p and os.path.exists(p)), None)
+if DOTNET is None:
+    raise RuntimeError(
+        "Could not find a `dotnet` runtime on this kernel. LoadGen.dll is a "
+        "framework-dependent .NET 8 build and needs the runtime to be installed. "
+        f"Probed: {[c for c in _DOTNET_CANDIDATES if c]}"
+    )
+# Sanity check the runtime can actually load — fail fast if the host is broken.
+_info = subprocess.run([DOTNET, "--info"], capture_output=True, text=True, timeout=10)
+if _info.returncode != 0:
+    raise RuntimeError(f"`{DOTNET} --info` failed:\n{_info.stderr}")
+
 print(f"Workspace : {WS_NAME} ({WS_ID})")
 print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})")
-print(f"DLL       : {dll}  ({os.path.getsize(dll):,} bytes)")
+print(f"LoadGen   : {LOADGEN_DLL}  ({os.path.getsize(LOADGEN_DLL):,} bytes)")
+print(f"dotnet    : {DOTNET}")
 """)
 
-    # 3. pythonnet bootstrap
+    # 3. Build run config (queries, users, paths, token)
     code(nb, r"""
-# ── 3. pythonnet bootstrap ────────────────────────────────────────────────────
-# Add sempy's bundled .NET libs to sys.path so clr can find
-# Microsoft.AnalysisServices.AdomdClient by simple name. Then AddReference
-# ADOMD first (warms the AppDomain), then QueryRunner.dll by full path.
-# `import clr` raises RuntimeError (not ImportError) on Fabric Linux when
-# coreclr isn't preloaded, so the except must be broad.
-import sys
-sempy_lib = "/home/trusted-service-user/cluster-env/trident_env/lib/python3.11/site-packages/sempy/lib"
-if sempy_lib not in sys.path:
-    sys.path.insert(0, sempy_lib)
-
-try:
-    import clr
-except Exception:
-    from pythonnet import load
-    load("coreclr")
-    import clr
-
-clr.AddReference("Microsoft.AnalysisServices.AdomdClient")
-clr.AddReference(dll)
-from FabricDaxLoadTest import QueryRunner, LoadTestConfig          # noqa: E402
-from System import Array, String                                   # noqa: E402
-import System.Reflection                                           # noqa: E402
-print(f"QueryRunner v{System.Reflection.Assembly.GetAssembly(QueryRunner).GetName().Version}")
-""")
-
-    # 4. Build LoadTestConfig
-    code(nb, r"""
-# ── 4. Build the LoadTestConfig ───────────────────────────────────────────────
+# ── 3. Build the run config and resolve token ────────────────────────────────
 import time, uuid
 from datetime import datetime, timezone
 
-# Queries
+# Queries — inline override or Files/queries.json
 if QUERIES_INLINE:
     queries = list(QUERIES_INLINE)
 else:
@@ -228,103 +219,220 @@ else:
     queries = [q if isinstance(q, str) else q["query"] for q in json.loads(raw)]
 print(f"Queries : {len(queries)}")
 
-# Users (round-robin to CONCURRENT_USERS)
+# Users — round-robin to CONCURRENT_USERS
 if USERS_INLINE:
-    base = USERS_INLINE
+    base = list(USERS_INLINE)
 else:
     base = [{"email": "anonymous@local", "role": ""}]
 users = [base[i % len(base)] for i in range(CONCURRENT_USERS)]
 
-# Run output dir under Files/runs/<runId>/
+# Run output dir under Files/runs/<runId>/ — LoadGen will write
+# LoadTest.*.csv, LoadTest.*.log, and result.json in here.
 RUN_ID    = uuid.uuid4().hex[:8]
 RUN_LOCAL = f"/tmp/fdlt-run-{RUN_ID}"
 os.makedirs(RUN_LOCAL, exist_ok=True)
 LOG_FILE  = f"LoadTest.{CONCURRENT_USERS}u.{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
 
-# Token
+# Token (Power BI XMLA audience — same `pbi` key as the Fabric REST call above).
 TOKEN = notebookutils.credentials.getToken("pbi")
 
-# Build the config
-xmla = f"powerbi://api.powerbi.com/v1.0/myorg/{TARGET_WORKSPACE}"
-if TARGET_REPLICA:
-    xmla = f"{xmla}?{TARGET_REPLICA}"
+# Materialize queries.json + users.json next to the run dir. Passing them
+# as files (instead of CLI flags) keeps multi-line DAX intact and avoids
+# any quoting hazard on the subprocess command line.
+QUERIES_JSON = os.path.join(RUN_LOCAL, "queries.json")
+USERS_JSON   = os.path.join(RUN_LOCAL, "users.json")
+with open(QUERIES_JSON, "w", encoding="utf-8") as f:
+    json.dump(list(queries), f)
+with open(USERS_JSON, "w", encoding="utf-8") as f:
+    json.dump([{"email": u["email"], "role": u.get("role", "")} for u in users], f)
 
-cfg = LoadTestConfig()
-cfg.Queries                  = Array[String]([str(q) for q in queries])
-cfg.XmlaEndpoint             = xmla
-cfg.Dataset                  = TARGET_DATASET
-cfg.Token                    = TOKEN
-cfg.UserEmails               = Array[String]([u["email"] for u in users])
-cfg.UserRoles                = Array[String]([u.get("role", "") for u in users])
-cfg.DurationSeconds          = DURATION_SECONDS
-cfg.QueriesPerBatch          = QUERIES_PER_BATCH
-cfg.PauseBetweenIterationsMs = PAUSE_BETWEEN_ITERATIONS_MS
-cfg.PauseBetweenQueriesMs    = PAUSE_BETWEEN_QUERIES_MS
-cfg.LogDirectory             = RUN_LOCAL
-cfg.RampSeconds              = USER_RAMP_TIME_SEC
-cfg.LogFileName              = LOG_FILE
-cfg.SkipResults              = SKIP_RESULTS
+xmla = f"powerbi://api.powerbi.com/v1.0/myorg/{TARGET_WORKSPACE}"
 
 print(f"Run ID  : {RUN_ID}")
-print(f"Endpoint: {xmla}")
+print(f"Endpoint: {xmla}{('?' + TARGET_REPLICA) if TARGET_REPLICA else ''}")
 print(f"Users   : {len(users)} concurrent, ramp {USER_RAMP_TIME_SEC}s, duration {DURATION_SECONDS}s")
 print(f"Logs    : {RUN_LOCAL}/{LOG_FILE}")
 """)
 
-    # 5. Start run + handle polling loop
+    # 4. Launch LoadGen subprocess + stream JSONL progress
     code(nb, r"""
-# ── 5. Run the load test ──────────────────────────────────────────────────────
-# Press the ■ Interrupt Kernel button (or Esc, I-I) to cancel — the .NET
-# threads drain cleanly via cooperative cancellation.
+# ── 4. Run the load test (out-of-process) ────────────────────────────────────
+# We launch `dotnet LoadGen.dll --json-progress ...` and read line-delimited
+# JSON envelopes from its stdout. Stderr (banner, .NET log lines, exception
+# dumps) is drained on a background thread and printed on failure.
+#
+# Press the ■ Interrupt Kernel button (or Esc, I-I) to cancel — we forward
+# SIGINT to the child, which calls handle.Cancel() and drains cleanly.
+import signal, threading, sys
+from collections import deque
 from IPython.display import display, update_display
 
-handle = QueryRunner.StartLoadTest(cfg)
-display({"text/plain": f"Starting run {handle.RunId} ..."},
-        raw=True, display_id="fdlt-status")
+cmd = [
+    DOTNET, LOADGEN_DLL, "--json-progress",
+    "--xmla", xmla,
+    "--dataset", TARGET_DATASET,
+    "--duration", str(DURATION_SECONDS),
+    "--users", str(CONCURRENT_USERS),
+    "--queries-per-batch", str(QUERIES_PER_BATCH),
+    "--pause-iterations", str(PAUSE_BETWEEN_ITERATIONS_MS),
+    "--pause-queries", str(PAUSE_BETWEEN_QUERIES_MS),
+    "--ramp-time", str(USER_RAMP_TIME_SEC),
+    "--queries-file", QUERIES_JSON,
+    "--users-file", USERS_JSON,
+    "--log-dir", RUN_LOCAL,
+    "--log-file", LOG_FILE,
+]
+if TARGET_REPLICA:
+    cmd += ["--replica", TARGET_REPLICA]
+if SKIP_RESULTS:
+    cmd += ["--skip-results"]
 
-def render(s):
-    if s is None:
+# Token via env, NOT argv: process listings on shared compute would otherwise
+# expose the bearer token.
+env = {**os.environ, "PBI_TOKEN": TOKEN}
+
+display({"text/plain": f"Starting run {RUN_ID} ..."}, raw=True, display_id="fdlt-status")
+
+proc = subprocess.Popen(
+    cmd, env=env,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,                # line-buffered text streams
+)
+
+# Drain stderr to a ring buffer so we can surface it on failure without
+# blocking the parent on a full pipe (CPython's small default pipe buffer
+# stalls the child if either stream is left unread).
+stderr_buf = deque(maxlen=1000)
+def _drain_stderr():
+    for line in proc.stderr:
+        stderr_buf.append(line.rstrip("\n"))
+threading.Thread(target=_drain_stderr, daemon=True).start()
+
+def _render(envelope):
+    if envelope is None:
         return {"text/plain": "(initializing)"}
-    line = (
-        f"[{s.Phase:<10}] elapsed={s.Elapsed.TotalSeconds:6.1f}s  "
-        f"users={s.ActiveUsers}/{s.TargetUsers}  "
-        f"ok={s.Successful}  err={s.Failed}  "
-        f"qps={s.RollingQps:.1f}"
-    )
-    return {"text/plain": line}
+    if envelope.get("type") == "progress":
+        return {"text/plain": (
+            f"[{envelope.get('phase','?'):<10}] "
+            f"elapsed={envelope.get('elapsed',0):6.1f}s  "
+            f"users={envelope.get('activeUsers',0)}/{envelope.get('targetUsers',0)}  "
+            f"ok={envelope.get('successful',0)}  err={envelope.get('failed',0)}  "
+            f"qps={envelope.get('qps',0):.1f}"
+        )}
+    return {"text/plain": json.dumps(envelope)}
+
+result_envelope = None
+error_envelope  = None
 
 try:
-    while not handle.IsCompleted:
-        update_display(render(handle.LatestSnapshot), raw=True, display_id="fdlt-status")
-        time.sleep(1)
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            env_obj = json.loads(line)
+        except json.JSONDecodeError:
+            # Stray non-JSON output is unexpected in --json-progress mode but
+            # not fatal — log it via the live status line so it's visible.
+            update_display({"text/plain": f"(non-JSON stdout) {line}"},
+                           raw=True, display_id="fdlt-status")
+            continue
+        kind = env_obj.get("type")
+        if kind == "progress":
+            update_display(_render(env_obj), raw=True, display_id="fdlt-status")
+        elif kind == "result":
+            result_envelope = env_obj
+        elif kind == "error":
+            error_envelope = env_obj
+        # else: ignore unknown types (forward-compat)
 except KeyboardInterrupt:
-    print("Interrupt received — cancelling...")
-    handle.Cancel()
+    print("Interrupt received — sending SIGINT to LoadGen to drain...")
+    try: proc.send_signal(signal.SIGINT)
+    except Exception: pass
+    # Give LoadGen up to 30s to drain; if it hangs, terminate.
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        print("LoadGen did not exit in 30s after SIGINT — terminating.")
+        proc.terminate()
+        try: proc.wait(timeout=5)
+        except subprocess.TimeoutExpired: proc.kill()
+finally:
+    proc.wait()
 
-result_json = handle.Wait()
-update_display(render(handle.LatestSnapshot), raw=True, display_id="fdlt-status")
+returncode = proc.returncode
+""")
 
-stats = json.loads(result_json)
-print()
-print(f"=== Results ===")
-print(f"Phase            : {handle.LatestSnapshot.Phase}")
-print(f"Total executions : {stats.get('totalExecutions')}")
-print(f"Successful       : {stats.get('successfulExecutions')}")
-print(f"Failed           : {stats.get('failedExecutions')}")
-print(f"QPS              : {stats.get('qps')}")
-lat = stats.get("latency", {})
-if lat:
-    print(f"Latency (ms)     : min={lat.get('min')}  median={lat.get('median')}  "
-          f"mean={lat.get('mean')}  p95={lat.get('p95')}  p99={lat.get('p99')}  max={lat.get('max')}")
+    # 5. Surface results / failure
+    code(nb, r"""
+# ── 5. Surface results (or failure detail) ──────────────────────────────────
+def _print_log_tail(label="LoadGen .log"):
+    try:
+        import glob as _glob
+        logs = sorted(_glob.glob(os.path.join(RUN_LOCAL, "*.log")))
+        if logs:
+            print(f"\n--- tail of {os.path.basename(logs[-1])} ({label}) ---")
+            with open(logs[-1], "r", encoding="utf-8", errors="replace") as _lf:
+                lines = _lf.readlines()
+            for _line in lines[-100:]:
+                print(_line.rstrip())
+    except Exception as _le:
+        print(f"(could not read log file: {_le})")
 
-# Save full JSON next to the CSV.
-with open(os.path.join(RUN_LOCAL, "result.json"), "w") as f:
-    json.dump(stats, f, indent=2)
+def _print_stderr_tail(n=40):
+    if stderr_buf:
+        print(f"\n--- LoadGen stderr (last {min(n, len(stderr_buf))} lines) ---")
+        tail = list(stderr_buf)[-n:]
+        for line in tail:
+            print(line)
 
 # Persist run artifacts to OneLake under Files/runs/<RUN_ID>/.
 RUN_DEST = f"{LH_ABFSS}/Files/runs/{RUN_ID}"
-notebookutils.fs.cp(f"file://{RUN_LOCAL}", RUN_DEST, recurse=True)
-print(f"\nRun artifacts: {RUN_DEST}")
+try:
+    notebookutils.fs.cp(f"file://{RUN_LOCAL}", RUN_DEST, recurse=True)
+except Exception as _cp_ex:
+    print(f"(warning: failed to persist run artifacts to OneLake: {_cp_ex})")
+
+if error_envelope is not None or returncode not in (0, 130):
+    print()
+    print("=== Load test FAILED ===")
+    if error_envelope is not None:
+        print(f"code   : {error_envelope.get('code')}")
+        print(f"type   : {error_envelope.get('exceptionType')}")
+        print(f"message:")
+        for ml in str(error_envelope.get("message", "")).splitlines():
+            print(f"  {ml}")
+    print(f"exit code: {returncode}")
+    _print_stderr_tail(40)
+    _print_log_tail("on failure")
+    print(f"\nRun artifacts (partial): {RUN_DEST}")
+    raise RuntimeError(error_envelope.get("message", "LoadGen exited non-zero")
+                       if error_envelope else f"LoadGen exited with code {returncode}")
+
+if returncode == 130:
+    print("\n=== Load test CANCELLED ===")
+    if result_envelope is None:
+        # Cancelled before completion finalized stats.
+        _print_stderr_tail(20)
+        _print_log_tail("on cancel")
+        print(f"\nRun artifacts: {RUN_DEST}")
+        # Treat cancel as a clean exit from the notebook flow; no raise.
+    # else: fall through and print whatever stats we got.
+
+if result_envelope is not None:
+    summary = result_envelope.get("summary", {}) or {}
+    print()
+    print("=== Results ===")
+    print(f"Total executions : {summary.get('totalExecutions')}")
+    print(f"Successful       : {summary.get('successfulExecutions')}")
+    print(f"Failed           : {summary.get('failedExecutions')}")
+    print(f"QPS              : {summary.get('qps')}")
+    lat = summary.get("latency", {}) or {}
+    if lat:
+        print(f"Latency (ms)     : min={lat.get('min')}  median={lat.get('median')}  "
+              f"mean={lat.get('mean')}  p95={lat.get('p95')}  p99={lat.get('p99')}  max={lat.get('max')}")
+    print(f"\nFull result      : {result_envelope.get('resultFile')}")
+    print(f"Run artifacts    : {RUN_DEST}")
 """)
 
     # 6. Charts

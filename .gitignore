@@ -22,3 +22,7 @@ logs/
 .copilot/
 AGENTS.local.md
 
+
+# Local smoke artifacts
+artifacts/
+tmp/

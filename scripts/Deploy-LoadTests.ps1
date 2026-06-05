@@ -52,7 +52,7 @@ Set-StrictMode -Version Latest
 $ApiBase  = "https://api.fabric.microsoft.com"
 $Resource = $ApiBase
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$PublishDir = Join-Path $RepoRoot "src\QueryRunner\bin\Release\net8.0\publish"
+$PublishDir = Join-Path $RepoRoot "src\LoadGen\bin\Release\net8.0\linux-x64\publish"
 $NotebooksDir = Join-Path $RepoRoot "notebooks"
 
 # ---- helpers ----------------------------------------------------------------
@@ -147,11 +147,20 @@ $null = Get-Command fab -ErrorAction Stop
 Info "az + fab CLIs found"
 
 if (-not $SkipPublish) {
-    Step "dotnet publish QueryRunner (Release)"
-    & dotnet publish (Join-Path $RepoRoot "src\QueryRunner\QueryRunner.csproj") -c Release --nologo -v minimal | Out-Host
+    Step "dotnet publish LoadGen (Release, linux-x64, framework-dependent)"
+    # Notebook deployment runs `dotnet LoadGen.dll` on Fabric Spark
+    # nodes — Linux only, .NET 8 runtime already present via sempy.
+    # Framework-dependent (no SC) keeps the Files/bin payload at ~3.5 MB
+    # instead of ~67 MB; UseAppHost=false skips the apphost binary so we
+    # don't need a chmod step after OneLake stages the files (and
+    # cross-platform the same DLLs run unchanged).
+    & dotnet publish (Join-Path $RepoRoot "src\LoadGen\LoadGen.csproj") `
+        -c Release -r linux-x64 `
+        -p:SelfContained=false -p:PublishSingleFile=false -p:UseAppHost=false `
+        --nologo -v minimal | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 }
-if (-not (Test-Path (Join-Path $PublishDir "QueryRunner.dll"))) {
+if (-not (Test-Path (Join-Path $PublishDir "LoadGen.dll"))) {
     throw "Publish output not found: $PublishDir. Re-run without -SkipPublish."
 }
 $published = Get-ChildItem -Recurse -File $PublishDir
