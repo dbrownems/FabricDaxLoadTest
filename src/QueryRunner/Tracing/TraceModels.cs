@@ -34,7 +34,8 @@ public sealed record AsTraceEvent(
     string? DatabaseName,
     string? ApplicationName,
     string? SessionId,
-    string? RequestId);
+    string? RequestId,
+    string? ActivityID);
 
 /// <summary>
 /// Subset of AMO's TraceColumn enum we actually consume. Values match

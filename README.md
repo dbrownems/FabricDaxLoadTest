@@ -38,8 +38,43 @@ The existing pure-Python REST-based tools have meaningful limitations:
 - Limited to whatever the REST API path exposes.
 - Can't easily simulate Row-Level Security via `EffectiveUsername` / `Roles`.
 - Per-thread Python overhead caps achievable concurrency.
+- **Client-side latency only** — no view into what the engine actually did.
+- **Notebook-based fan-out** (`notebookutils.notebooks.runMultiple`) spins up
+  a Spark notebook per simulated user. That's coarse-grained
+  process-per-user concurrency with multi-second startup cost, capped at the
+  workspace's notebook-concurrency limit, and the GIL still serializes each
+  user's own work.
 
-This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a real XMLA connection — the same path Power BI Desktop, Excel, and Tabular Editor use. That makes the test results meaningful for capacity planning.
+This tool drives **ADOMD.NET out-of-process** from a single .NET 8 driver,
+so each simulated user gets a real XMLA connection — the same path Power BI
+Desktop, Excel, and Tabular Editor use. That makes the test results
+meaningful for capacity planning.
+
+### Headline differentiators
+
+- **Coordinated engine-trace capture, joined to every client row.** While
+  the load test runs, the driver attaches an XMLA trace to the target model
+  and stamps every command with a per-query `ActivityID`. After the run,
+  `LoadTestQueryExecutions` has both `ClientDurationMs` *and*
+  `EngineDurationMs` + `EngineCpuMs` on the same row — back-filled from the
+  matching `QueryEnd` trace event. You can immediately see "client says
+  36ms, engine says 9ms, the other 27ms was network and our test
+  harness" — the exact split capacity planners need, with zero post-hoc
+  log-correlation work. The full raw trace (SE/DQ events,
+  `ExecutionMetrics` JSON, ProgressReport, JobGraph, …) also lands in
+  `LoadTestTraceEvents` for forensic drill-down.
+
+- **Real thread parallelism, not notebook fan-out.** The .NET driver runs
+  N simulated users as N native threads inside one OS process. No Python
+  interop overhead per query, no Spark-notebook startup cost per user, no
+  GIL — just ADOMD.NET pumping XMLA on dedicated threads. A 25-user test
+  on a starter pool ran 6,336 queries in 60 seconds (≈ 105 qps from a
+  single Fabric driver pod) in our smoke tests; comparable Python
+  notebook-fan-out approaches plateau much earlier.
+
+- **Real XMLA connections.** Same wire path as Power BI Desktop / Excel /
+  Tabular Editor. Per-user TCP/TLS handshake, model attach, session
+  lifetime — all of it is part of the measurement.
 
 ## Components
 
@@ -55,9 +90,10 @@ This tool drives **ADOMD.NET** out-of-process, so each simulated user gets a rea
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
 - ✅ Per-run telemetry CSV under `Files/runs/<RunId>/`.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `LoadTestQueryExecutions`) written from the notebook for Power BI Direct Lake reporting.
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `LoadTestQueryExecutions`, `LoadTestTraceEvents`) written from the notebook for Power BI Direct Lake reporting.
+- ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + BYO-lakehouse override.
-- 🚧 AS-trace capture during a run, monitor mode against an external model, and the load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
+- 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
 
 ---
 

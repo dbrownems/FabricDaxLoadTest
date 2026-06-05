@@ -127,6 +127,12 @@ def write_run(
 
     def _upsert(df_, name: str, merge_keys):
         path = _path(name)
+        # All four tables are tiny per run (≤ ~10 MB raw for executions,
+        # ≤ ~50 MB for traces). Coalesce to 1 partition before write so
+        # each Delta commit appends one Parquet file rather than N tiny
+        # ones (Spark's post-shuffle default is 200). Keeps file count
+        # low for VACUUM/OPTIMIZE and Direct Lake transcoding.
+        df_ = df_.coalesce(1)
         if DeltaTable.isDeltaTable(spark, path):
             tgt = DeltaTable.forPath(spark, path)
             on = " AND ".join(f"t.{k}=s.{k}" for k in merge_keys)
@@ -140,6 +146,8 @@ def write_run(
 
     def _replace_for_run(df_, name: str, run_id_: str):
         path = _path(name)
+        # See _upsert: single-file writes for tiny per-run tables.
+        df_ = df_.coalesce(1)
         if DeltaTable.isDeltaTable(spark, path):
             DeltaTable.forPath(spark, path).delete(f"RunId = '{run_id_}'")
             (df_.write.format("delta").mode("append")
@@ -239,10 +247,13 @@ def write_run(
             StructField("QueryIndex",         IntegerType(),   False),
             StructField("QueryHash",          StringType(),    True),
             StructField("Iteration",          IntegerType(),   False),
+            StructField("QuerySeq",           IntegerType(),   True),
             StructField("StartUtc",           TimestampType(), False),
             StructField("EndUtc",             TimestampType(), True),
             StructField("StartTimeMs",        DoubleType(),    True),
             StructField("ClientDurationMs",   DoubleType(),    True),
+            StructField("EngineDurationMs",   LongType(),      True),
+            StructField("EngineCpuMs",        LongType(),      True),
             StructField("Outcome",            StringType(),    False),
             StructField("RowCount",           IntegerType(),   True),
             StructField("ResponseBytes",      LongType(),      True),
@@ -257,10 +268,13 @@ def write_run(
             QueryIndex=int(r["QueryIndex"]),
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
+            QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
             StartUtc=r["StartUtc"].to_pydatetime(),
             EndUtc=r["EndUtc"].to_pydatetime() if pd.notna(r["EndUtc"]) else None,
             StartTimeMs=float(r["StartTimeMs"]) if pd.notna(r["StartTimeMs"]) else None,
             ClientDurationMs=float(r["DurationMs"]) if pd.notna(r["DurationMs"]) else None,
+            EngineDurationMs=None,  # back-filled below from trace QueryEnd
+            EngineCpuMs=None,       # back-filled below from trace QueryEnd
             Outcome=str(r["Outcome"]),
             RowCount=int(r["RowCount"]) if pd.notna(r["RowCount"]) else None,
             ResponseBytes=int(r["ResponseBytes"]) if pd.notna(r["ResponseBytes"]) else None,
@@ -300,6 +314,7 @@ def write_run(
                 StructField("UserName",         StringType(),    True),
                 StructField("SessionId",        StringType(),    True),
                 StructField("RequestId",        StringType(),    True),
+                StructField("ActivityId",       StringType(),    True),
                 StructField("DatabaseName",     StringType(),    True),
                 StructField("TextData",         StringType(),    True),
             ])
@@ -314,11 +329,49 @@ def write_run(
                 UserName=str(r["UserName"]) if pd.notna(r["UserName"]) else None,
                 SessionId=str(r["SessionId"]) if pd.notna(r["SessionId"]) else None,
                 RequestId=str(r["RequestId"]) if pd.notna(r["RequestId"]) else None,
+                ActivityId=(str(r["ActivityId"])
+                            if "ActivityId" in r and pd.notna(r["ActivityId"])
+                            else None),
                 DatabaseName=str(r["DatabaseName"]) if pd.notna(r["DatabaseName"]) else None,
                 TextData=str(r["TextData"]) if pd.notna(r["TextData"]) else None,
             ) for _, r in tdf.iterrows()]
             trace_df = spark.createDataFrame(trace_rows, schema=trace_schema)
             trace_events_written = len(trace_rows)
+
+    # Engine-CPU back-fill: JOIN executions to QueryEnd trace rows on
+    # (RunId, QuerySeq). QuerySeq is the last 4 bytes of ActivityId
+    # (a Guid we encoded in C# as runId-prefix + big-endian seq). Two-int
+    # equi-join — Spark broadcast-hashes the small QueryEnd side. LEFT
+    # JOIN: cancelled or never-traced executions keep NULL.
+    if exec_df is not None and trace_df is not None:
+        from pyspark.sql import functions as F
+        # Guid format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx". Strip
+        # hyphens (32 hex chars), take chars 25..32, parse as base-16.
+        # `conv` returns string; cast to long then int. Last 4 bytes
+        # encode seq big-endian; we wrote a positive int so this is safe.
+        trace_qe = (trace_df
+            .where((F.col("EventClass") == F.lit("QueryEnd")) &
+                   F.col("ActivityId").isNotNull())
+            .withColumn(
+                "QuerySeq",
+                F.conv(
+                    F.substring(
+                        F.regexp_replace(F.col("ActivityId"), "-", ""),
+                        25, 8),
+                    16, 10).cast("int"))
+            .select(
+                F.col("RunId"),
+                F.col("QuerySeq"),
+                F.col("CpuMs").alias("EngineCpuMs"),
+                F.col("DurationMs").alias("EngineDurationMs")))
+        # Defend against a duplicated seq (shouldn't happen — we
+        # Interlocked.Increment per attempt — but keep the join 1:1).
+        trace_qe = trace_qe.dropDuplicates(["RunId", "QuerySeq"])
+        # Drop the predeclared null columns so the JOIN's columns aren't
+        # ambiguous, then re-join. Final schema matches exec_schema.
+        exec_df = (exec_df
+            .drop("EngineCpuMs", "EngineDurationMs")
+            .join(trace_qe, on=["RunId", "QuerySeq"], how="left"))
 
     # Fan out the writes. Each task is independent (different Delta path,
     # no foreign-key dependency between tables) so a ThreadPool gets the

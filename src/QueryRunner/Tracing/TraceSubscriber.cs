@@ -310,7 +310,8 @@ public sealed class TraceSubscriber : IAsyncDisposable
                 DatabaseName: dict.GetValueOrDefault(TraceColumn.DatabaseName),
                 ApplicationName: appName,
                 SessionId: dict.GetValueOrDefault(TraceColumn.SessionID),
-                RequestId: dict.GetValueOrDefault(TraceColumn.RequestID));
+                RequestId: dict.GetValueOrDefault(TraceColumn.RequestID),
+                ActivityID: dict.GetValueOrDefault(TraceColumn.ActivityID));
 
             // Channel write FIRST so a slow OnRawEvent observer can't
             // drop events from the live aggregator pipeline. TryWrite

@@ -125,6 +125,7 @@ namespace FabricDaxLoadTest
         public int UserIndex { get; set; }
         public int QueryIndex { get; set; }
         public int Iteration { get; set; }
+        public int QuerySeq { get; set; }
         public int RowCount { get; set; }
         public double DurationMs { get; set; }
         public double StartTimeMs { get; set; }
@@ -142,6 +143,7 @@ namespace FabricDaxLoadTest
         public string UserEmail { get; set; } = "";
         public int QueryIndex { get; set; }
         public int Iteration { get; set; }
+        public int QuerySeq { get; set; }
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
         public double StartTimeMs { get; set; }
@@ -305,6 +307,33 @@ namespace FabricDaxLoadTest
         // StartLoadTest fails fast if a run is already in flight.
         private static int _activeRun;
 
+        // Per-run query sequence counter. Reset to 0 in RunLoadTestCore at
+        // run start. Combined with runId, encodes a deterministic Guid we
+        // send as ADOMD ActivityID so persist.py can JOIN executions to
+        // QueryEnd trace events for engine CPU back-fill. See
+        // MakeActivityId for the encoding.
+        private static int _querySeq;
+
+        /// <summary>
+        /// Encode (runId, seq) into a deterministic Guid: first 12 bytes
+        /// from runId, last 4 bytes big-endian seq. The runId-prefix is
+        /// constant within a run, so Snappy/ZSTD page compression on the
+        /// trace's ActivityID column collapses to ~5–8 effective bytes/row.
+        /// persist.py decodes the last 4 bytes back to QuerySeq for the
+        /// JOIN. AS validates AdomdProperty("ActivityID") as a real Guid,
+        /// so this MUST stay 128-bit Guid-shaped.
+        /// </summary>
+        internal static Guid MakeActivityId(Guid runId, int seq)
+        {
+            var bytes = runId.ToByteArray();
+            // Big-endian write of seq into bytes 12..15
+            bytes[12] = (byte)(seq >> 24);
+            bytes[13] = (byte)(seq >> 16);
+            bytes[14] = (byte)(seq >> 8);
+            bytes[15] = (byte)seq;
+            return new Guid(bytes);
+        }
+
         private static void Log(string message) => _logger?.Log(message);
 
         /// <summary>
@@ -441,6 +470,10 @@ namespace FabricDaxLoadTest
             var status = QueryRunnerStatus.Instance;
             status.Reset();
 
+            // Reset the per-run ActivityID seq counter. Singleton run gate
+            // ensures no two runs interleave, so a static counter is safe.
+            Interlocked.Exchange(ref _querySeq, 0);
+
             // Internal duration timer linked with the caller's cancel token.
             // Either source firing causes the run to drain.
             using var durationCts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
@@ -501,7 +534,7 @@ namespace FabricDaxLoadTest
 
                 // Write CSV header
                 File.WriteAllText(logFilePath,
-                    "RunId,UserIndex,UserEmail,QueryIndex,Iteration,StartUtc,EndUtc,StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,ActiveUsersAtStart\n");
+                    "RunId,UserIndex,UserEmail,QueryIndex,Iteration,QuerySeq,StartUtc,EndUtc,StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,ActiveUsersAtStart\n");
 
                 telemetryQueue = new BlockingCollection<TelemetryRecord>(boundedCapacity: 10000);
                 logWriterTask = Task.Run(() => LogWriterLoop(telemetryQueue, logFilePath, cts.Token));
@@ -531,7 +564,7 @@ namespace FabricDaxLoadTest
                 try
                 {
                     File.WriteAllText(traceFilePath,
-                        "RunId,UtcTimestamp,EventClass,DurationMs,CpuMs,ApplicationName,UserName,SessionId,RequestId,DatabaseName,TextData\n");
+                        "RunId,UtcTimestamp,EventClass,DurationMs,CpuMs,ApplicationName,UserName,SessionId,RequestId,ActivityId,DatabaseName,TextData\n");
 
                     trace = new TraceSubscriber(
                         xmlaEndpoint: xmlaEndpoint,
@@ -561,6 +594,7 @@ namespace FabricDaxLoadTest
                                     .Append(SanitizeCsvField(ev.UserName)).Append(',')
                                     .Append(SanitizeCsvField(ev.SessionId)).Append(',')
                                     .Append(SanitizeCsvField(ev.RequestId)).Append(',')
+                                    .Append(SanitizeCsvField(ev.ActivityID)).Append(',')
                                     .Append(SanitizeCsvField(ev.DatabaseName)).Append(',')
                                     .Append(SanitizeCsvField(ev.TextData)).Append('\n');
                                 File.AppendAllText(traceFile, line.ToString());
@@ -962,6 +996,7 @@ namespace FabricDaxLoadTest
                       .Append(email).Append(',')
                       .Append(r.QueryIndex).Append(',')
                       .Append(r.Iteration).Append(',')
+                      .Append(r.QuerySeq).Append(',')
                       .Append(r.StartUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
                       .Append(r.EndUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
                       .Append(r.StartTimeMs.ToString("F0")).Append(',')
@@ -1071,7 +1106,7 @@ namespace FabricDaxLoadTest
                             throw new InvalidOperationException("No connection available");
 
                         var conn = connections[slot];
-                        var r = ExecuteQuery(userIndex, qi, iter, queries[qi], conn, skipResults, testStart);
+                        var r = ExecuteQuery(userIndex, qi, iter, queries[qi], conn, skipResults, testStart, runId);
                         if (r.Error != null && r.Error.Contains("timed out or was lost"))
                         {
                             status.RecordQuery(r);
@@ -1100,7 +1135,7 @@ namespace FabricDaxLoadTest
                             }
 
                             // Retry the query once on the new connection
-                            r = ExecuteQuery(userIndex, qi, iter, queries[qi], conn, skipResults, testStart);
+                            r = ExecuteQuery(userIndex, qi, iter, queries[qi], conn, skipResults, testStart, runId);
                         }
 
                         status.RecordQuery(r);
@@ -1144,6 +1179,7 @@ namespace FabricDaxLoadTest
                     UserEmail = email,
                     QueryIndex = qi,
                     Iteration = r.Iteration,
+                    QuerySeq = r.QuerySeq,
                     StartUtc = startUtc,
                     EndUtc = startUtc.AddMilliseconds(r.DurationMs),
                     StartTimeMs = r.StartTimeMs,
@@ -1159,10 +1195,19 @@ namespace FabricDaxLoadTest
         }
 
         private static QueryResult ExecuteQuery(int userIndex, int queryIndex,
-            int iteration, string query, IDbConnection conn, bool skipResults, Stopwatch testStart)
+            int iteration, string query, IDbConnection conn, bool skipResults,
+            Stopwatch testStart, Guid runId)
         {
+            // Per-attempt monotonic seq → deterministic ActivityID Guid that
+            // pairs this execution with its QueryEnd trace row in persist.py.
+            // Increment BEFORE we set the AS property so a retry on a fresh
+            // connection (post-reconnect) gets its own Guid.
+            int seq = Interlocked.Increment(ref _querySeq);
+            var actId = MakeActivityId(runId, seq);
+
             var result = new QueryResult {
                 UserIndex = userIndex, QueryIndex = queryIndex, Iteration = iteration,
+                QuerySeq = seq,
                 StartTimeMs = Math.Round(testStart.Elapsed.TotalMilliseconds),
                 ActiveUsersAtStart = QueryRunnerStatus.Instance.ActiveUsers };
             try
@@ -1170,6 +1215,17 @@ namespace FabricDaxLoadTest
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = query;
                 cmd.CommandTimeout = 0;
+                // Stamp the command with our deterministic ActivityID Guid
+                // so the QueryEnd/ExecutionMetrics trace rows carry it in
+                // column 46. PBI Service whitelists the TYPED Guid
+                // property on AdomdCommand (cmd.ActivityID = …) but
+                // REJECTS the equivalent XMLA-bag entry
+                // `Properties.Add(new AdomdProperty("ActivityID", …))`
+                // with "The 'ActivityID' property was not recognized".
+                if (cmd is AdomdCommand adomdCmd)
+                {
+                    adomdCmd.ActivityID = actId;
+                }
                 var sw = Stopwatch.StartNew();
                 if (skipResults)
                 {

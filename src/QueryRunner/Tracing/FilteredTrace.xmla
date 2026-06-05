@@ -84,6 +84,7 @@
               <ColumnID>39</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
+              <ColumnID>46</ColumnID>  <!-- ActivityID — client-stamped {runIdPrefix|seq} Guid -->
               <ColumnID>47</ColumnID>
               <ColumnID>55</ColumnID>
             </Columns>
@@ -310,6 +311,7 @@
               <ColumnID>37</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
+              <ColumnID>46</ColumnID>  <!-- ActivityID — pairs with QueryEnd -->
               <ColumnID>47</ColumnID>
             </Columns>
           </Event>
