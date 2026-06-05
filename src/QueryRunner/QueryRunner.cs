@@ -136,14 +136,20 @@ namespace FabricDaxLoadTest
 
     internal class TelemetryRecord
     {
-        public int QueryNumber { get; set; }
+        public Guid RunId { get; set; }
+        public int UserIndex { get; set; }
         public string UserEmail { get; set; } = "";
-        public DateTime Timestamp { get; set; }
+        public int QueryIndex { get; set; }
+        public int Iteration { get; set; }
+        public DateTime StartUtc { get; set; }
+        public DateTime EndUtc { get; set; }
         public double StartTimeMs { get; set; }
         public double DurationMs { get; set; }
         public string Outcome { get; set; } = "";
-        public string MessageText { get; set; } = "";
-        public int ActiveUsers { get; set; }
+        public int RowCount { get; set; }
+        public long ResponseBytes { get; set; }
+        public string ErrorMessage { get; set; } = "";
+        public int ActiveUsersAtStart { get; set; }
     }
 
     /// <summary>
@@ -482,7 +488,8 @@ namespace FabricDaxLoadTest
                 Log($"Logging to: {logFilePath}");
 
                 // Write CSV header
-                File.WriteAllText(logFilePath, "QueryNumber,UserEmail,Timestamp,StartTimeMs,DurationMs,Outcome,MessageText,ActiveUsers\n");
+                File.WriteAllText(logFilePath,
+                    "RunId,UserIndex,UserEmail,QueryIndex,Iteration,StartUtc,EndUtc,StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,ActiveUsersAtStart\n");
 
                 telemetryQueue = new BlockingCollection<TelemetryRecord>(boundedCapacity: 10000);
                 logWriterTask = Task.Run(() => LogWriterLoop(telemetryQueue, logFilePath, cts.Token));
@@ -604,7 +611,7 @@ namespace FabricDaxLoadTest
                     SimulateUserWithConnections(userIdx, queries, userEmails[userIdx],
                         queriesPerBatch, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
-                        testStart, telemetryQueue, cts.Token);
+                        testStart, runId, testStartTime, telemetryQueue, cts.Token);
                 }, cts.Token));
             }
 
@@ -844,9 +851,23 @@ namespace FabricDaxLoadTest
                 var sb = new StringBuilder();
                 foreach (var r in batch)
                 {
-                    var msg = SanitizeCsvField(r.MessageText);
-                    sb.AppendLine(
-                        $"{r.QueryNumber},{r.UserEmail},{r.Timestamp:yyyy-MM-dd HH:mm:ss.fff},{r.StartTimeMs:F0},{r.DurationMs:F1},{r.Outcome},{msg},{r.ActiveUsers}");
+                    var err = SanitizeCsvField(r.ErrorMessage);
+                    var email = SanitizeCsvField(r.UserEmail);
+                    sb.Append(r.RunId.ToString("D")).Append(',')
+                      .Append(r.UserIndex).Append(',')
+                      .Append(email).Append(',')
+                      .Append(r.QueryIndex).Append(',')
+                      .Append(r.Iteration).Append(',')
+                      .Append(r.StartUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
+                      .Append(r.EndUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
+                      .Append(r.StartTimeMs.ToString("F0")).Append(',')
+                      .Append(r.DurationMs.ToString("F1")).Append(',')
+                      .Append(r.Outcome).Append(',')
+                      .Append(r.RowCount).Append(',')
+                      .Append(r.ResponseBytes).Append(',')
+                      .Append(err).Append(',')
+                      .Append(r.ActiveUsersAtStart)
+                      .Append('\n');
                 }
 
                 try
@@ -881,6 +902,7 @@ namespace FabricDaxLoadTest
             IDbConnection[] connections, string connStr,
             bool skipResults,
             Stopwatch testStart,
+            Guid runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
             CancellationToken ct)
         {
@@ -892,7 +914,9 @@ namespace FabricDaxLoadTest
                     iteration++;
                     RunIteration(userIndex, email, iteration, queries, connections, connStr,
                         skipResults,
-                        pauseBetweenQueriesMs, testStart, telemetryQueue, ct);
+                        pauseBetweenQueriesMs, testStart,
+                        runId, testStartUtc,
+                        telemetryQueue, ct);
                     if (ct.IsCancellationRequested) break;
 
                     try { Task.Delay(pauseMs, ct).Wait(ct); }
@@ -912,6 +936,7 @@ namespace FabricDaxLoadTest
             bool skipResults,
             int pauseBetweenQueriesMs,
             Stopwatch testStart,
+            Guid runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
             CancellationToken ct)
         {
@@ -940,7 +965,7 @@ namespace FabricDaxLoadTest
                         if (r.Error != null && r.Error.Contains("timed out or was lost"))
                         {
                             status.RecordQuery(r);
-                            SubmitTelemetry(telemetryQueue, qi, email, r);
+                            SubmitTelemetry(telemetryQueue, runId, testStartUtc, qi, userIndex, email, r);
 
                             Log($"[User {userIndex}] Q{qi} iter {iter} connection lost, reconnecting...");
                             try
@@ -961,7 +986,7 @@ namespace FabricDaxLoadTest
                         }
 
                         status.RecordQuery(r);
-                        SubmitTelemetry(telemetryQueue, qi, email, r);
+                        SubmitTelemetry(telemetryQueue, runId, testStartUtc, qi, userIndex, email, r);
 
                         if (r.Error != null)
                         {
@@ -986,22 +1011,27 @@ namespace FabricDaxLoadTest
         }
 
         private static void SubmitTelemetry(BlockingCollection<TelemetryRecord>? telemetryQueue,
-            int qi, string email, QueryResult r)
+            Guid runId, DateTime testStartUtc, int qi, int userIndex, string email, QueryResult r)
         {
             if (telemetryQueue != null && !telemetryQueue.IsAddingCompleted)
             {
-                string msg = r.Error
-                    ?? (r.ResponseBytes >= 0 ? $"{r.ResponseBytes} bytes" : $"{r.RowCount} rows");
+                var startUtc = testStartUtc.AddMilliseconds(r.StartTimeMs);
                 var record = new TelemetryRecord
                 {
-                    QueryNumber = qi,
+                    RunId = runId,
+                    UserIndex = userIndex,
                     UserEmail = email,
-                    Timestamp = DateTime.UtcNow,
+                    QueryIndex = qi,
+                    Iteration = r.Iteration,
+                    StartUtc = startUtc,
+                    EndUtc = startUtc.AddMilliseconds(r.DurationMs),
                     StartTimeMs = r.StartTimeMs,
                     DurationMs = r.DurationMs,
                     Outcome = r.Error == null ? "Success" : "Error",
-                    MessageText = msg,
-                    ActiveUsers = r.ActiveUsersAtStart,
+                    RowCount = r.RowCount,
+                    ResponseBytes = r.ResponseBytes,
+                    ErrorMessage = r.Error ?? "",
+                    ActiveUsersAtStart = r.ActiveUsersAtStart,
                 };
                 telemetryQueue.TryAdd(record);
             }
