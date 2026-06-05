@@ -44,8 +44,10 @@ def normalize_queries(raw_json: str) -> list[str]:
       * Object array: ``[{"query": "..."}, ...]`` or
         ``[{"Query": "..."}, ...]``
       * String array: ``["EVALUATE ...", ...]``
+
+    Tolerates a leading UTF-8 BOM (Power BI Desktop writes one).
     """
-    obj = json.loads(raw_json)
+    obj = json.loads(raw_json.lstrip("\ufeff"))
     if isinstance(obj, dict) and isinstance(obj.get("events"), list):
         out: list[str] = []
         for ev in obj["events"]:
@@ -80,7 +82,7 @@ def normalize_users(raw_json: str) -> list[dict[str, str]]:
       * String array: ``["alice@contoso.com", "bob@contoso.com"]``
         (roles default to "")
     """
-    obj = json.loads(raw_json)
+    obj = json.loads(raw_json.lstrip("\ufeff"))
     if not isinstance(obj, list):
         raise ValueError("users.json must be a JSON array")
     out: list[dict[str, str]] = []
