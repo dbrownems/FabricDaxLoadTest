@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fdlt-runtime"
+description = "Notebook-side runtime for the FabricDaxLoadTest LoadGen tool."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "David Browne" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/dbrownems/FabricDaxLoadTest"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fdlt_runtime*"]
+
+[tool.setuptools_scm]
+write_to = "src/fdlt_runtime/_version.py"
+# Allow building outside a git checkout (e.g. inside a CI tarball) by
+# falling back to the env var the deploy script sets.
+fallback_version = "0.0.0+unknown"

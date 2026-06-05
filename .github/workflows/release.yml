@@ -41,8 +41,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install notebook deps
-        run: pip install nbformat
+      - name: Install notebook + build deps
+        run: pip install nbformat build setuptools setuptools-scm wheel
 
       - name: Publish LoadGen (linux-x64, framework-dependent)
         # Same flags as scripts/Deploy-LoadTests.ps1 — Fabric Spark hosts
@@ -56,6 +56,14 @@ jobs:
             -p:UseAppHost=false \
             --nologo
 
+      - name: Build fdlt_runtime wheel
+        # setuptools-scm reads the version from `git describe`, which on a
+        # tagged commit is exactly the tag (e.g. 0.4.0). The deploy script
+        # does the same locally; both wheel filenames match the tag.
+        run: |
+          python -m build --wheel --no-isolation
+          ls -lh dist/
+
       - name: Regenerate notebooks
         # Build the .ipynb files from the in-repo Python source so the
         # release artifacts match the tagged commit deterministically,
@@ -65,8 +73,11 @@ jobs:
 
       - name: Package loadgen-bin.zip
         run: |
-          cd src/LoadGen/bin/Release/net8.0/linux-x64/publish
-          zip -r "$GITHUB_WORKSPACE/loadgen-bin.zip" .
+          stage="$RUNNER_TEMP/fdlt-zip-stage"
+          mkdir -p "$stage"
+          cp -r src/LoadGen/bin/Release/net8.0/linux-x64/publish/. "$stage/"
+          cp dist/fdlt_runtime-*.whl "$stage/"
+          (cd "$stage" && zip -r "$GITHUB_WORKSPACE/loadgen-bin.zip" .)
           ls -lh "$GITHUB_WORKSPACE/loadgen-bin.zip"
 
       - name: Stage notebook + LoadGen zip

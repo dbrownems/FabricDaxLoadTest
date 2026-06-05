@@ -309,6 +309,28 @@ if not os.path.exists(LOADGEN_DLL):
         f"the lakehouse zip."
     )
 
+# Install the fdlt_runtime wheel that ships next to LoadGen.dll. The
+# wheel version is git-tag-driven via setuptools-scm so its banner +
+# the LoadTestRuns row both pin the exact code that produced the run.
+import glob, sys
+_wheels = sorted(glob.glob(os.path.join(STAGE, "fdlt_runtime-*.whl")))
+if not _wheels:
+    raise FileNotFoundError(
+        f"No fdlt_runtime wheel found under {STAGE}. "
+        "Re-run scripts/Deploy-LoadTests.ps1 to rebuild loadgen-bin.zip."
+    )
+_pip = subprocess.run(
+    [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall",
+     "--no-deps", _wheels[-1]],
+    capture_output=True, text=True, timeout=120,
+)
+if _pip.returncode != 0:
+    raise RuntimeError(f"pip install of {_wheels[-1]} failed:\n{_pip.stderr}")
+import importlib
+if "fdlt_runtime" in sys.modules:
+    importlib.reload(sys.modules["fdlt_runtime"])
+import fdlt_runtime  # noqa: E402
+
 # Locate dotnet. Fabric Spark drivers ship the .NET 8 runtime under sempy's
 # trident_env. Prefer that over $PATH so version mismatches with whatever
 # the user happens to have don't bite us.
@@ -334,6 +356,7 @@ if _info.returncode != 0:
 print(f"Workspace : {WS_NAME} ({WS_ID})")
 print(f"Lakehouse : {LAKEHOUSE_NAME} ({LH_ID})  schema={LH_SCHEMA or '(flat / no schema)'}")
 print(f"LoadGen   : {LOADGEN_DLL}  ({os.path.getsize(LOADGEN_DLL):,} bytes)")
+print(f"Runtime   : fdlt_runtime {fdlt_runtime.__version__}")
 print(f"dotnet    : {DOTNET}")
 """)
 
@@ -343,82 +366,21 @@ print(f"dotnet    : {DOTNET}")
 import time, uuid
 from datetime import datetime, timezone
 
-# Queries / Users — load from the notebook Resources panel, an abfss URL,
-# or fall back to the inline corpus. See cell 1 for the full resolution
-# rules. Accepted JSON shapes are documented in the README under
-# "Query corpus formats" / "User list formats".
+# Queries / Users — load via fdlt_runtime (installed in cell 2).
+# See cell 1 for the full resolution rules. Accepted JSON shapes are
+# documented in the README under "Query corpus formats" / "User list formats".
+def _read_abfss(path):
+    return notebookutils.fs.head(path, 1024 * 1024 * 4)
 
-def _read_text(path):
-    if path.startswith("abfss://"):
-        return notebookutils.fs.head(path, 1024 * 1024 * 4)
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
-
-def _normalize_queries(raw_json):
-    obj = json.loads(raw_json)
-    # Power BI Performance Analyzer export
-    if isinstance(obj, dict) and isinstance(obj.get("events"), list):
-        out = []
-        for ev in obj["events"]:
-            q = ev.get("query") or (ev.get("Query") or {}).get("Query")
-            if q:
-                out.append(q)
-        return out
-    if isinstance(obj, list):
-        return [q if isinstance(q, str) else q.get("query") or q.get("Query") for q in obj]
-    raise ValueError("Unrecognized queries.json shape")
-
-def _normalize_users(raw_json):
-    obj = json.loads(raw_json)
-    if not isinstance(obj, list):
-        raise ValueError("users.json must be a JSON array")
-    out = []
-    for u in obj:
-        if isinstance(u, str):
-            out.append({"email": u, "role": ""})
-        elif isinstance(u, dict):
-            out.append({"email": u.get("email") or u.get("Email") or "",
-                        "role":  u.get("role")  or u.get("Role")  or ""})
-    return [u for u in out if u["email"]]
-
-def _resolve_resource(name, kind):
-    # Resolve a Resources-panel filename, abfss URL, or auto-discover.
-    # kind is "queries" or "users" (used only for messages).
-    # Returns (path-or-None, label).
-    if isinstance(name, str) and name.startswith("abfss://"):
-        return name, name
-    if isinstance(name, str) and name.strip():
-        p = f"builtin/{name.lstrip('/')}"
-        return (p, f"resources:{p}") if os.path.exists(p) else (None, f"(missing resource '{name}')")
-    if kind == "queries" and os.path.isdir("builtin"):
-        # Auto-discover: exactly one .json under Resources ⇒ that's the queries file.
-        candidates = sorted(f for f in os.listdir("builtin") if f.lower().endswith(".json"))
-        if len(candidates) == 1:
-            p = f"builtin/{candidates[0]}"
-            return p, f"resources:{p} (auto-discovered)"
-    return None, "(no resource)"
-
-def _load_queries():
-    p, src = _resolve_resource(QUERIES_FILE, "queries")
-    if p is not None:
-        return _normalize_queries(_read_text(p)), src
-    return list(QUERIES_INLINE), "(QUERIES_INLINE fallback)"
-
-def _load_users():
-    p, src = _resolve_resource(USERS_FILE, "users")
-    if p is not None:
-        return _normalize_users(_read_text(p)), src
-    if USERS_INLINE:
-        return [dict(u) for u in USERS_INLINE], "(USERS_INLINE)"
-    return [{"email": "anonymous@local", "role": ""}], "(default anonymous user)"
-
-queries, queries_source = _load_queries()
+queries, queries_source = fdlt_runtime.load_queries(
+    QUERIES_FILE, QUERIES_INLINE, read_abfss=_read_abfss)
 print(f"Queries : {len(queries)}  from {queries_source}")
 if queries_source.startswith("(QUERIES_INLINE"):
     print("          ⚠ no resource file attached — using model-agnostic warm-up queries only.")
     print("          Drop a Performance Analyzer .json onto the Resources panel for a real test.")
 
-base, users_source = _load_users()
+base, users_source = fdlt_runtime.load_users(
+    USERS_FILE, USERS_INLINE, read_abfss=_read_abfss)
 print(f"Users   : pool={len(base)}  from {users_source}")
 users = [base[i % len(base)] for i in range(CONCURRENT_USERS)]
 
@@ -791,6 +753,7 @@ runs_df = spark.createDataFrame([Row(
     P95Ms            = float(_lat.get("p95")    or 0.0),
     P99Ms            = float(_lat.get("p99")    or 0.0),
     MeanMs           = float(_lat.get("mean")   or 0.0),
+    RuntimeVersion   = fdlt_runtime.__version__,
 )])
 _upsert(runs_df, "LoadTestRuns", ["RunId"])
 

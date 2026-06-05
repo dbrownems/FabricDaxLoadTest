@@ -160,7 +160,37 @@ Info "Publish output: $($published.Count) files, $totalKb KiB"
 Step "Packaging loadgen-bin.zip"
 $ZipPath = Join-Path $RepoRoot "loadgen-bin.zip"
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-Compress-Archive -Path (Join-Path $PublishDir "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+
+# Build the fdlt_runtime wheel and bundle it next to the LoadGen DLLs.
+# The notebook bootstrap cell pip-installs whatever wheel it finds in
+# the unzipped staging dir; setuptools-scm derives the version from
+# `git describe`, so an explicit tag (or dirty-tree dev marker) drives
+# both the wheel filename and the runtime banner.
+Step "Building fdlt_runtime wheel"
+$DistDir = Join-Path $RepoRoot "dist"
+if (Test-Path $DistDir) {
+    # Clear stale wheels so we don't ship two side-by-side.
+    Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" -ErrorAction SilentlyContinue |
+        Remove-Item -Force
+}
+Push-Location $RepoRoot
+try {
+    & python -m build --wheel --no-isolation 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "python -m build failed" }
+} finally { Pop-Location }
+$wheel = Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $wheel) { throw "Wheel build produced no fdlt_runtime-*.whl" }
+Info "Wheel: $($wheel.Name) ($([int]($wheel.Length/1024)) KiB)"
+
+# Stage publish output + wheel into one tree, then zip the tree.
+$staging = Join-Path $env:TEMP "fdlt-zip-stage"
+if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+New-Item -ItemType Directory -Path $staging | Out-Null
+Copy-Item -Path (Join-Path $PublishDir "*") -Destination $staging -Recurse
+Copy-Item -Path $wheel.FullName -Destination $staging
+Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+Remove-Item $staging -Recurse -Force
 $zipKb = [int]((Get-Item $ZipPath).Length / 1024)
 Info "Built $ZipPath ($zipKb KiB)"
 
