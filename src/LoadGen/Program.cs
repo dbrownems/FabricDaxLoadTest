@@ -337,6 +337,16 @@ class Program
             return 1;
         }
 
+        // Now that we have a RunId, emit a second `started` envelope carrying it.
+        // The earlier `started` envelope (in Run()) reports parameters but is
+        // emitted before the handle exists; clients that need to correlate
+        // CSV RunId values to the run wait for the one with `runId` populated.
+        EmitEnvelope(new Dictionary<string, object?>
+        {
+            ["type"] = "started",
+            ["runId"] = handle.RunId.ToString(),
+        });
+
         // Wire SIGINT (and Ctrl+Break) to a single graceful Cancel.
         // CancelKeyPress fires on the .NET thread-pool, so it's safe to
         // call handle.Cancel() — it only sets the CTS, it does not block.

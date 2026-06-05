@@ -231,10 +231,14 @@ users = [base[i % len(base)] for i in range(CONCURRENT_USERS)]
 
 # Run output dir under Files/runs/<runId>/ — LoadGen will write
 # LoadTest.*.csv, LoadTest.*.log, and result.json in here.
-RUN_ID    = uuid.uuid4().hex[:8]
-RUN_LOCAL = f"/tmp/fdlt-run-{RUN_ID}"
+# STAGING_ID is a short id used only for the local temp path; the canonical
+# RunId is the GUID LoadGen embeds in every telemetry row, captured from the
+# `started` envelope in cell 4.
+STAGING_ID = uuid.uuid4().hex[:8]
+RUN_ID     = None  # populated by cell 4 from the LoadGen `started` envelope
+RUN_LOCAL  = f"/tmp/fdlt-run-{STAGING_ID}"
 os.makedirs(RUN_LOCAL, exist_ok=True)
-LOG_FILE  = f"LoadTest.{CONCURRENT_USERS}u.{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+LOG_FILE   = f"LoadTest.{CONCURRENT_USERS}u.{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
 
 # Token (Power BI XMLA audience — same `pbi` key as the Fabric REST call above).
 TOKEN = notebookutils.credentials.getToken("pbi")
@@ -251,7 +255,7 @@ with open(USERS_JSON, "w", encoding="utf-8") as f:
 
 xmla = f"powerbi://api.powerbi.com/v1.0/myorg/{TARGET_WORKSPACE}"
 
-print(f"Run ID  : {RUN_ID}")
+print(f"Staging : {STAGING_ID} (RunId assigned by LoadGen)")
 print(f"Endpoint: {xmla}{('?' + TARGET_REPLICA) if TARGET_REPLICA else ''}")
 print(f"Users   : {len(users)} concurrent, ramp {USER_RAMP_TIME_SEC}s, duration {DURATION_SECONDS}s")
 print(f"Logs    : {RUN_LOCAL}/{LOG_FILE}")
@@ -294,7 +298,7 @@ if SKIP_RESULTS:
 # expose the bearer token.
 env = {**os.environ, "PBI_TOKEN": TOKEN}
 
-display({"text/plain": f"Starting run {RUN_ID} ..."}, raw=True, display_id="fdlt-status")
+display({"text/plain": f"Starting (staging={STAGING_ID}) ..."}, raw=True, display_id="fdlt-status")
 
 proc = subprocess.Popen(
     cmd, env=env,
@@ -341,7 +345,14 @@ try:
                            raw=True, display_id="fdlt-status")
             continue
         kind = env_obj.get("type")
-        if kind == "progress":
+        if kind == "started" and env_obj.get("runId"):
+            # Second `started` envelope (post-StartLoadTest) carries the
+            # canonical RunId GUID that LoadGen wrote into the CSV. The
+            # first `started` envelope (parameter banner) lacks it.
+            RUN_ID = env_obj["runId"]
+            update_display({"text/plain": f"Started run {RUN_ID}"},
+                           raw=True, display_id="fdlt-status")
+        elif kind == "progress":
             update_display(_render(env_obj), raw=True, display_id="fdlt-status")
         elif kind == "result":
             result_envelope = env_obj
@@ -389,8 +400,8 @@ def _print_stderr_tail(n=40):
         for line in tail:
             print(line)
 
-# Persist run artifacts to OneLake under Files/runs/<RUN_ID>/.
-RUN_DEST = f"{LH_ABFSS}/Files/runs/{RUN_ID}"
+# Persist run artifacts to OneLake under Files/runs/<RunId or staging id>/.
+RUN_DEST = f"{LH_ABFSS}/Files/runs/{RUN_ID or STAGING_ID}"
 try:
     notebookutils.fs.cp(f"file://{RUN_LOCAL}", RUN_DEST, recurse=True)
 except Exception as _cp_ex:
@@ -488,7 +499,7 @@ _summary = (result_envelope or {}).get("summary", {}) if result_envelope else {}
 _lat     = _summary.get("latency", {}) or {}
 _run_status = "Aborted" if (error_envelope is not None) else (
     "Cancelled" if returncode == 130 else "Completed")
-_abort_reason = (error_envelope or {}).get("message") if error_envelope else None
+_abort_reason = (error_envelope or {}).get("message", "") if error_envelope else ""
 
 started_at = datetime.now(timezone.utc)  # approximate; real start was earlier
 # Prefer the run's actual UTC start from the first CSV row below.
