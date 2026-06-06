@@ -205,7 +205,6 @@ LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
                                 #                 (schema-enabled → "dbo",
                                 #                  flat lakehouse → "")
                                 #   "dbo"/other → force Tables/<name>/
-                                #   ""          → force flat Tables/
 
 # ── Target semantic model ────────────────────────────────────────────────────
 TARGET_WORKSPACE = None  # workspace hosting the model under test
