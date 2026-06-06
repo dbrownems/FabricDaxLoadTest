@@ -44,6 +44,19 @@ jobs:
       - name: Install notebook + build deps
         run: pip install nbformat build setuptools setuptools-scm wheel
 
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF##*/}"
+          fi
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+          # setuptools-scm strips the leading `v` from the git tag for
+          # PEP 440 compliance — the wheel filename uses the bare version.
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Publish LoadGen (linux-x64, framework-dependent)
         # Same flags as scripts/Deploy-LoadTests.ps1 — Fabric Spark hosts
         # have the .NET 8 runtime bundled via sempy. UseAppHost=false skips
@@ -56,43 +69,59 @@ jobs:
             -p:UseAppHost=false \
             --nologo
 
+      - name: Stage LoadGen binaries into wheel source tree
+        # As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime
+        # wheel. pyproject.toml's [tool.setuptools.package-data] picks
+        # up everything under src/fdlt_runtime/loadgen/ — so we copy
+        # the publish output there before `python -m build`.
+        run: |
+          rm -rf src/fdlt_runtime/loadgen
+          mkdir -p src/fdlt_runtime/loadgen
+          cp -r src/LoadGen/bin/Release/net8.0/linux-x64/publish/. \
+                src/fdlt_runtime/loadgen/
+          ls -lh src/fdlt_runtime/loadgen/
+
       - name: Build fdlt_runtime wheel
         # setuptools-scm reads the version from `git describe`, which on a
-        # tagged commit is exactly the tag (e.g. 0.4.0). The deploy script
+        # tagged commit is exactly the tag (e.g. 0.5.0). The deploy script
         # does the same locally; both wheel filenames match the tag.
         run: |
           python -m build --wheel --no-isolation
           ls -lh dist/
 
+      - name: Verify wheel contents
+        # Catch the silent-stale-wheel failure mode early: if the
+        # package-data glob ever fails, a 50 KiB wheel without LoadGen
+        # would happily ship and only break at the user's first
+        # Run-All. Fail the workflow instead.
+        run: |
+          set -e
+          tmp=$(mktemp -d)
+          unzip -q dist/fdlt_runtime-*.whl -d "$tmp"
+          for f in \
+              fdlt_runtime/loadgen/LoadGen.dll \
+              fdlt_runtime/loadgen/LoadGen.deps.json \
+              fdlt_runtime/loadgen/LoadGen.runtimeconfig.json \
+              fdlt_runtime/loadgen/QueryRunner.dll \
+              fdlt_runtime/loadgen/Microsoft.AnalysisServices.AdomdClient.dll \
+              fdlt_runtime/notebook.py; do
+            test -f "$tmp/$f" || { echo "Missing $f"; exit 1; }
+          done
+          echo "✅ Wheel content verified"
+
       - name: Regenerate notebooks
-        # Build the .ipynb files from the in-repo Python source so the
-        # release artifacts match the tagged commit deterministically,
-        # regardless of whether contributors remembered to commit a fresh
-        # regeneration.
+        # FDLT_RELEASE_VERSION drives the WHEEL_URL embedded in cell 2.
+        # Using the bare version (without the leading `v`) so the URL
+        # matches the wheel filename: fdlt_runtime-X.Y.Z-py3-none-any.whl.
+        env:
+          FDLT_RELEASE_VERSION: ${{ steps.tag.outputs.version }}
         run: python scripts/build_notebooks.py
 
-      - name: Package loadgen-bin.zip
+      - name: Stage release assets
         run: |
-          stage="$RUNNER_TEMP/fdlt-zip-stage"
-          mkdir -p "$stage"
-          cp -r src/LoadGen/bin/Release/net8.0/linux-x64/publish/. "$stage/"
-          cp dist/fdlt_runtime-*.whl "$stage/"
-          (cd "$stage" && zip -r "$GITHUB_WORKSPACE/loadgen-bin.zip" .)
-          ls -lh "$GITHUB_WORKSPACE/loadgen-bin.zip"
-
-      - name: Stage notebook + LoadGen zip
-        run: |
+          cp dist/fdlt_runtime-*.whl ./
           cp notebooks/LoadTest-Main.ipynb ./LoadTest-Main.ipynb
-          ls -l LoadTest-Main.ipynb loadgen-bin.zip
-
-      - name: Resolve release tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
-          fi
+          ls -lh fdlt_runtime-*.whl LoadTest-Main.ipynb
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -102,14 +131,16 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            loadgen-bin.zip
+            fdlt_runtime-*.whl
             LoadTest-Main.ipynb
+            THIRD-PARTY-NOTICES.md
           body: |
             **Manual-deployment artifacts** (see [README — Option B: Manual setup](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/README.md#option-b--manual-setup)).
 
             | Asset | Where it goes |
             |---|---|
-            | `loadgen-bin.zip` | Upload as-is to `LoadTests.Lakehouse/Files/loadgen-bin.zip` (cell 2 of the notebook unzips it on each kernel start). |
-            | `LoadTest-Main.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Main`** automatically. |
+            | `fdlt_runtime-${{ steps.tag.outputs.version }}-py3-none-any.whl` | Bundles `LoadGen.dll` + ADOMD assemblies. Cell 2 of the notebook `pip install`s this wheel directly from the GitHub release URL — no manual upload required (set `WHEEL_URL` in cell 2 to the asset URL). For offline / locked-down tenants, upload to `LoadTests.Lakehouse/Files/` and point `WHEEL_URL` at the `abfss://…` path instead. |
+            | `LoadTest-Main.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Main`** automatically. Cell 2's `WHEEL_URL` is pre-baked to this release. |
+            | `THIRD-PARTY-NOTICES.md` | License terms for the Microsoft AnalysisServices client + identity DLLs bundled inside the wheel. |
 
             For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.

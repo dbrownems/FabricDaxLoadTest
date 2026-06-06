@@ -7,18 +7,24 @@
     Creates (or updates, idempotently) the following items in the target
     workspace, all inside a workspace folder named `LoadTests`:
 
-      * LoadTests.Lakehouse  — holds Files/loadgen-bin.zip (LoadGen +
-                                ADOMD assemblies), Files/runs/<runId>/
+      * LoadTests.Lakehouse  — holds Files/fdlt_runtime-<ver>.whl
+                                (the fat wheel: LoadGen.dll + ADOMD
+                                assemblies bundled inside the Python
+                                wheel as of v0.5.0), Files/runs/<runId>/
                                 (per-run telemetry), and
-                                Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions}.
+                                Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}.
       * LoadTest - Main      — the runner notebook; users edit cell 1 and
                                 Run All directly. Save As (in the portal)
                                 to make *additional* Load Tests in the
-                                same workspace. Redeploys refresh the zip
-                                but never touch existing notebooks — pass
-                                `-ForceNotebook` to overwrite anyway.
+                                same workspace. Redeploys refresh the
+                                wheel and rebake cell 2 (WHEEL_URL +
+                                wheel filename) on the existing notebook
+                                so it stays in sync with what's in
+                                Files/. User edits to cell 1 are
+                                preserved (cell 1 is a parameters cell;
+                                rebake only touches cell 2).
 
-    Everything else is idempotent — re-run any time to refresh assemblies.
+    Everything else is idempotent — re-run any time to refresh the wheel.
     Folder and lakehouse names are always `LoadTests`; the notebook
     auto-discovers the lakehouse from the workspace.
 
@@ -29,12 +35,15 @@
     Skip `dotnet publish`; reuse the existing publish output under
     src/LoadGen/bin/Release/net8.0/linux-x64/publish/.
 
-.PARAMETER ForceNotebook
-    Overwrite an existing `LoadTest - Main` notebook in the workspace.
-    Default behavior is to leave any existing notebook in place so user
-    edits to cell 1 are preserved across redeploys. Runtime behavior
-    changes always ship via the wheel inside loadgen-bin.zip, which is
-    refreshed on every deploy regardless.
+.PARAMETER SkipNotebookUpdate
+    Leave an existing `LoadTest - Main` notebook in the workspace
+    untouched, even if its embedded WHEEL_URL points at an older wheel.
+    Default behavior is to redeploy the notebook with the freshly
+    baked WHEEL_URL so it stays in sync with the wheel that was just
+    uploaded to Files/. Use this only when you've made manual edits to
+    cells 2-onwards in the portal that you don't want clobbered (cell
+    1 is the parameters cell — those edits live in `LoadTest - <Name>`
+    Save-As copies, never in `LoadTest - Main`).
 
 .EXAMPLE
     pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Verbose
@@ -43,7 +52,7 @@
 param(
     [Parameter(Mandatory)] [string] $Workspace,
     [switch] $SkipPublish,
-    [switch] $ForceNotebook
+    [switch] $SkipNotebookUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -167,16 +176,36 @@ $published = Get-ChildItem -Recurse -File $PublishDir
 $totalKb = [int](( $published | Measure-Object Length -Sum).Sum / 1024)
 Info "Publish output: $($published.Count) files, $totalKb KiB"
 
-Step "Packaging loadgen-bin.zip"
-$ZipPath = Join-Path $RepoRoot "loadgen-bin.zip"
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+Step "Staging .NET LoadGen binaries into the wheel source tree"
+# As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime wheel
+# (under fdlt_runtime/loadgen/). Pre-populate that folder from the
+# fresh `dotnet publish` output so the next `python -m build` picks
+# them up via [tool.setuptools.package-data]. The folder is gitignored
+# (build output, not source) so a stale copy from a prior deploy is
+# wiped first.
+$LoadgenStage = Join-Path $RepoRoot "src\fdlt_runtime\loadgen"
+if (Test-Path $LoadgenStage) { Remove-Item $LoadgenStage -Recurse -Force }
+New-Item -ItemType Directory -Path $LoadgenStage | Out-Null
+Copy-Item -Path (Join-Path $PublishDir "*") -Destination $LoadgenStage -Recurse
+$staged = Get-ChildItem -Recurse -File $LoadgenStage
+$stagedKb = [int](( $staged | Measure-Object Length -Sum).Sum / 1024)
+Info "Staged $($staged.Count) files, $stagedKb KiB into src/fdlt_runtime/loadgen/"
 
-# Build the fdlt_runtime wheel and bundle it next to the LoadGen DLLs.
-# The notebook bootstrap cell pip-installs whatever wheel it finds in
-# the unzipped staging dir; setuptools-scm derives the version from
-# `git describe`, so an explicit tag (or dirty-tree dev marker) drives
-# both the wheel filename and the runtime banner.
-Step "Building fdlt_runtime wheel"
+# Sanity check: the files we depend on at runtime had better be there.
+$requiredStage = @(
+    "LoadGen.dll", "LoadGen.deps.json", "LoadGen.runtimeconfig.json",
+    "QueryRunner.dll", "Microsoft.AnalysisServices.AdomdClient.dll"
+)
+foreach ($f in $requiredStage) {
+    if (-not (Test-Path (Join-Path $LoadgenStage $f))) {
+        throw "Staging missing required file: $f. dotnet publish output may be stale."
+    }
+}
+
+# setuptools-scm derives the version from `git describe`, so an
+# explicit tag (or dirty-tree dev marker) drives both the wheel
+# filename and the runtime banner.
+Step "Building fdlt_runtime wheel (with bundled LoadGen binaries)"
 $DistDir = Join-Path $RepoRoot "dist"
 if (Test-Path $DistDir) {
     # Clear stale wheels so we don't ship two side-by-side.
@@ -191,22 +220,38 @@ try {
 $wheel = Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $wheel) { throw "Wheel build produced no fdlt_runtime-*.whl" }
-Info "Wheel: $($wheel.Name) ($([int]($wheel.Length/1024)) KiB)"
+$wheelKb = [int]($wheel.Length / 1024)
+Info "Wheel: $($wheel.Name) ($wheelKb KiB)"
 
-# Stage publish output + wheel into one tree, then zip the tree.
-$staging = Join-Path $env:TEMP "fdlt-zip-stage"
-if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
-New-Item -ItemType Directory -Path $staging | Out-Null
-Copy-Item -Path (Join-Path $PublishDir "*") -Destination $staging -Recurse
-Copy-Item -Path $wheel.FullName -Destination $staging
-Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $ZipPath -CompressionLevel Optimal
-Remove-Item $staging -Recurse -Force
-$zipKb = [int]((Get-Item $ZipPath).Length / 1024)
-Info "Built $ZipPath ($zipKb KiB)"
+# Verify the wheel actually bundled the LoadGen binaries — the
+# package-data glob is easy to silently break and a stale ~50 KiB
+# wheel ships fine but fails at the user's first Run-All.
+$verifyDir = Join-Path $env:TEMP "fdlt-wheel-verify"
+if (Test-Path $verifyDir) { Remove-Item $verifyDir -Recurse -Force }
+Expand-Archive -Path $wheel.FullName -DestinationPath $verifyDir
+$mustExist = @(
+    "fdlt_runtime/loadgen/LoadGen.dll",
+    "fdlt_runtime/loadgen/LoadGen.deps.json",
+    "fdlt_runtime/loadgen/LoadGen.runtimeconfig.json",
+    "fdlt_runtime/loadgen/QueryRunner.dll",
+    "fdlt_runtime/loadgen/Microsoft.AnalysisServices.AdomdClient.dll",
+    "fdlt_runtime/notebook.py"
+)
+foreach ($rel in $mustExist) {
+    $p = Join-Path $verifyDir ($rel -replace '/', '\')
+    if (-not (Test-Path $p)) {
+        throw "Built wheel is missing $rel. Check pyproject.toml package-data + the loadgen/ staging step."
+    }
+}
+Remove-Item $verifyDir -Recurse -Force
+Info "Wheel content verified (LoadGen + dependencies bundled)"
 
 Step "Rebuilding notebook (LoadTest-Main.ipynb)"
+# Build with a sentinel WHEEL_URL — we patch it below to the abfss://
+# path of the freshly-uploaded wheel after we know the lakehouse GUID.
 Push-Location $RepoRoot
 try {
+    $env:FDLT_RELEASE_VERSION = ""
     & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "build_notebooks.py failed" }
 } finally { Pop-Location }
@@ -286,14 +331,48 @@ if (-not $lh) {
 }
 $lhId = $lh.id
 
-# ---- upload loadgen-bin.zip via fab cp -------------------------------------
-Step "Uploading loadgen-bin.zip to LoadTests.Lakehouse/Files/"
-$lhZipDest = "/$Workspace.workspace/LoadTests.lakehouse/Files/loadgen-bin.zip"
-& fab cp $ZipPath $lhZipDest -f 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $ZipPath -> $lhZipDest" }
-Info "Uploaded loadgen-bin.zip ($zipKb KiB)"
+# ---- upload fdlt_runtime wheel via fab cp -----------------------------------
+Step "Uploading $($wheel.Name) to LoadTests.Lakehouse/Files/"
+$lhWheelDest = "/$Workspace.workspace/LoadTests.lakehouse/Files/$($wheel.Name)"
+& fab cp $wheel.FullName $lhWheelDest -f 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $($wheel.FullName) -> $lhWheelDest" }
+Info "Uploaded $($wheel.Name) ($wheelKb KiB)"
 
-# Best-effort cleanup of legacy per-DLL Files/bin/ layout from older deploys.
+# Build the abfss:// URL the notebook will pull from. Friendly-name
+# paths (`abfss://…/LoadTests.Lakehouse/…`) are disabled on some
+# tenants; GUID paths always work.
+$WheelAbfssUrl = "abfss://$wsId@onelake.dfs.fabric.microsoft.com/$lhId/Files/$($wheel.Name)"
+Info "Wheel ABFSS URL: $WheelAbfssUrl"
+
+# Patch the generated notebook's WHEEL_URL to point at the freshly
+# uploaded wheel. build_notebooks.py emits the sentinel
+# `REPLACE_ME_WITH_WHEEL_URL`; we swap it for the abfss:// URL here so
+# every redeploy lines up cell 2 with whatever filename setuptools-scm
+# minted for this build.
+Step "Patching notebook WHEEL_URL"
+$NotebookPath = Join-Path $NotebooksDir "LoadTest-Main.ipynb"
+$nbText = Get-Content $NotebookPath -Raw
+if ($nbText -notmatch 'REPLACE_ME_WITH_WHEEL_URL') {
+    throw "Notebook does not contain the WHEEL_URL sentinel — did build_notebooks.py change?"
+}
+# Notebook source is JSON, and the cell-source string carries the URL
+# as a plain literal — straight string replace is safe (the sentinel
+# appears nowhere else).
+$nbText = $nbText.Replace('REPLACE_ME_WITH_WHEEL_URL', $WheelAbfssUrl)
+Set-Content -Path $NotebookPath -Value $nbText -Encoding UTF8 -NoNewline
+Info "Patched WHEEL_URL into $NotebookPath"
+
+# Best-effort cleanup of legacy artifacts from pre-v0.5.0 deploys.
+# The old loadgen-bin.zip and Files/bin/ tree are no longer used —
+# leave them in place by default (cleaning them could break a
+# pre-upgrade saved notebook the user hasn't migrated yet), but log
+# a hint so users know they can delete by hand.
+$legacyZip = "/$Workspace.workspace/LoadTests.lakehouse/Files/loadgen-bin.zip"
+$legacyZipExists = & fab exists $legacyZip 2>&1 | Select-String -Pattern '"data": true' -Quiet
+if ($legacyZipExists) {
+    Warn "Legacy Files/loadgen-bin.zip still present (from a pre-v0.5.0 deploy)."
+    Warn "  Safe to delete once all `LoadTest - …` notebooks have been redeployed/regenerated."
+}
 $legacyBin = "/$Workspace.workspace/LoadTests.lakehouse/Files/bin"
 $legacyExists = & fab exists $legacyBin 2>&1 | Select-String -Pattern '"data": true' -Quiet
 if ($legacyExists) {
@@ -306,8 +385,7 @@ function Deploy-Notebook {
     param(
         [Parameter(Mandatory)] [string]$Name,
         [Parameter(Mandatory)] [string]$IpynbPath,
-        [string]$Description = "",
-        [switch]$Force
+        [string]$Description = ""
     )
     Step "Deploying notebook '$Name'"
     if (-not (Test-Path $IpynbPath)) { throw "Notebook source missing: $IpynbPath" }
@@ -343,12 +421,12 @@ function Deploy-Notebook {
         } else {
             Info "Create returned $($r.StatusCode) (synchronous), id=$($r.Body.id)"
         }
-    } elseif (-not $Force) {
-        Info "Found existing notebook id=$($existing.id) — leaving in place"
-        Info "  (pass -ForceNotebook to overwrite; runtime behavior ships via the wheel"
-        Info "   in loadgen-bin.zip, which was refreshed earlier this run)"
+    } elseif ($SkipNotebookUpdate) {
+        Info "Found existing notebook id=$($existing.id) — leaving in place (-SkipNotebookUpdate)"
+        Warn "  Cell 2 still points at whatever WHEEL_URL was embedded the last time the notebook was deployed."
+        Warn "  If that wheel is no longer in Files/, the notebook will fail at the pip-install step."
     } else {
-        Info "Reusing notebook id=$($existing.id) — updating definition (-ForceNotebook)"
+        Info "Reusing notebook id=$($existing.id) — updating definition (WHEEL_URL is rebaked each deploy)"
         $body = @{ definition = $definition }
         $url = "$ApiBase/v1/workspaces/$wsId/notebooks/$($existing.id)/updateDefinition"
         $r = Invoke-FabricRaw -Method POST -Url $url -Body $body
@@ -364,8 +442,7 @@ function Deploy-Notebook {
 }
 
 Deploy-Notebook -Name "LoadTest - Main" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Main.ipynb") `
-                -Description "FabricDaxLoadTest runner — edit cell 1 and Run All." `
-                -Force:$ForceNotebook
+                -Description "FabricDaxLoadTest runner — edit cell 1 and Run All."
 
 # ---- summary ----------------------------------------------------------------
 Step "Done"

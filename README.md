@@ -20,7 +20,7 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
 
 That's it — the four Delta tables under `LoadTests.Lakehouse/Tables/dbo/` are now ready for cross-Run analysis. Cell 4 plots latency / QPS / users for this Run.
 
-> **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`. Redeploys never overwrite an existing notebook — runtime behavior ships via the wheel in `Files/loadgen-bin.zip`.
+> **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`. Redeploys upload a fresh `fdlt_runtime` wheel and rebake cell 2's `WHEEL_URL`, so your `LoadTest - Main` always points at the just-deployed wheel; user edits to cell 1 (the parameters cell) are preserved on Save-As copies.
 
 ## Concepts
 
@@ -81,10 +81,10 @@ meaningful for capacity planning.
 | Piece | What it is |
 |---|---|
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
-| `LoadGen.dll` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` (Linux Spark host inside the notebook, or anywhere `dotnet` is installed locally). |
-| `fdlt_runtime` (Python wheel) | Bundled into `loadgen-bin.zip`. Owns notebook orchestration: bootstrap, run, persist, analyze. The notebook is a thin shim over `fdlt_runtime.notebook.bootstrap()` / `.run()` / `.analyze()` so wheel upgrades take effect on the next Run-All without re-saving the notebook. |
+| `LoadGen.dll` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` (Linux Spark host inside the notebook, or anywhere `dotnet` is installed locally). Bundled inside the `fdlt_runtime` wheel as of v0.5.0 — no separate zip download. |
+| `fdlt_runtime` (Python wheel) | **The single deploy artifact.** Bundles `LoadGen.dll` + ADOMD assemblies under `fdlt_runtime/loadgen/` and exposes Python orchestration (`bootstrap`, `run`, `persist`, `analyze`). The notebook is a thin shim, so changing the `WHEEL_URL` in cell 2 to a newer release is the entire upgrade story. |
 | `notebooks/LoadTest-Main.ipynb` | Deployed as **`LoadTest - Main`**. Drop a queries `.json` onto Resources → edit cell 1 → Run All. |
-| `scripts/Deploy-LoadTests.ps1` | One-shot deploy: builds LoadGen, builds the wheel, zips both, creates the folder + lakehouse, uploads `loadgen-bin.zip`, deploys the runner notebook (only if it doesn't already exist). |
+| `scripts/Deploy-LoadTests.ps1` | One-shot deploy: `dotnet publish` LoadGen, stages binaries into the wheel source tree, builds the wheel, creates the folder + lakehouse, uploads the wheel, patches cell 2's `WHEEL_URL` to the just-uploaded `abfss://` path, deploys (or refreshes) the runner notebook. |
 
 ## Status
 
@@ -108,7 +108,7 @@ The tool deploys a single self-contained bundle into a workspace folder:
 └── LoadTests/                         ← workspace folder
     ├── LoadTests (Lakehouse)
     │   ├── Files/
-    │   │   ├── loadgen-bin.zip        ← LoadGen + ADOMD assemblies (unzipped to /tmp by cell 2)
+    │   │   ├── fdlt_runtime-<ver>-py3-none-any.whl   ← LoadGen + ADOMD assemblies bundled inside (pip-installed by cell 2)
     │   │   └── runs/<RunId>/          ← per-run telemetry CSVs
     │   └── Tables[/dbo]/                ← /dbo/ added when lakehouse is schema-enabled
     │       ├── LoadTests
@@ -140,14 +140,14 @@ fab auth login
 pwsh ./scripts/Deploy-LoadTests.ps1 -Workspace "<your-workspace-display-name>" -Verbose
 ```
 
-The script is idempotent and safe to re-run: it refreshes the workspace folder, lakehouse, and `Files/loadgen-bin.zip` every time, but **never** overwrites an existing `LoadTest - Main` notebook (or any saved `LoadTest - <name>` copy) so your cell-1 edits are preserved. Runtime behavior changes ship via the wheel inside `loadgen-bin.zip`, which the new bootstrap picks up on the next Run-All.
+The script is idempotent and safe to re-run: every time it `dotnet publish`es LoadGen, builds a fresh `fdlt_runtime` wheel with those binaries embedded, uploads the wheel to `Files/`, and rebakes cell 2's `WHEEL_URL` on the deployed `LoadTest - Main` notebook so it points at the just-uploaded wheel. Cell 1 (your parameters) lives on Save-As copies (`LoadTest - <name>`) which the deploy never touches.
 
 Useful flags:
 
 | Flag | Effect |
 |---|---|
-| `-SkipPublish` | Skip `dotnet publish`; reuse the existing publish output and just re-zip + re-upload. |
-| `-ForceNotebook` | Overwrite `LoadTest - Main` even if it already exists. Use after rewriting `scripts/build_notebooks.py` (rare — the notebook is a thin shim). |
+| `-SkipPublish` | Skip `dotnet publish`; reuse the existing publish output and just rebuild + re-upload the wheel. |
+| `-SkipNotebookUpdate` | Leave an existing `LoadTest - Main` untouched (don't rebake `WHEEL_URL`). Use only if you've made manual edits to cells ≥ 2 in the portal that you don't want clobbered. |
 
 ### Option B — Manual setup
 
@@ -157,24 +157,20 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
 
    | Asset | Purpose |
    |---|---|
-   | `loadgen-bin.zip` | The LoadGen binaries + `fdlt_runtime` wheel (~4 MB, .NET 8, Linux). Upload as-is to the lakehouse — cell 2 of the notebook unzips it on each kernel start. |
-   | `LoadTest-Main.ipynb` | The runner notebook (imports as `LoadTest - Main`). |
+   | `fdlt_runtime-<ver>-py3-none-any.whl` | The runtime + bundled `LoadGen.dll` + ADOMD assemblies (~1 MB). Cell 2 of the notebook `pip install`s this wheel directly from the GitHub release URL — no manual upload required. |
+   | `LoadTest-Main.ipynb` | The runner notebook (imports as `LoadTest - Main`). Cell 2's `WHEEL_URL` is pre-baked to this release's asset URL. |
 
 2. **In your Fabric workspace** (portal): create a workspace folder named **`LoadTests`** (workspace top bar → **New folder**).
 
 3. **Inside that folder**, create a Lakehouse named **`LoadTests`** (**+ New item → Lakehouse**; schema-enabled is recommended).
 
-4. **Upload `loadgen-bin.zip`** to `LoadTests.Lakehouse/Files/`:
+4. **Import the notebook** (workspace top bar → **Import → Notebook → From this computer**), placing it **inside the `LoadTests` folder**. After import, confirm its display name is **`LoadTest - Main`** (with spaces around the hyphen).
 
-   - In the lakehouse explorer, right-click **Files → Upload → Upload files** and select `loadgen-bin.zip`. Don't extract — the notebook unzips it on each kernel.
+You're done — jump to [Quick start](#quick-start) step 3 to run it. Cell 2 will `pip install` the wheel from the GitHub release on first Run-All; subsequent runs reuse the kernel-installed copy.
 
-   Alternative: [OneLake File Explorer](https://www.microsoft.com/download/details.aspx?id=105222) (Windows) — sync the workspace and drop the zip into `LoadTests/LoadTests.Lakehouse/Files/`.
+> **Network restrictions?** If your workspace can't reach `github.com` from the Spark driver, download the `.whl` separately, upload it to `LoadTests.Lakehouse/Files/` via the lakehouse explorer, and edit cell 2's `WHEEL_URL` to the `abfss://…/Files/<wheel-filename>` path before Run-All.
 
-5. **Import the notebook** (workspace top bar → **Import → Notebook → From this computer**), placing it **inside the `LoadTests` folder**. After import, confirm its display name is **`LoadTest - Main`** (with spaces around the hyphen).
-
-You're done — jump to [Quick start](#quick-start) step 3 to run it.
-
-> **Updating later.** When a new release ships, repeat step 4 only (re-upload `loadgen-bin.zip`). Your notebook stays put with all your edits — the new behavior ships in the wheel and takes effect on the next Run-All.
+> **Updating later.** Edit `WHEEL_URL` in cell 2 to a newer release's wheel URL (e.g. bump `v0.5.0` → `v0.6.0`) and Run All. That's the entire upgrade story — no separate zip download, no notebook re-import.
 
 ---
 
@@ -217,7 +213,7 @@ LAKEHOUSE_SCHEMA = ""      # force flat writes to Tables/
 LAKEHOUSE_SCHEMA = "loadtests"  # any other schema name works too
 ```
 
-If you point the notebook at a BYO lakehouse (by changing `LAKEHOUSE_NAME` in cell 1), make sure that lakehouse contains `Files/loadgen-bin.zip` — the deploy script only writes the zip into the auto-managed `LoadTests` lakehouse.
+If you point the notebook at a BYO lakehouse (by changing `LAKEHOUSE_NAME` in cell 1), make sure cell 2's `WHEEL_URL` points at a wheel that lakehouse can reach (either a GitHub release HTTPS URL, or an `abfss://…/Files/<wheel>.whl` URL on a lakehouse you've manually populated). The deploy script only uploads the wheel to the auto-managed `LoadTests` lakehouse.
 
 ### Editing the Scenario
 
@@ -382,7 +378,7 @@ dotnet publish src/LoadGen -c Release -r linux-x64 `
   -p:SelfContained=false -p:UseAppHost=false                  # what Deploy-LoadTests.ps1 does
 ```
 
-Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits and refresh `Files/loadgen-bin.zip` in the lakehouse.
+Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits, rebuild the wheel, upload it to `Files/`, and rebake cell 2's `WHEEL_URL` on `LoadTest - Main`.
 
 To regenerate the notebooks from `scripts/build_notebooks.py`:
 
@@ -401,7 +397,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, packages `loadgen-bin.zip` + the regenerated notebook, and creates a GitHub Release with auto-generated notes. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
+The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, stages the LoadGen binaries into the wheel source tree, builds the `fdlt_runtime` wheel with the binaries embedded, and creates a GitHub Release with the wheel + the regenerated notebook attached. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
 
 ## License
 

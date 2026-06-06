@@ -27,8 +27,15 @@ AGENTS.local.md
 artifacts/
 tmp/
 
-# build artifact from Deploy-LoadTests.ps1
+# build artifact from Deploy-LoadTests.ps1 (legacy zip, replaced by
+# the fat wheel in v0.5.0+ — gitignored so a stale local copy doesn't
+# get committed if the user has a pre-v0.5.0 deploy script lying around)
 loadgen-bin.zip
+
+# .NET LoadGen publish output, staged into the wheel by
+# Deploy-LoadTests.ps1 / release.yml before `python -m build`. Build
+# output, never source-controlled.
+src/fdlt_runtime/loadgen/
 
 
 # Python build outputs

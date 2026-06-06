@@ -18,6 +18,7 @@ from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass
+from importlib.resources import files
 from typing import Any, Mapping, Optional, Sequence
 
 from .env import (
@@ -62,12 +63,20 @@ def bootstrap(
     *,
     lakehouse_name: str = "LoadTests",
     lakehouse_schema: Optional[str] = None,
-    stage_dir: str = "/tmp/fdlt-bin",
+    stage_dir: Optional[str] = None,
 ) -> BootstrapResult:
     """Resolve env (workspace / lakehouse / dotnet) for a load test.
 
-    Assumes cell 2 already downloaded `loadgen-bin.zip`, extracted it
-    into `stage_dir`, and installed the `fdlt_runtime` wheel.
+    Locates `LoadGen.dll` inside the installed `fdlt_runtime` wheel
+    via `importlib.resources` — pip-installing the wheel is the
+    entire deploy. Cell 2 of the notebook is just `pip install <wheel>`
+    followed by this call.
+
+    `stage_dir` is accepted for backward compatibility with
+    pre-v0.5.0 saved notebooks (which used to unzip
+    `loadgen-bin.zip` to `/tmp/fdlt-bin` and pass that here). It is
+    ignored — the bundled `loadgen/` folder always wins. Will be
+    removed in a future major release.
     """
     import notebookutils  # type: ignore[import-not-found]
 
@@ -85,10 +94,17 @@ def bootstrap(
         schema_override=lakehouse_schema,
         list_tables=lambda p: notebookutils.fs.ls(p))
     dotnet = find_dotnet()
-    loadgen_dll = os.path.join(stage_dir, "LoadGen.dll")
+    loadgen_dll = os.fspath(files("fdlt_runtime").joinpath("loadgen", "LoadGen.dll"))
     if not os.path.exists(loadgen_dll):
         raise FileNotFoundError(
-            f"LoadGen.dll not found under {stage_dir}. Did cell 2 run?")
+            "LoadGen.dll is missing from the installed fdlt_runtime "
+            f"wheel (expected at {loadgen_dll}). The wheel was built "
+            "without the bundled .NET binaries — re-run "
+            "scripts/Deploy-LoadTests.ps1, or download a release wheel "
+            "from https://github.com/dbrownems/FabricDaxLoadTest/releases.")
+    if stage_dir is not None:
+        print("    (note: `stage_dir` is deprecated and ignored — "
+              "LoadGen.dll now ships inside the fdlt_runtime wheel)")
 
     print(f"Workspace : {ws_name} ({ws_id})")
     print(f"Lakehouse : {lh.lakehouse_name} ({lh.lakehouse_id})  "

@@ -2,8 +2,17 @@
 
 The notebook is deployed into a `LoadTests` workspace folder by
 scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
-holds Files/loadgen-bin.zip (the LoadGen+ADOMD assemblies) and per-run
-telemetry under Files/runs/.
+holds per-run telemetry under Files/runs/ and the four Delta tables
+under Tables[/dbo]/.
+
+As of v0.5.0 the .NET LoadGen binaries ship inside the `fdlt_runtime`
+wheel, so cell 2 is a single `pip install <wheel>` — no zip download,
+no unzip step. The default WHEEL_URL is replaced at release-build
+time by setting the `FDLT_RELEASE_VERSION` env var (the GitHub
+Release workflow sets it to the tag, e.g. `0.5.0`). For local
+`Deploy-LoadTests.ps1` runs, the script patches WHEEL_URL inside
+the generated notebook to point at the freshly-built wheel uploaded
+to the lakehouse Files folder via abfss://.
 
 The notebook self-discovers the workspace + lakehouse at run time via
 `notebookutils.runtime.context`, so it is workspace-portable and does
@@ -13,12 +22,30 @@ Run from repo root:
     python scripts\\build_notebooks.py
 """
 import json
+import os
 import nbformat
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 OUT  = REPO / "notebooks"
 OUT.mkdir(exist_ok=True, parents=True)
+
+# Substituted into cell 2's WHEEL_URL string. The release workflow
+# sets FDLT_RELEASE_VERSION to the tag (without the leading `v`); the
+# deploy script leaves it unset and patches the resulting notebook
+# in-place with an abfss:// URL after lakehouse resolution.
+RELEASE_VERSION = os.environ.get("FDLT_RELEASE_VERSION", "").strip()
+if RELEASE_VERSION:
+    WHEEL_URL_DEFAULT = (
+        f"https://github.com/dbrownems/FabricDaxLoadTest/releases/download/"
+        f"v{RELEASE_VERSION}/fdlt_runtime-{RELEASE_VERSION}-py3-none-any.whl"
+    )
+else:
+    # Sentinel — cell 2 raises if this is not overridden. Catches the
+    # "ran build_notebooks.py with no env var, never patched it"
+    # mistake at notebook runtime instead of silently 404-ing on pip
+    # install.
+    WHEEL_URL_DEFAULT = "REPLACE_ME_WITH_WHEEL_URL"
 
 FABRIC_NB_METADATA = {
     "kernelspec":    {"display_name": "Synapse PySpark", "name": "synapse_pyspark", "language": "Python"},
@@ -81,12 +108,13 @@ def build_run():
     > copy to `LoadTest - <descriptive name>` — keep it in the same
     > `LoadTests` folder so it can find the lakehouse.
     >
-    > **What about redeploys?** `scripts/Deploy-LoadTests.ps1` will *not*
-    > overwrite this notebook (or any saved `LoadTest - …` copy) if it
-    > already exists. New runtime behavior ships via the wheel inside
-    > `Files/loadgen-bin.zip`, which the deploy script always refreshes —
-    > the notebook itself is a thin shim that picks up the new behavior on
-    > the next Run-All.
+    > **What about upgrades?** Change the `WHEEL_URL` in cell 2 to a newer
+    > release (e.g. bump `v0.5.0` → `v0.6.0`) and Run All — that's the entire
+    > upgrade story. The .NET LoadGen binaries ship inside the
+    > `fdlt_runtime` wheel, so there is nothing else to refresh.
+    > `scripts/Deploy-LoadTests.ps1` will *not* overwrite this notebook
+    > (or any saved `LoadTest - …` copy) if it already exists, so cell-1
+    > edits are preserved across redeploys.
 
     ---
 
@@ -95,17 +123,17 @@ def build_run():
     subprocess (run on the Spark driver's bundled .NET 8 runtime).
 
     The notebook auto-discovers the workspace's **`LoadTests`** lakehouse — no
-    UI attach step required. The lakehouse is the default storage for
-    everything:
+    UI attach step required. The lakehouse holds:
 
-    - `Files/loadgen-bin.zip` — LoadGen + ADOMD assemblies + the
-      `fdlt_runtime` Python wheel; cell 2 downloads, unzips, and pip-installs
-      the wheel into the kernel
     - `Files/runs/`  — per-run telemetry CSVs (created on first run)
-    - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions}` — Delta tables
-      written by cell 3. The `dbo/` prefix is added automatically when the
-      lakehouse is schema-enabled; flat lakehouses write directly under
-      `Tables/`. Override with `LAKEHOUSE_SCHEMA` in cell 1.
+    - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}` —
+      Delta tables written at end-of-run. The `dbo/` prefix is added
+      automatically when the lakehouse is schema-enabled; flat lakehouses
+      write directly under `Tables/`. Override with `LAKEHOUSE_SCHEMA` in
+      cell 1.
+
+    > Note: pre-v0.5.0 deployments staged a `Files/loadgen-bin.zip` here too;
+    > that file is no longer used and is safe to delete.
 
     ## How to use
 
@@ -138,8 +166,9 @@ def build_run():
     4. Cell **4** plots latency / QPS / users for the Run that just
        completed, straight from the per-run CSV.
 
-    > Re-deploy / upgrade `Files/loadgen-bin.zip` by re-running
-    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo. This notebook
+    > Re-deploy / upgrade the wheel by re-running
+    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo, or by editing
+    > `WHEEL_URL` in cell 2 to a newer GitHub release. This notebook
     > and any saved `LoadTest - …` copies are **not** touched by the deploy.
     """)
 
@@ -239,66 +268,76 @@ LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
                                 #   ""          → force flat Tables/
 """)
 
-    # 2. Bootstrap — download zip, install wheel, hand off to fdlt_runtime.notebook
-    code(nb, r"""
-# ── 2. Bootstrap: download LoadGen + wheel, install runtime, call bootstrap ──
-# Saved LoadTest notebooks are thin shims: this cell only does the
-# minimum needed to install the `fdlt_runtime` wheel from the lakehouse,
-# then hands off to `fdlt_runtime.notebook.bootstrap()`. All other logic
-# lives in the wheel, so a fresh `scripts/Deploy-LoadTests.ps1` redeploy
-# can ship behavior changes without re-saving this notebook.
-import os, sys, glob, subprocess, zipfile, importlib, shutil
-import notebookutils, requests
+    # 2. Bootstrap — pip-install the fdlt_runtime wheel and call bootstrap.
+    code(nb, rf"""
+# ── 2. Bootstrap: pip install the fdlt_runtime wheel and call bootstrap ──────
+# As of v0.5.0 the .NET LoadGen binaries ship inside the wheel, so this
+# is the entire deploy. To upgrade, change WHEEL_URL to a newer release
+# tag (e.g. v0.5.0 → v0.6.0) and Run-All.
+#
+# WHEEL_URL forms supported:
+#   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/vX.Y.Z/fdlt_runtime-X.Y.Z-py3-none-any.whl
+#       (default — direct from GitHub; needs outbound internet from Spark)
+#   - abfss://<wsid>@onelake.dfs.fabric.microsoft.com/<lhid>/Files/<file>.whl
+#       (offline-friendly — set by scripts/Deploy-LoadTests.ps1)
+#   - /lakehouse/default/Files/<file>.whl
+#       (already-attached lakehouse, manual upload)
+WHEEL_URL = "{WHEEL_URL_DEFAULT}"
 
-ctx = notebookutils.runtime.context
-WS_ID = ctx["currentWorkspaceId"]
-TOKEN = notebookutils.credentials.getToken("pbi")  # Fabric audience too
-
-# Resolve lakehouse GUID — friendly-name abfss paths are disabled on
-# some OneLake tenants (`abfss://…/Name.Lakehouse/…` returns 400).
-_r = requests.get(
-    f"https://api.fabric.microsoft.com/v1/workspaces/{WS_ID}/items?type=Lakehouse",
-    headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30)
-_r.raise_for_status()
-_matches = [i for i in _r.json().get("value", []) if i["displayName"] == LAKEHOUSE_NAME]
-if not _matches:
+# The sentinel literal is constructed at runtime so the WHEEL_URL line
+# above is the *only* occurrence of the literal in the notebook source.
+# That lets scripts/Deploy-LoadTests.ps1 do a blunt string-replace
+# without nuking the comparison value too.
+_SENTINEL = "REPLACE_ME" + "_WITH_WHEEL_URL"
+if WHEEL_URL == _SENTINEL:
     raise RuntimeError(
-        f"Lakehouse '{LAKEHOUSE_NAME}' not found in workspace {WS_ID}. "
-        "Run scripts/Deploy-LoadTests.ps1 to (re)create it.")
-_lh_id = _matches[0]["id"]
+        "Cell 2: WHEEL_URL was not patched. Either re-run the GitHub "
+        "release workflow (sets FDLT_RELEASE_VERSION env var), run "
+        "scripts/Deploy-LoadTests.ps1 (patches the URL to the locally "
+        "uploaded wheel), or paste a release wheel URL by hand.")
 
-ZIP_LOCAL = "/tmp/loadgen-bin.zip"
-STAGE     = "/tmp/fdlt-bin"
-if os.path.exists(ZIP_LOCAL):
-    os.remove(ZIP_LOCAL)
-notebookutils.fs.cp(
-    f"abfss://{WS_ID}@onelake.dfs.fabric.microsoft.com/{_lh_id}/Files/loadgen-bin.zip",
-    f"file://{ZIP_LOCAL}")
+import importlib, os, subprocess, sys
+import notebookutils
 
-shutil.rmtree(STAGE, ignore_errors=True)
-os.makedirs(STAGE, exist_ok=True)
-with zipfile.ZipFile(ZIP_LOCAL, "r") as zf:
-    zf.extractall(STAGE)
-_wheels = sorted(glob.glob(os.path.join(STAGE, "fdlt_runtime-*.whl")))
-if not _wheels:
-    raise FileNotFoundError(
-        f"No fdlt_runtime wheel under {STAGE}. Re-run scripts/Deploy-LoadTests.ps1 "
-        "to refresh the lakehouse zip.")
+if WHEEL_URL.startswith("abfss://"):
+    # pip requires wheel filenames to match PEP 427 (name-version-...-py3-none-any.whl);
+    # strip the path component but keep the filename verbatim.
+    _local = "/tmp/" + WHEEL_URL.rsplit("/", 1)[-1]
+    if os.path.exists(_local):
+        os.remove(_local)
+    notebookutils.fs.cp(WHEEL_URL, "file://" + _local)
+    _src = _local
+else:
+    # https://, /lakehouse/... or any other path pip already understands.
+    _src = WHEEL_URL
+
+# --no-deps: fdlt_runtime declares no Python deps today (everything it
+# needs is already in the Fabric Spark image). Drop --no-deps if that
+# ever changes. --force-reinstall: ensure the kernel picks up the
+# just-fetched wheel even if a cached copy of the same version is
+# already installed.
 _pip = subprocess.run(
     [sys.executable, "-m", "pip", "install", "--quiet",
-     "--force-reinstall", "--no-deps", _wheels[-1]],
-    capture_output=True, text=True, timeout=120)
+     "--force-reinstall", "--no-deps", _src],
+    capture_output=True, text=True, timeout=180)
 if _pip.returncode != 0:
-    raise RuntimeError(f"pip install of {_wheels[-1]} failed:\n{_pip.stderr}")
-for _m in [m for m in list(sys.modules) if m == "fdlt_runtime" or m.startswith("fdlt_runtime.")]:
+    raise RuntimeError(
+        f"pip install of {{_src}} failed:\n{{_pip.stderr or _pip.stdout}}")
+
+# Purge any cached fdlt_runtime modules so the import picks up the
+# just-installed wheel (relevant on subsequent Run-All cycles when the
+# kernel is reused but WHEEL_URL was bumped).
+for _m in [m for m in list(sys.modules)
+           if m == "fdlt_runtime" or m.startswith("fdlt_runtime.")]:
     del sys.modules[_m]
+importlib.invalidate_caches()
+
 import fdlt_runtime
 from fdlt_runtime import notebook as fdlt_nb
 
 boot = fdlt_nb.bootstrap(
     lakehouse_name=LAKEHOUSE_NAME,
     lakehouse_schema=LAKEHOUSE_SCHEMA,
-    stage_dir=STAGE,
 )
 """)
 

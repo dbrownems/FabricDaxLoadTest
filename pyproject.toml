@@ -22,6 +22,15 @@ Homepage = "https://github.com/dbrownems/FabricDaxLoadTest"
 where = ["src"]
 include = ["fdlt_runtime*"]
 
+# Bundle the .NET LoadGen publish output (copied into
+# src/fdlt_runtime/loadgen/ by the deploy script / release workflow
+# before `python -m build`) inside the wheel. After
+# `pip install fdlt_runtime-X.Y.Z-py3-none-any.whl`, runtime code
+# locates LoadGen.dll via importlib.resources — no zip / unzip /
+# extra upload step. See `notebook.bootstrap()`.
+[tool.setuptools.package-data]
+fdlt_runtime = ["loadgen/**/*"]
+
 [tool.setuptools_scm]
 write_to = "src/fdlt_runtime/_version.py"
 # Allow building outside a git checkout (e.g. inside a CI tarball) by
