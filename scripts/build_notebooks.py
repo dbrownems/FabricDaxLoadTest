@@ -180,7 +180,7 @@ def build_run():
     """)
 
     # 1. Configuration
-    code(nb, r"""
+    code(nb, rf"""
 # ── 1. Configuration ──────────────────────────────────────────────────────────
 # Every knob the load test reads lives here. Cell 2 bootstraps the runtime
 # without touching any of these; cell 3 consumes them.
@@ -251,7 +251,7 @@ ENABLE_TRACING               = True   # subscribe to dataset XMLA trace and
 #
 # Accepted JSON shapes (see README → "Load Test Scenario formats"):
 #   • Power BI Desktop *Performance Analyzer* export (with `events[]`)
-#   • [{"query": "EVALUATE …"}, …]
+#   • [{{"query": "EVALUATE …"}}, …]
 #   • ["EVALUATE …", …]
 QUERIES_FILE = None       # auto-pick single .json in Resources
 
@@ -278,20 +278,18 @@ QUERIES_INLINE = [
 # Resources always go to QUERIES_FILE. Users must be named explicitly.
 #
 # Accepted JSON shapes (see README → "User list formats"):
-#   • [{"email": "alice@contoso.com", "role": "Sales"}, …]
+#   • [{{"email": "alice@contoso.com", "role": "Sales"}}, …]
 #   • ["alice@contoso.com", "bob@contoso.com"]   (roles default to "")
 USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
-""")
 
-    # 2. Bootstrap — pip-install the fdlt_runtime wheel and call bootstrap.
-    code(nb, rf"""
-# ── 2. Bootstrap: pip install the fdlt_runtime wheel and call bootstrap ──────
-# As of v0.5.0 the .NET LoadGen binaries ship inside the wheel, so this
-# is the entire deploy. To upgrade, change WHEEL_URL to a newer release
-# tag (e.g. v0.5.0 → v0.6.0) and Run-All.
+# ── Runtime wheel (advanced — only change to upgrade) ────────────────────────
+# WHEEL_URL points at the fdlt_runtime wheel that cell 2 pip-installs.
+# To upgrade: bump the version in the URL (e.g. v0.4.0 → v0.5.0) and Run-All.
+# The .NET LoadGen binaries ship inside the wheel — there's nothing else
+# to refresh.
 #
-# WHEEL_URL forms supported:
+# Forms supported:
 #   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/vX.Y.Z/fdlt_runtime-X.Y.Z-py3-none-any.whl
 #       (default — direct from GitHub; needs outbound internet from Spark)
 #   - abfss://<wsid>@onelake.dfs.fabric.microsoft.com/<lhid>/Files/<file>.whl
@@ -299,15 +297,23 @@ USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 #   - /lakehouse/default/Files/<file>.whl
 #       (already-attached lakehouse, manual upload)
 WHEEL_URL = "{WHEEL_URL_DEFAULT}"
+""")
+
+    # 2. Bootstrap — pip-install the fdlt_runtime wheel and call bootstrap.
+    code(nb, r"""
+# ── 2. Bootstrap: pip install the fdlt_runtime wheel and call bootstrap ──────
+# As of v0.5.0 the .NET LoadGen binaries ship inside the wheel, so this
+# is the entire deploy. WHEEL_URL is set in cell 1 — to upgrade, edit
+# the version there and Run-All.
 
 # The sentinel literal is constructed at runtime so the WHEEL_URL line
-# above is the *only* occurrence of the literal in the notebook source.
+# in cell 1 is the *only* occurrence of the literal in the notebook source.
 # That lets scripts/Deploy-LoadTests.ps1 do a blunt string-replace
 # without nuking the comparison value too.
 _SENTINEL = "REPLACE_ME" + "_WITH_WHEEL_URL"
 if WHEEL_URL == _SENTINEL:
     raise RuntimeError(
-        "Cell 2: WHEEL_URL was not patched. Either re-run the GitHub "
+        "Cell 1: WHEEL_URL was not patched. Either re-run the GitHub "
         "release workflow (sets FDLT_RELEASE_VERSION env var), run "
         "scripts/Deploy-LoadTests.ps1 (patches the URL to the locally "
         "uploaded wheel), or paste a release wheel URL by hand.")
