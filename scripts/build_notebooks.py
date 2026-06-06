@@ -185,11 +185,27 @@ def build_run():
 # Every knob the load test reads lives here. Cell 2 bootstraps the runtime
 # without touching any of these; cell 3 consumes them.
 
-# ── Identity (human labels written to LoadTests / LoadTestRuns) ──────────────
-LOAD_TEST_NAME        = None             # short label — PK into LoadTests table
-                                         #   None → derived from notebook name
-                                         #          ("LoadTest - Foo" → "Foo")
-LOAD_TEST_DESCRIPTION = ""               # optional free-text notes for the run
+# ── Lakehouse (where the 4 Delta tables are written) ─────────────────────────
+LAKEHOUSE_WORKSPACE_NAME = None  # workspace hosting the destination lakehouse
+                                 #   None  → current workspace (default;
+                                 #            common case — `Deploy-LoadTests.ps1`
+                                 #            puts the lakehouse alongside this
+                                 #            notebook)
+                                 #   "name"/GUID → BYO-lakehouse: point at any
+                                 #            lakehouse you have Build access to,
+                                 #            in any workspace in your home tenant
+                                 #            (cross-tenant guest workspaces are
+                                 #            not supported — getToken("pbi") is
+                                 #            home-tenant scoped)
+LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
+                                #   created by scripts/Deploy-LoadTests.ps1
+                                #   override for BYO-lakehouse scenarios
+LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
+                                #   None        → auto-detect via Fabric API
+                                #                 (schema-enabled → "dbo",
+                                #                  flat lakehouse → "")
+                                #   "dbo"/other → force Tables/<name>/
+                                #   ""          → force flat Tables/
 
 # ── Target semantic model ────────────────────────────────────────────────────
 TARGET_WORKSPACE = None  # workspace hosting the model under test
@@ -203,7 +219,12 @@ TARGET_REPLICA   = ""    # XMLA replica hint (no replica unless set)
                          #   ""           → primary replica (default)
                          #   "readonly"   → route to a scale-out read replica
 
-# ── Load shape ───────────────────────────────────────────────────────────────
+# ── Load test identity + shape ───────────────────────────────────────────────
+LOAD_TEST_NAME        = None             # short label — PK into LoadTests table
+                                         #   None → derived from notebook name
+                                         #          ("LoadTest - Foo" → "Foo")
+LOAD_TEST_DESCRIPTION = ""               # optional free-text notes for the run
+
 DURATION_SECONDS             = 60     # how long virtual users execute queries
 CONCURRENT_USERS             = 25     # max concurrency at steady state
 USER_RAMP_TIME_SEC           = 15     # linear ramp from 0 → CONCURRENT_USERS
@@ -262,28 +283,6 @@ QUERIES_INLINE = [
 #   • ["alice@contoso.com", "bob@contoso.com"]   (roles default to "")
 USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
-
-# ── Lakehouse (where the 4 Delta tables are written) ─────────────────────────
-LAKEHOUSE_WORKSPACE_NAME = None  # workspace hosting the destination lakehouse
-                                 #   None  → current workspace (default;
-                                 #            common case — `Deploy-LoadTests.ps1`
-                                 #            puts the lakehouse alongside this
-                                 #            notebook)
-                                 #   "name"/GUID → BYO-lakehouse: point at any
-                                 #            lakehouse you have Build access to,
-                                 #            in any workspace in your home tenant
-                                 #            (cross-tenant guest workspaces are
-                                 #            not supported — getToken("pbi") is
-                                 #            home-tenant scoped)
-LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
-                                #   created by scripts/Deploy-LoadTests.ps1
-                                #   override for BYO-lakehouse scenarios
-LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
-                                #   None        → auto-detect via Fabric API
-                                #                 (schema-enabled → "dbo",
-                                #                  flat lakehouse → "")
-                                #   "dbo"/other → force Tables/<name>/
-                                #   ""          → force flat Tables/
 """)
 
     # 2. Bootstrap — pip-install the fdlt_runtime wheel and call bootstrap.
