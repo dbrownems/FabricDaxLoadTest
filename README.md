@@ -14,11 +14,11 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
    pwsh ./scripts/Deploy-LoadTests.ps1 -Workspace "<your-workspace>"
    ```
 3. **Run.** In the workspace, open `LoadTests/LoadTest - Main`:
-   - Drag the Performance Analyzer `.json` onto the notebook's **Resources** panel (left sidebar).
+   - Upload the Performance Analyzer `.json` onto the notebook's **Resources** panel (left sidebar).
    - Optionally edit cell 1 (`CONCURRENT_USERS`, `DURATION_SECONDS`, etc. — defaults are 25 users for 60 s).
    - **Run All**.
 
-That's it — the four Delta tables under `LoadTests.Lakehouse/Tables/dbo/` are now ready for cross-Run analysis. Cell 4 plots latency / QPS / users for this Run.
+That's it — the four Delta tables in your lakehouse are now ready for cross-Run analysis. Cell 4 plots latency / QPS / users for this Run.
 
 > **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`. Redeploys upload a fresh `fdlt_runtime` wheel and rebake cell 2's `WHEEL_URL`, so your `LoadTest - Main` always points at the just-deployed wheel; user edits to cell 1 (the parameters cell) are preserved on Save-As copies.
 
@@ -110,7 +110,7 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
 
 2. **Import the notebook** into your Fabric workspace (portal → **Import → Notebook → From this computer**).
 
-3. **Point it at any lakehouse you have Build access to** — edit cell 1's `LAKEHOUSE_NAME` (and `LAKEHOUSE_WORKSPACE_NAME` if it lives in a different workspace). The four Delta tables auto-create on first run; no lakehouse-side prep required.
+3. **Point it at any lakehouse you have write access to** — edit cell 1's `LAKEHOUSE_NAME` (and `LAKEHOUSE_WORKSPACE_NAME` if it lives in a different workspace). The Delta tables auto-create on first run; no lakehouse-side prep required.
 
 4. **Upload your queries `.json`** onto the notebook's **Resources** panel (or set `QUERIES_FILE` in cell 1 to an `abfss://…/Files/…` path on the lakehouse).
 
