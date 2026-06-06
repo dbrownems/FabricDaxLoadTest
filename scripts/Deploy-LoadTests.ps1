@@ -10,9 +10,10 @@
       * LoadTests.Lakehouse  — holds Files/fdlt_runtime-<ver>.whl
                                 (the fat wheel: LoadGen.dll + ADOMD
                                 assemblies bundled inside the Python
-                                wheel as of v0.5.0), Files/runs/<runId>/
-                                (per-run telemetry), and
+                                wheel as of v0.5.0) and
                                 Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}.
+                                Per-run forensic CSVs stay on the driver's
+                                local /tmp — only Delta tables go to OneLake.
       * LoadTest - Main      — the runner notebook; users edit cell 1 and
                                 Run All directly. Save As (in the portal)
                                 to make *additional* Load Tests in the

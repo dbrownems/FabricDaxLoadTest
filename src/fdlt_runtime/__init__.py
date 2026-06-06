@@ -23,8 +23,6 @@ from .env import (
     resolve_workspace,
     resolve_target_dataset,
     find_dotnet,
-    stage_loadgen_zip,
-    find_bundled_wheel,
 )
 from .runner import RunConfig, RunResult, run_load_test, render_progress
 from .persist import WriteSummary, write_run
@@ -48,8 +46,6 @@ __all__ = [
     "resolve_workspace",
     "resolve_target_dataset",
     "find_dotnet",
-    "stage_loadgen_zip",
-    "find_bundled_wheel",
     "RunConfig",
     "RunResult",
     "run_load_test",

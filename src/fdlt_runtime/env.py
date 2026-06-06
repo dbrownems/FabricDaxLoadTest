@@ -11,7 +11,6 @@ import os
 import re
 import shutil
 import subprocess
-import zipfile
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
@@ -76,19 +75,25 @@ def discover_lakehouse(
     lh_id = matches[0]["id"]
     abfss = f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lh_id}"
 
-    if schema_override is None:
-        schema = ""
-        sql_endpoint_id: Optional[str] = None
-        try:
-            lh = requests.get(
-                f"{FABRIC_API}/workspaces/{workspace_id}/lakehouses/{lh_id}",
-                headers=headers, timeout=30).json()
-            props = lh.get("properties") or {}
+    # One GET fetches both defaultSchema and the SQL endpoint id (used
+    # downstream by refresh_sql_endpoint_metadata). Auto-detect mode also
+    # falls back to a Tables/dbo listing probe when defaultSchema is
+    # absent on older lakehouses.
+    schema = ""
+    sql_endpoint_id: Optional[str] = None
+    try:
+        lh = requests.get(
+            f"{FABRIC_API}/workspaces/{workspace_id}/lakehouses/{lh_id}",
+            headers=headers, timeout=30).json()
+        props = lh.get("properties") or {}
+        if schema_override is None:
             schema = props.get("defaultSchema") or ""
-            sep = props.get("sqlEndpointProperties") or {}
-            sql_endpoint_id = sep.get("id")
-        except Exception:
-            schema = ""
+        sep = props.get("sqlEndpointProperties") or {}
+        sql_endpoint_id = sep.get("id")
+    except Exception:
+        pass
+
+    if schema_override is None:
         if not schema and list_tables is not None:
             try:
                 entries = list_tables(f"{abfss}/Tables")
@@ -98,15 +103,6 @@ def discover_lakehouse(
                 pass
     else:
         schema = schema_override
-        sql_endpoint_id = None
-        try:
-            lh = requests.get(
-                f"{FABRIC_API}/workspaces/{workspace_id}/lakehouses/{lh_id}",
-                headers=headers, timeout=30).json()
-            sql_endpoint_id = ((lh.get("properties") or {})
-                               .get("sqlEndpointProperties") or {}).get("id")
-        except Exception:
-            pass
 
     return LakehouseInfo(
         workspace_id=workspace_id,
@@ -283,26 +279,3 @@ def find_dotnet() -> str:
         "LoadGen.dll is a framework-dependent .NET 8 build and needs the "
         f"runtime to be installed. Probed: {probed}")
 
-
-def stage_loadgen_zip(local_zip: str, stage_dir: str) -> str:
-    """Extract `local_zip` into `stage_dir` and return the LoadGen.dll path."""
-    shutil.rmtree(stage_dir, ignore_errors=True)
-    os.makedirs(stage_dir, exist_ok=True)
-    with zipfile.ZipFile(local_zip, "r") as zf:
-        zf.extractall(stage_dir)
-    dll = os.path.join(stage_dir, "LoadGen.dll")
-    if not os.path.exists(dll):
-        raise FileNotFoundError(
-            f"LoadGen.dll not found under {stage_dir} after extracting {local_zip}. "
-            "(Legacy zip-based path. As of v0.5.0 LoadGen.dll ships inside the "
-            "fdlt_runtime wheel; re-run scripts/Deploy-LoadTests.ps1 to deploy "
-            "the wheel-based bootstrap.)")
-    return dll
-
-
-def find_bundled_wheel(stage_dir: str) -> Optional[str]:
-    """Return the path of the fdlt_runtime wheel inside `stage_dir`, or None."""
-    cands = sorted(
-        os.path.join(stage_dir, f) for f in os.listdir(stage_dir)
-        if f.startswith("fdlt_runtime-") and f.endswith(".whl"))
-    return cands[-1] if cands else None

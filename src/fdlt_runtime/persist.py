@@ -134,6 +134,12 @@ def write_run(
         # low for VACUUM/OPTIMIZE and Direct Lake transcoding.
         df_ = df_.coalesce(1)
         if DeltaTable.isDeltaTable(spark, path):
+            # mergeSchema lets MERGE widen the target with any new
+            # columns we added since the table was first created
+            # (column renames in particular leave the old column behind
+            # as null in newer rows, but at least the write succeeds —
+            # versus a hard schema-mismatch failure).
+            spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
             tgt = DeltaTable.forPath(spark, path)
             on = " AND ".join(f"t.{k}=s.{k}" for k in merge_keys)
             (tgt.alias("t")
@@ -195,8 +201,8 @@ def write_run(
         ScenarioHash=scenario_hash,
         StartedAtUtc=started_at,
         EndedAtUtc=ended_at,
-        WorkspaceName=target_workspace,
-        DatasetName=target_dataset,
+        TargetWorkspace=target_workspace,
+        TargetDataset=target_dataset,
         XmlaEndpoint=xmla,
         Replica=target_replica or "",
         UserCount=int(user_count),

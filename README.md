@@ -30,52 +30,6 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 - **Run** — *one execution* of a Load Test. Every Run-All of the notebook mints a fresh `RunId` (timestamp-based GUID) and appends a row to `LoadTestRuns`. Re-running is purely additive — prior Runs are preserved untouched, so you can compare a baseline against a regression Run side-by-side.
 - **Scenario** — the *DAX workload* a Run executes: the list of queries (+ optional impersonated users for RLS). Provided per-Run via a `.json` attached to the notebook's *Resources* panel (typically a Power BI Desktop **Performance Analyzer** export), or inline in cell 1. Each Run snapshots its Scenario into `LoadTestQueries` and stores a `ScenarioHash` on the Run, so you can tell at a glance whether two Runs of the same Load Test executed the same workload.
 
-## Why another load test tool?
-
-The existing pure-Python REST-based tools have meaningful limitations:
-
-- No realistic per-user XMLA connection cost (TCP/TLS handshake, model attach).
-- Limited to whatever the REST API path exposes.
-- Can't easily simulate Row-Level Security via `EffectiveUsername` / `Roles`.
-- Python-.NET interop and process pararallelism overhead saps achievable concurrency.
-- **Client-side latency only** — no view into what the engine actually did.
-- **Notebook-based fan-out** (`notebookutils.notebooks.runMultiple`) spins up
-  a Spark notebook per simulated user. That's coarse-grained
-  process-per-user concurrency with multi-second startup cost, capped at the
-  workspace's notebook-concurrency limit, and the GIL still serializes each
-  user's own work.
-
-This tool drives **ADOMD.NET out-of-process** from a single .NET 8 driver,
-so each simulated user gets a real XMLA connection — the same path Power BI
-Desktop, Excel, and Tabular Editor use. That makes the test results
-meaningful for capacity planning.
-
-### Headline differentiators
-
-- **Coordinated engine-trace capture, joined to every client row.** While
-  the load test runs, the driver attaches an XMLA trace to the target model
-  and stamps every command with a per-query `ActivityID`. After the run,
-  `LoadTestQueryExecutions` has both `ClientDurationMs` *and*
-  `EngineDurationMs` + `EngineCpuMs` on the same row — back-filled from the
-  matching `QueryEnd` trace event. You can immediately see "client says
-  36ms, engine says 9ms, the other 27ms was network and our test
-  harness" — the exact split capacity planners need, with zero post-hoc
-  log-correlation work. The full raw trace (SE/DQ events,
-  `ExecutionMetrics` JSON, ProgressReport, JobGraph, …) also lands in
-  `LoadTestTraceEvents` for forensic drill-down.
-
-- **Real thread parallelism, not notebook fan-out.** The .NET driver runs
-  N simulated users as N native threads inside one OS process. No Python
-  interop overhead per query, no Spark-notebook startup cost per user, no
-  GIL — just ADOMD.NET pumping XMLA on dedicated threads. A 25-user test
-  on a starter pool ran 6,336 queries in 60 seconds (≈ 105 qps from a
-  single Fabric driver pod) in our smoke tests; comparable Python
-  notebook-fan-out approaches plateau much earlier.
-
-- **Real XMLA connections.** Same wire path as Power BI Desktop / Excel /
-  Tabular Editor. Per-user TCP/TLS handshake, model attach, session
-  lifetime — all of it is part of the measurement.
-
 ## Components
 
 | Piece | What it is |
@@ -89,10 +43,9 @@ meaningful for capacity planning.
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Per-run telemetry CSV under `Files/runs/<RunId>/`.
 - ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `LoadTestQueryExecutions`, `LoadTestTraceEvents`) written from the notebook for Power BI Direct Lake reporting.
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
-- ✅ Schema-enabled lakehouse support (auto-detected) + BYO-lakehouse override.
+- ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
 
 ---
@@ -108,17 +61,17 @@ The tool deploys a single self-contained bundle into a workspace folder:
 └── LoadTests/                         ← workspace folder
     ├── LoadTests (Lakehouse)
     │   ├── Files/
-    │   │   ├── fdlt_runtime-<ver>-py3-none-any.whl   ← LoadGen + ADOMD assemblies bundled inside (pip-installed by cell 2)
-    │   │   └── runs/<RunId>/          ← per-run telemetry CSVs
-    │   └── Tables[/dbo]/                ← /dbo/ added when lakehouse is schema-enabled
+    │   │   └── fdlt_runtime-<ver>-py3-none-any.whl   ← LoadGen + ADOMD assemblies bundled inside (pip-installed by cell 2)
+    │   └── Tables[/dbo]/              ← /dbo/ added when lakehouse is schema-enabled
     │       ├── LoadTests
     │       ├── LoadTestRuns
     │       ├── LoadTestQueries
-    │       └── LoadTestQueryExecutions
+    │       ├── LoadTestQueryExecutions
+    │       └── LoadTestTraceEvents
     └── LoadTest - Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
 ```
 
-Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder. The runner notebook **auto-discovers the workspace's `LoadTests` lakehouse** via the Fabric items API and uses it as the default storage for assemblies, telemetry, and Delta output — no UI lakehouse-attach step is required.
+Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder. The runner notebook **discovers the destination lakehouse via cell-1 parameters** (`LAKEHOUSE_WORKSPACE_NAME` defaults to the current workspace; `LAKEHOUSE_NAME` defaults to `LoadTests`). No UI lakehouse-attach step is required. Per-run forensic artifacts (raw executions CSV, trace CSV, `result.json`, `*.log`) stay on the Spark driver's local disk under `/tmp/fdlt-<RunId>/` — cell 3 prints the path. Only Delta tables are written to OneLake.
 
 ### Option A — Scripted (recommended)
 
@@ -153,22 +106,17 @@ Useful flags:
 
 For users who can't run the deploy script (no local CLIs, restricted network, no .NET SDK on their machine, etc.). Pre-built artifacts are attached to every [GitHub Release](https://github.com/dbrownems/FabricDaxLoadTest/releases) — no compilation required.
 
-1. **Download the latest release assets** from the [Releases page](https://github.com/dbrownems/FabricDaxLoadTest/releases/latest):
+1. **Download `LoadTest-Main.ipynb`** from the [latest release](https://github.com/dbrownems/FabricDaxLoadTest/releases/latest). Cell 2's `WHEEL_URL` is pre-baked to the matching `fdlt_runtime-<ver>-py3-none-any.whl` on the same release, so the notebook is the only file you need.
 
-   | Asset | Purpose |
-   |---|---|
-   | `fdlt_runtime-<ver>-py3-none-any.whl` | The runtime + bundled `LoadGen.dll` + ADOMD assemblies (~1 MB). Cell 2 of the notebook `pip install`s this wheel directly from the GitHub release URL — no manual upload required. |
-   | `LoadTest-Main.ipynb` | The runner notebook (imports as `LoadTest - Main`). Cell 2's `WHEEL_URL` is pre-baked to this release's asset URL. |
+2. **Import the notebook** into your Fabric workspace (portal → **Import → Notebook → From this computer**).
 
-2. **In your Fabric workspace** (portal): create a workspace folder named **`LoadTests`** (workspace top bar → **New folder**).
+3. **Point it at any lakehouse you have Build access to** — edit cell 1's `LAKEHOUSE_NAME` (and `LAKEHOUSE_WORKSPACE_NAME` if it lives in a different workspace). The four Delta tables auto-create on first run; no lakehouse-side prep required.
 
-3. **Inside that folder**, create a Lakehouse named **`LoadTests`** (**+ New item → Lakehouse**; schema-enabled is recommended).
+4. **Upload your queries `.json`** onto the notebook's **Resources** panel (or set `QUERIES_FILE` in cell 1 to an `abfss://…/Files/…` path on the lakehouse).
 
-4. **Import the notebook** (workspace top bar → **Import → Notebook → From this computer**), placing it **inside the `LoadTests` folder**. After import, confirm its display name is **`LoadTest - Main`** (with spaces around the hyphen).
+5. **Run All.** Cell 2 `pip install`s the wheel from the GitHub release on first run; subsequent runs reuse the kernel-installed copy.
 
-You're done — jump to [Quick start](#quick-start) step 3 to run it. Cell 2 will `pip install` the wheel from the GitHub release on first Run-All; subsequent runs reuse the kernel-installed copy.
-
-> **Network restrictions?** If your workspace can't reach `github.com` from the Spark driver, download the `.whl` separately, upload it to `LoadTests.Lakehouse/Files/` via the lakehouse explorer, and edit cell 2's `WHEEL_URL` to the `abfss://…/Files/<wheel-filename>` path before Run-All.
+> **Network restrictions?** If your Spark driver can't reach `github.com`, download the `.whl` separately, upload it to the lakehouse's `Files/` via the explorer, and change cell 2's `WHEEL_URL` to the `abfss://…/Files/<wheel-filename>` path before Run-All.
 
 > **Updating later.** Edit `WHEEL_URL` in cell 2 to a newer release's wheel URL (e.g. bump `v0.5.0` → `v0.6.0`) and Run All. That's the entire upgrade story — no separate zip download, no notebook re-import.
 
@@ -335,7 +283,7 @@ The token must be scoped for `https://analysis.windows.net/powerbi/api`.
 
 ### Per-run CSV
 
-One row per query, written to `Files/runs/<RunId>/LoadTest.<users>u.<timestamp>.csv` in the lakehouse (or `--log-dir` for local runs):
+One row per query, written to the Spark driver's local `/tmp/fdlt-<RunId>/LoadTest.<users>u.<timestamp>.csv`. Cell 3 prints the path; the file lives for the kernel's lifetime so you can `sftp`/`!cat`/`%fs` it for forensics. Local-CLI runs write to `--log-dir`.
 
 ```
 RunId,UserIndex,UserEmail,QueryIndex,Iteration,StartUtc,EndUtc,
@@ -343,16 +291,19 @@ StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,
 ActiveUsersAtStart
 ```
 
+The CSV is the input to the Delta-table write — once `LoadTestQueryExecutions` is populated, the CSV is no longer needed for analytics.
+
 ### Delta tables
 
 The notebook MERGEs Run metadata into three small dimensions and bulk-loads the query-execution facts. Writes happen in parallel via a ThreadPool (one Spark job per table).
 
 | Table | Grain | Notes |
 |---|---|---|
-| `LoadTests` | one row per Load Test (`LoadTestId`) | Carries name + description from cell 1. |
-| `LoadTestRuns` | one row per Run (`RunId`) | All run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) plus configuration snapshot. |
+| `LoadTests` | one row per Load Test (`LoadTestId` = Fabric NotebookId) | Identity + provenance: `Name`, `Description`, `WorkspaceId`/`WorkspaceName` (the *notebook's* workspace), `TargetWorkspace`/`TargetDataset`. |
+| `LoadTestRuns` | one row per Run (`RunId`) | Run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) + config snapshot (`UserCount`, `DurationSec`, …) + target (`TargetWorkspace`, `TargetDataset`, `XmlaEndpoint`). |
 | `LoadTestQueries` | one row per `(LoadTestId, RunId, QueryHash)` | The Scenario (DAX queries) snapshot for this Run, hashed for change-detection. |
-| `LoadTestQueryExecutions` | one row per query execution (the per-Run CSV, in Delta form) | Idempotent on `RunId`: re-running cell 3 deletes and rewrites just that Run's rows. |
+| `LoadTestQueryExecutions` | one row per query execution | Idempotent on `RunId`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. |
+| `LoadTestTraceEvents` | one row per AS trace event | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Best-effort — empty when tracing fails or is disabled. |
 
 All tables include `OwnerType` / `OwnerId` / `OwnerKey` columns so future trace facts (capture mode, monitor mode) can graft into the same star.
 
@@ -398,6 +349,15 @@ git push origin v0.2.0
 ```
 
 The workflow runs `dotnet publish` + `python scripts/build_notebooks.py` on a clean Ubuntu runner, stages the LoadGen binaries into the wheel source tree, builds the `fdlt_runtime` wheel with the binaries embedded, and creates a GitHub Release with the wheel + the regenerated notebook attached. The artifacts are what end-users download under [Option B — Manual setup](#option-b--manual-setup).
+
+## Why another load test tool?
+
+Pure-Python REST-based tools (e.g. the [Fabric Toolbox `FabricLoadTestTool`](https://github.com/microsoft/fabric-toolbox/tree/main/tools/FabricLoadTestTool)) have a few inherent limits this tool was built to lift:
+
+- **Real XMLA wire path.** Each simulated user is a real ADOMD.NET connection — same TCP/TLS handshake, model attach, and session lifetime as Power BI Desktop, Excel, and Tabular Editor. REST tools only exercise the REST gateway path.
+- **Real thread parallelism, not notebook fan-out.** N users = N native threads in one .NET process. No `notebookutils.notebooks.runMultiple` per-user spin-up, no GIL, no Spark notebook concurrency cap. A 25-user / 60-second test on a starter pool drove 6,336 queries (≈105 qps from one driver pod) in smoke testing.
+- **Coordinated engine-trace capture.** An XMLA trace runs alongside the load test and stamps every command with a per-query `ActivityID`. After the run, `LoadTestQueryExecutions` has `ClientDurationMs`, `EngineDurationMs`, `EngineCpuMs`, SE/FE CPU split, peak memory, etc. on the same row — no post-hoc log correlation. The raw trace lands in `LoadTestTraceEvents` for forensics.
+- **First-class RLS impersonation.** `EffectiveUsername` / `Roles` per simulated user via a `users.json` on the Resources panel.
 
 ## License
 

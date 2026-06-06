@@ -2,8 +2,10 @@
 
 The notebook is deployed into a `LoadTests` workspace folder by
 scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
-holds per-run telemetry under Files/runs/ and the four Delta tables
-under Tables[/dbo]/.
+holds the five Delta tables under Tables[/dbo]/. Per-run telemetry
+(CSVs, *.trace.csv, result.json, *.log) lives only on the Spark
+driver's local /tmp for the lifetime of the kernel — it's strictly
+forensic and never copied to OneLake.
 
 As of v0.5.0 the .NET LoadGen binaries ship inside the `fdlt_runtime`
 wheel, so cell 2 is a single `pip install <wheel>` — no zip download,
@@ -126,15 +128,19 @@ def build_run():
     `LAKEHOUSE_WORKSPACE_NAME` / `LAKEHOUSE_NAME` parameters in cell 1
     (defaults: current workspace, `LoadTests`). The lakehouse holds:
 
-    - `Files/runs/`  — per-run telemetry CSVs (created on first run)
     - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}` —
-      Delta tables written at end-of-run. The `dbo/` prefix is added
+      five Delta tables written at end-of-run. The `dbo/` prefix is added
       automatically when the lakehouse is schema-enabled; flat lakehouses
       write directly under `Tables/`. Override with `LAKEHOUSE_SCHEMA` in
       cell 1.
 
-    > Note: pre-v0.5.0 deployments staged a `Files/loadgen-bin.zip` here too;
-    > that file is no longer used and is safe to delete.
+    Per-run forensic artifacts (raw executions CSV, trace CSV, result.json,
+    `*.log`) stay on the Spark driver's local `/tmp/fdlt-<RunId>/`. Cell 3
+    prints the path; everything analytics needs is in the Delta tables.
+
+    > Note: pre-v0.5.0 deployments staged a `Files/loadgen-bin.zip` here too,
+    > and pre-v0.6.0 mirrored per-run CSVs to `Files/runs/`. Both are
+    > obsolete and safe to delete.
 
     ## How to use
 
@@ -265,7 +271,10 @@ LAKEHOUSE_WORKSPACE_NAME = None  # workspace hosting the destination lakehouse
                                  #            notebook)
                                  #   "name"/GUID → BYO-lakehouse: point at any
                                  #            lakehouse you have Build access to,
-                                 #            in any workspace on this tenant
+                                 #            in any workspace in your home tenant
+                                 #            (cross-tenant guest workspaces are
+                                 #            not supported — getToken("pbi") is
+                                 #            home-tenant scoped)
 LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
                                 #   created by scripts/Deploy-LoadTests.ps1
                                 #   override for BYO-lakehouse scenarios

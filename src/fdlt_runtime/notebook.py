@@ -64,7 +64,6 @@ def bootstrap(
     lakehouse_name: str,
     lakehouse_workspace: Optional[str] = None,
     lakehouse_schema: Optional[str] = None,
-    stage_dir: Optional[str] = None,
 ) -> BootstrapResult:
     """Resolve env (workspace / lakehouse / dotnet) for a load test.
 
@@ -81,12 +80,6 @@ def bootstrap(
     via `importlib.resources` — pip-installing the wheel is the
     entire deploy. Cell 2 of the notebook is just `pip install <wheel>`
     followed by this call.
-
-    `stage_dir` is accepted for backward compatibility with
-    pre-v0.5.0 saved notebooks (which used to unzip
-    `loadgen-bin.zip` to `/tmp/fdlt-bin` and pass that here). It is
-    ignored — the bundled `loadgen/` folder always wins. Will be
-    removed in a future major release.
     """
     import notebookutils  # type: ignore[import-not-found]
 
@@ -119,9 +112,6 @@ def bootstrap(
             "without the bundled .NET binaries — re-run "
             "scripts/Deploy-LoadTests.ps1, or download a release wheel "
             "from https://github.com/dbrownems/FabricDaxLoadTest/releases.")
-    if stage_dir is not None:
-        print("    (note: `stage_dir` is deprecated and ignored — "
-              "LoadGen.dll now ships inside the fdlt_runtime wheel)")
 
     print(f"Workspace : {ws_name} ({ws_id})")
     if lh.workspace_id != ws_id:
@@ -234,12 +224,13 @@ def run(
         cfg, dotnet=boot.dotnet, loadgen_dll=boot.loadgen_dll,
         on_status=on_status)
 
-    run_dest = f"{boot.lakehouse.abfss}/Files/runs/{rr.run_id or rr.staging_id}"
-    try:
-        notebookutils.fs.cp(
-            f"file://{rr.run_local_dir}", run_dest, recurse=True)
-    except Exception as cp_ex:  # noqa: BLE001 — best-effort copy
-        print(f"(warning: failed to persist run artifacts to OneLake: {cp_ex})")
+    # Forensic artifacts (executions CSV, trace CSV, result.json, *.log)
+    # stay on the Spark driver's local disk under run_local_dir. We
+    # deliberately do NOT copy them to OneLake — everything the analytics
+    # layer needs already lives in the 5 Delta tables. Run the load test
+    # again and you'll get a fresh /tmp dir; if you need the raw artifacts
+    # for forensics, grab them from `run_dest` before the kernel cycles.
+    run_dest = rr.run_local_dir
 
     _print_run_banner(rr, run_dest)
 
@@ -364,7 +355,7 @@ def _print_run_banner(rr: RunResult, run_dest: str) -> None:
             for line in rr.stderr_tail[-40:]:
                 print(line)
         _print_log_tail()
-        print(f"\nRun artifacts (partial): {run_dest}")
+        print(f"\nRun artifacts (partial, driver-local): {run_dest}")
         raise RuntimeError(
             rr.error_envelope.get("message", "LoadGen exited non-zero")
             if rr.error_envelope
