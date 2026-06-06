@@ -37,7 +37,7 @@ The existing pure-Python REST-based tools have meaningful limitations:
 - No realistic per-user XMLA connection cost (TCP/TLS handshake, model attach).
 - Limited to whatever the REST API path exposes.
 - Can't easily simulate Row-Level Security via `EffectiveUsername` / `Roles`.
-- Per-thread Python overhead caps achievable concurrency.
+- Python-.NET interop and process pararallelism overhead saps achievable concurrency.
 - **Client-side latency only** — no view into what the engine actually did.
 - **Notebook-based fan-out** (`notebookutils.notebooks.runMultiple`) spins up
   a Spark notebook per simulated user. That's coarse-grained
