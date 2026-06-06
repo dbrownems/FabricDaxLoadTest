@@ -294,7 +294,9 @@ def stage_loadgen_zip(local_zip: str, stage_dir: str) -> str:
     if not os.path.exists(dll):
         raise FileNotFoundError(
             f"LoadGen.dll not found under {stage_dir} after extracting {local_zip}. "
-            "Re-run scripts/Deploy-LoadTests.ps1 to refresh the lakehouse zip.")
+            "(Legacy zip-based path. As of v0.5.0 LoadGen.dll ships inside the "
+            "fdlt_runtime wheel; re-run scripts/Deploy-LoadTests.ps1 to deploy "
+            "the wheel-based bootstrap.)")
     return dll
 
 

@@ -61,11 +61,21 @@ class RunOutcome:
 
 def bootstrap(
     *,
-    lakehouse_name: str = "LoadTests",
+    lakehouse_name: str,
+    lakehouse_workspace: Optional[str] = None,
     lakehouse_schema: Optional[str] = None,
     stage_dir: Optional[str] = None,
 ) -> BootstrapResult:
     """Resolve env (workspace / lakehouse / dotnet) for a load test.
+
+    `lakehouse_name` is required — the destination lakehouse display
+    name (cell-1 `LAKEHOUSE_NAME`). The lakehouse is searched in
+    `lakehouse_workspace` (a workspace display name or GUID). If
+    `lakehouse_workspace` is None, the current notebook's workspace is
+    used (the common case). The discovered `(workspace_id,
+    workspace_name, lakehouse_id, lakehouse_name)` tuple is exposed via
+    `BootstrapResult.lakehouse` and is the single source of truth for
+    every downstream OneLake/abfss path the notebook produces.
 
     Locates `LoadGen.dll` inside the installed `fdlt_runtime` wheel
     via `importlib.resources` — pip-installing the wheel is the
@@ -88,9 +98,16 @@ def bootstrap(
     nb_name = (ctx.get("currentNotebookName") or "").strip()
 
     token = notebookutils.credentials.getToken("pbi")
+
+    # Resolve the lakehouse's workspace. None ⇒ same workspace as the notebook.
+    if lakehouse_workspace is None:
+        lh_ws_id, lh_ws_name = ws_id, ws_name
+    else:
+        lh_ws_id, lh_ws_name = resolve_workspace(lakehouse_workspace, token)
+
     lh = discover_lakehouse(
-        workspace_id=ws_id, lakehouse_name=lakehouse_name,
-        token=token, workspace_name=ws_name,
+        workspace_id=lh_ws_id, lakehouse_name=lakehouse_name,
+        token=token, workspace_name=lh_ws_name,
         schema_override=lakehouse_schema,
         list_tables=lambda p: notebookutils.fs.ls(p))
     dotnet = find_dotnet()
@@ -107,6 +124,9 @@ def bootstrap(
               "LoadGen.dll now ships inside the fdlt_runtime wheel)")
 
     print(f"Workspace : {ws_name} ({ws_id})")
+    if lh.workspace_id != ws_id:
+        print(f"Lakehouse-WS: {lh.workspace_name} ({lh.workspace_id})  "
+              "(BYO — different from notebook workspace)")
     print(f"Lakehouse : {lh.lakehouse_name} ({lh.lakehouse_id})  "
           f"schema={lh.schema or '(flat / no schema)'}")
     print(f"LoadGen   : {loadgen_dll}  ({os.path.getsize(loadgen_dll):,} bytes)")
@@ -267,7 +287,7 @@ def run(
             try:
                 from .env import refresh_sql_endpoint_metadata
                 resp = refresh_sql_endpoint_metadata(
-                    boot.workspace_id, sep_id, boot.token)
+                    boot.lakehouse.workspace_id, sep_id, boot.token)
                 code = resp.get("status_code")
                 if code == 200:
                     body = resp.get("body") or {}

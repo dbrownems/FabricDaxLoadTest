@@ -122,8 +122,9 @@ def build_run():
     the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
     subprocess (run on the Spark driver's bundled .NET 8 runtime).
 
-    The notebook auto-discovers the workspace's **`LoadTests`** lakehouse — no
-    UI attach step required. The lakehouse holds:
+    The notebook discovers the destination lakehouse via the
+    `LAKEHOUSE_WORKSPACE_NAME` / `LAKEHOUSE_NAME` parameters in cell 1
+    (defaults: current workspace, `LoadTests`). The lakehouse holds:
 
     - `Files/runs/`  — per-run telemetry CSVs (created on first run)
     - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}` —
@@ -257,6 +258,14 @@ USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 
 # ── Lakehouse (where the 4 Delta tables are written) ─────────────────────────
+LAKEHOUSE_WORKSPACE_NAME = None  # workspace hosting the destination lakehouse
+                                 #   None  → current workspace (default;
+                                 #            common case — `Deploy-LoadTests.ps1`
+                                 #            puts the lakehouse alongside this
+                                 #            notebook)
+                                 #   "name"/GUID → BYO-lakehouse: point at any
+                                 #            lakehouse you have Build access to,
+                                 #            in any workspace on this tenant
 LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
                                 #   created by scripts/Deploy-LoadTests.ps1
                                 #   override for BYO-lakehouse scenarios
@@ -337,6 +346,7 @@ from fdlt_runtime import notebook as fdlt_nb
 
 boot = fdlt_nb.bootstrap(
     lakehouse_name=LAKEHOUSE_NAME,
+    lakehouse_workspace=LAKEHOUSE_WORKSPACE_NAME,
     lakehouse_schema=LAKEHOUSE_SCHEMA,
 )
 """)
