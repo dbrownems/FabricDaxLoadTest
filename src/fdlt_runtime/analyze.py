@@ -1,19 +1,27 @@
-"""Per-run plotting helpers (latency / QPS / users)."""
+"""Per-run plotting helpers (latency / QPS / users / CPU)."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 
-def plot_run(csv_path: str | Path, *, title: str | None = None):
+def plot_run(csv_path: str | Path, *, title: str | None = None,
+             trace_csv_path: str | Path | None = None):
     """Plot bucketed latency band + QPS + active-user count from a LoadGen CSV.
 
     Mirrors the chart that used to live in notebook cell 6: a 3-panel
     figure where the top panel shows the per-bucket min/max latency band
     + mean line, the middle stacks success vs error QPS, and the bottom
-    plots active users over time. Returns the matplotlib Figure so the
-    caller can save / restyle it. Pandas + matplotlib imports are
-    deferred so the wheel can be imported in environments without them.
+    plots active users over time. When ``trace_csv_path`` is supplied
+    and contains ``QueryEnd`` events with CPU data, an additional
+    bottom panel plots **CPU-seconds per second** (i.e. effective
+    parallel CPU consumption) — the most useful single metric for
+    capacity-utilization assessment, since Fabric Capacity CU is just a
+    region/SKU-specific multiplier on engine CPU. Returns the
+    matplotlib Figure so the caller can save / restyle it. Pandas +
+    matplotlib imports are deferred so the wheel can be imported in
+    environments without them.
     """
     import pandas as pd
     import matplotlib.pyplot as plt
@@ -47,9 +55,16 @@ def plot_run(csv_path: str | Path, *, title: str | None = None):
               .merge(users, on="bucket", how="left").fillna(0))
     agg["time_s"] = (agg.t - t_min) / 1000
 
-    fig, (ax1, ax2, ax3) = plt.subplots(
-        3, 1, figsize=(14, 10), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1, 1]})
+    # Optional CPU-seconds-per-second series from the engine trace.
+    cpu_x, cpu_y, cpu_bw = _cpu_per_second(trace_csv_path, df, duration_s)
+    have_cpu = cpu_x is not None and len(cpu_x) > 0
+
+    n_panels = 4 if have_cpu else 3
+    height_ratios = [3, 1, 1, 2] if have_cpu else [3, 1, 1]
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(14, 10 if not have_cpu else 13), sharex=True,
+        gridspec_kw={"height_ratios": height_ratios})
+    ax1, ax2, ax3 = axes[0], axes[1], axes[2]
     ax1.fill_between(agg.time_s, agg.min_ms, agg.max_ms,
                      alpha=0.15, color="steelblue", label="min–max")
     ax1.plot(agg.time_s, agg.mean_ms, color="steelblue", linewidth=1.5, label="mean")
@@ -76,10 +91,105 @@ def plot_run(csv_path: str | Path, *, title: str | None = None):
              color="green", linewidth=1.5, label="Active users")
     ax3.fill_between(agg.time_s, 0, agg.active_users, alpha=0.1, color="green")
     ax3.set_ylabel("Users")
-    ax3.set_xlabel("Time (seconds)")
     ax3.legend(loc="upper left")
     ax3.grid(True, alpha=0.3)
     ax3.set_ylim(bottom=0)
+    if not have_cpu:
+        ax3.set_xlabel("Time (seconds)")
+
+    if have_cpu:
+        ax4 = axes[3]
+        ax4.bar(cpu_x, cpu_y, width=cpu_bw * 0.9,
+                color="purple", alpha=0.65,
+                label="Engine CPU (CPU-seconds / second)")
+        ax4.set_ylabel("CPU s/s")
+        ax4.set_xlabel("Time (seconds)")
+        ax4.grid(True, alpha=0.3)
+        ax4.set_ylim(bottom=0)
+        peak = max(cpu_y) if len(cpu_y) else 0
+        avg = (sum(cpu_y) * cpu_bw) / duration_s if duration_s > 0 else 0
+        ax4.legend(loc="upper left",
+                   title=f"peak={peak:.1f}  avg={avg:.1f}  "
+                         f"bucket={cpu_bw:g}s")
 
     fig.tight_layout()
     return fig
+
+
+def _cpu_per_second(trace_csv_path, df, duration_s):
+    """Bucket engine-side CPU into seconds-of-CPU-per-second-of-wallclock.
+
+    Reads the trace CSV (best-effort; returns empty if missing/empty),
+    filters to ``QueryEnd`` events with positive ``CpuMs`` and
+    ``DurationMs``, computes each event's wallclock interval relative to
+    test start (T0 derived from the executions CSV's
+    ``StartUtc`` − ``StartTimeMs`` alignment), then **distributes the
+    event's CpuMs uniformly over its [start, end] interval** so events
+    that span multiple buckets contribute proportionally. Bucket size is
+    1 second, capped at 100 buckets total (so longer runs use wider
+    buckets, e.g. a 600-second run uses 6-second buckets).
+
+    Returns ``(centers_s, cpu_per_sec, bucket_width_s)`` or
+    ``(None, None, None)`` when no CPU data is available.
+    """
+    if not trace_csv_path:
+        return None, None, None
+    import os
+    if not os.path.exists(trace_csv_path):
+        return None, None, None
+
+    import pandas as pd
+    try:
+        tdf = pd.read_csv(trace_csv_path)
+    except pd.errors.EmptyDataError:
+        return None, None, None
+    if tdf.empty:
+        return None, None, None
+    tdf = tdf[(tdf.get("EventClass") == "QueryEnd") &
+              (tdf.get("CpuMs", 0) > 0) &
+              (tdf.get("DurationMs", 0) > 0)].copy()
+    if tdf.empty:
+        return None, None, None
+
+    # Align trace UtcTimestamps with the executions test-start.
+    # T0 (UTC) = StartUtc[i] - StartTimeMs[i]/1000  (any i; pick i=0 row's
+    # earliest start to anchor).
+    exe = df.copy()
+    exe["StartUtc"] = pd.to_datetime(exe["StartUtc"], utc=True)
+    if exe.empty:
+        return None, None, None
+    earliest = exe["StartTimeMs"].idxmin()
+    t0 = (exe["StartUtc"].iloc[earliest]
+          - pd.to_timedelta(exe["StartTimeMs"].iloc[earliest], unit="ms"))
+
+    tdf["UtcTimestamp"] = pd.to_datetime(tdf["UtcTimestamp"], utc=True)
+    tdf["end_s"] = (tdf["UtcTimestamp"] - t0).dt.total_seconds()
+    tdf["start_s"] = tdf["end_s"] - tdf["DurationMs"] / 1000.0
+
+    # Bucket sizing: aim for 1s buckets, cap at 100 buckets total.
+    bucket_size_s = max(1.0, math.ceil(duration_s / 100))
+    n_buckets = max(1, int(math.ceil(duration_s / bucket_size_s)))
+    cpu_ms = [0.0] * n_buckets
+
+    for _, ev in tdf.iterrows():
+        s, e, c = float(ev["start_s"]), float(ev["end_s"]), float(ev["CpuMs"])
+        if e <= 0 or s >= duration_s or e <= s:
+            # Event entirely before T0 (clock skew) or zero-length.
+            continue
+        s = max(s, 0.0)
+        e = min(e, duration_s)
+        span = e - s
+        if span <= 0:
+            continue
+        cpu_per_s = c / span  # ms-of-CPU per second-of-wallclock for this event
+        b0 = int(s // bucket_size_s)
+        b1 = int(min(n_buckets - 1, e // bucket_size_s))
+        for b in range(b0, b1 + 1):
+            bucket_lo = b * bucket_size_s
+            bucket_hi = bucket_lo + bucket_size_s
+            overlap = max(0.0, min(e, bucket_hi) - max(s, bucket_lo))
+            cpu_ms[b] += cpu_per_s * overlap
+
+    centers = [(b + 0.5) * bucket_size_s for b in range(n_buckets)]
+    cpu_per_sec = [(ms / 1000.0) / bucket_size_s for ms in cpu_ms]
+    return centers, cpu_per_sec, bucket_size_s

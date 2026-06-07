@@ -399,6 +399,7 @@ def analyze(outcome: RunOutcome) -> Any:
     fig = plot_run(
         outcome.result.csv_path,
         title=f"Run {outcome.result.run_id} — {outcome.load_test_name}",
+        trace_csv_path=outcome.result.trace_csv_path,
     )
     plt.show()
     return fig
