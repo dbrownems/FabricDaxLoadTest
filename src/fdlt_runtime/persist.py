@@ -1,12 +1,18 @@
 """Delta-table writer for FabricDaxLoadTest runs.
 
-Pulled from notebook cell 5b. Writes 4 tables:
+Pulled from notebook cell 5b. Writes 5 tables:
 
-  LoadTests                — 1 row per logical test (MERGE on LoadTestId)
-  LoadTestRuns             — 1 row per run (MERGE on RunId)
-  LoadTestQueries          — Load Test Scenario snapshots (insert-only,
-                             keyed (LoadTestId, RunId, QueryHash))
-  LoadTestQueryExecutions  — per-attempt facts (DELETE WHERE RunId / INSERT)
+  LoadTests        — 1 row per logical test (MERGE on LoadTestId)
+  LoadTestRuns     — 1 row per run (MERGE on RunId)
+  LoadTestQueries  — Load Test Scenario snapshots (insert-only,
+                     keyed (LoadTestId, RunId, QueryHash))
+  QueryExecutions  — per-attempt facts. Generic across sources;
+                     keyed (Source, SourceId, ...). For LoadTest runs:
+                     Source="LoadTestRun", SourceId=<RunId>.
+                     DELETE WHERE (Source, SourceId) match / INSERT.
+  TraceEvents      — engine-side XMLA trace events. Same (Source, SourceId)
+                     scheme as QueryExecutions so a future Trace Capture
+                     workflow appends here without schema churn.
 
 Per-run snapshots: each notebook execution mints a fresh RunId and the
 queries DataFrame is keyed by (LoadTestId, RunId, QueryHash). Re-runs
@@ -162,6 +168,24 @@ def write_run(
             (df_.write.format("delta").mode("overwrite")
                 .option("mergeSchema", "true").save(path))
 
+    def _replace_for_source(df_, name: str, source: str, source_id: str):
+        """Generic delete-and-append for tables keyed by (Source, SourceId).
+
+        Writes from any data origin (LoadTest run, Trace Capture, etc.)
+        share the same physical table; the (Source, SourceId) pair is
+        what makes a write idempotent in re-runs.
+        """
+        path = _path(name)
+        df_ = df_.coalesce(1)
+        if DeltaTable.isDeltaTable(spark, path):
+            DeltaTable.forPath(spark, path).delete(
+                f"Source = '{source}' AND SourceId = '{source_id}'")
+            (df_.write.format("delta").mode("append")
+                .option("mergeSchema", "true").save(path))
+        else:
+            (df_.write.format("delta").mode("overwrite")
+                .option("mergeSchema", "true").save(path))
+
     # Build all 4 DataFrames first, then issue the writes concurrently
     # via a ThreadPoolExecutor. Spark sessions are thread-safe and the
     # JVM driver schedules jobs from different Python threads in
@@ -238,7 +262,7 @@ def write_run(
     ) for i in range(len(queries))]
     queries_df = spark.createDataFrame(queries_rows) if queries_rows else None
 
-    # LoadTestQueryExecutions ------------------------------------------------
+    # QueryExecutions --------------------------------------------------------
     if len(df) > 0:
         df2 = df.copy()
         df2["StartUtc"] = pd.to_datetime(df2["StartUtc"], utc=True)
@@ -246,8 +270,9 @@ def write_run(
         df2["QueryHash"] = df2["QueryIndex"].apply(
             lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
         exec_schema = StructType([
-            StructField("RunId",                StringType(),    False),
-            StructField("LoadTestId",           StringType(),    False),
+            StructField("Source",               StringType(),    False),
+            StructField("SourceId",             StringType(),    False),
+            StructField("LoadTestId",           StringType(),    True),
             StructField("UserIndex",            IntegerType(),   False),
             StructField("UserEmail",            StringType(),    True),
             StructField("QueryIndex",           IntegerType(),   False),
@@ -283,7 +308,8 @@ def write_run(
             StructField("ActiveUsersAtStart",   IntegerType(),   True),
         ])
         rows = [Row(
-            RunId=str(r["RunId"]),
+            Source="LoadTestRun",
+            SourceId=str(r["RunId"]),
             LoadTestId=load_test_id,
             UserIndex=int(r["UserIndex"]),
             UserEmail=str(r["UserEmail"]) if pd.notna(r["UserEmail"]) else None,
@@ -318,7 +344,7 @@ def write_run(
         exec_df = None
         executions_written = 0
 
-    # LoadTestTraceEvents — engine-side XMLA trace events captured by
+    # TraceEvents — engine-side XMLA trace events captured by
     # TraceSubscriber (best-effort). Empty when --no-trace was set or
     # the trace failed to start. Schema mirrors the C# CSV emitter.
     trace_df = None
@@ -332,8 +358,9 @@ def write_run(
         if len(tdf) > 0:
             tdf["UtcTimestamp"] = pd.to_datetime(tdf["UtcTimestamp"], utc=True)
             trace_schema = StructType([
-                StructField("RunId",            StringType(),    False),
-                StructField("LoadTestId",       StringType(),    False),
+                StructField("Source",           StringType(),    False),
+                StructField("SourceId",         StringType(),    False),
+                StructField("LoadTestId",       StringType(),    True),
                 StructField("UtcTimestamp",     TimestampType(), False),
                 StructField("EventClass",       StringType(),    True),
                 StructField("DurationMs",       LongType(),      True),
@@ -347,7 +374,8 @@ def write_run(
                 StructField("TextData",         StringType(),    True),
             ])
             trace_rows = [Row(
-                RunId=run_id,
+                Source="LoadTestRun",
+                SourceId=run_id,
                 LoadTestId=load_test_id,
                 UtcTimestamp=r["UtcTimestamp"].to_pydatetime(),
                 EventClass=str(r["EventClass"]) if pd.notna(r["EventClass"]) else None,
@@ -367,10 +395,10 @@ def write_run(
             trace_events_written = len(trace_rows)
 
     # Engine-side back-fill: JOIN executions to several trace events on
-    # (RunId, RequestId). The QueryEnd trace row carries both ActivityId
+    # (SourceId, RequestId). The QueryEnd trace row carries both ActivityId
     # (which decodes back to QuerySeq) and RequestId (the per-XMLA-request
     # id every engine event is also tagged with). We build a
-    # (RunId, QuerySeq) → RequestId mapping from QueryEnd, then aggregate
+    # (SourceId, QuerySeq) → RequestId mapping from QueryEnd, then aggregate
     # each downstream event class by RequestId and JOIN onto exec_df.
     # All JOINs are LEFT so a missing event class (e.g. no DQ on import
     # models) just leaves its columns NULL.
@@ -381,7 +409,7 @@ def write_run(
             StringType as _StrT,
         )
 
-        # 1. QueryEnd → (RunId, QuerySeq, RequestId, EngineCpuMs, EngineDurationMs)
+        # 1. QueryEnd → (SourceId, QuerySeq, RequestId, EngineCpuMs, EngineDurationMs)
         #    QuerySeq is the last 4 hex bytes of ActivityId, decoded big-endian.
         trace_qe = (trace_df
             .where((F.col("EventClass") == F.lit("QueryEnd")) &
@@ -394,15 +422,15 @@ def write_run(
                         25, 8),
                     16, 10).cast("int"))
             .select(
-                F.col("RunId"),
+                F.col("SourceId"),
                 F.col("QuerySeq"),
                 F.col("RequestId"),
                 F.col("CpuMs").alias("EngineCpuMs"),
                 F.col("DurationMs").alias("EngineDurationMs"))
-            .dropDuplicates(["RunId", "QuerySeq"]))
+            .dropDuplicates(["SourceId", "QuerySeq"]))
 
-        # The (RunId, RequestId) → QuerySeq map for joining the rest.
-        qe_map = trace_qe.select("RunId", "RequestId", "QuerySeq")
+        # The (SourceId, RequestId) → QuerySeq map for joining the rest.
+        qe_map = trace_qe.select("SourceId", "RequestId", "QuerySeq")
 
         # 2. ExecutionMetrics — JSON in TextData. Parse once, project fields.
         em_schema = _ST([
@@ -418,51 +446,51 @@ def write_run(
                    F.col("TextData").isNotNull())
             .withColumn("em", F.from_json(F.col("TextData"), em_schema))
             .select(
-                F.col("RunId"),
+                F.col("SourceId"),
                 F.col("RequestId"),
                 F.col("em.vertipaqJobCpuTimeMs").alias("SECpuMs"),
                 F.col("em.queryProcessingCpuTimeMs").alias("FECpuMs"),
                 F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
                 F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
                 F.col("em.queryResultRows").alias("QueryResultRows"))
-            .dropDuplicates(["RunId", "RequestId"])
-            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .dropDuplicates(["SourceId", "RequestId"])
+            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
 
         # 3. VertiPaqSEQueryEnd aggregates — count + sum(duration) per query.
         trace_vpq = (trace_df
             .where((F.col("EventClass") == F.lit("VertiPaqSEQueryEnd")) &
                    F.col("RequestId").isNotNull())
-            .groupBy("RunId", "RequestId")
+            .groupBy("SourceId", "RequestId")
             .agg(
                 F.count(F.lit(1)).cast("int").alias("VertiPaqQueryCount"),
                 F.sum(F.col("DurationMs")).cast("long").alias("VertiPaqDurationMs"))
-            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
 
         # 4. VertiPaqSEQueryCacheMatch — just the count (no Duration/CPU).
         trace_vcm = (trace_df
             .where((F.col("EventClass") == F.lit("VertiPaqSEQueryCacheMatch")) &
                    F.col("RequestId").isNotNull())
-            .groupBy("RunId", "RequestId")
+            .groupBy("SourceId", "RequestId")
             .agg(F.count(F.lit(1)).cast("int").alias("VertiPaqCacheHits"))
-            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
 
         # 5. DirectQueryEnd aggregates (Direct Lake / DQ models only).
         trace_dq = (trace_df
             .where((F.col("EventClass") == F.lit("DirectQueryEnd")) &
                    F.col("RequestId").isNotNull())
-            .groupBy("RunId", "RequestId")
+            .groupBy("SourceId", "RequestId")
             .agg(
                 F.count(F.lit(1)).cast("int").alias("DirectQueryCount"),
                 F.sum(F.col("DurationMs")).cast("long").alias("DirectQueryDurationMs"),
                 F.sum(F.col("CpuMs")).cast("long").alias("DirectQueryCpuMs"))
-            .join(qe_map, on=["RunId", "RequestId"], how="inner")
+            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
 
         # Drop the placeholder NULL columns and LEFT JOIN each aggregate
-        # back onto exec_df by (RunId, QuerySeq).
+        # back onto exec_df by (SourceId, QuerySeq).
         backfill_drop = [
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
@@ -476,7 +504,7 @@ def write_run(
             trace_qe.drop("RequestId"),
             trace_em, trace_vpq, trace_vcm, trace_dq,
         ):
-            exec_df = exec_df.join(side, on=["RunId", "QuerySeq"], how="left")
+            exec_df = exec_df.join(side, on=["SourceId", "QuerySeq"], how="left")
 
         # Reassert column order so the final DataFrame matches exec_schema.
         exec_df = exec_df.select(*[f.name for f in exec_schema.fields])
@@ -496,12 +524,14 @@ def write_run(
              lambda: _replace_for_run(queries_df, "LoadTestQueries", run_id)))
     if exec_df is not None:
         write_tasks.append(
-            ("LoadTestQueryExecutions",
-             lambda: _replace_for_run(exec_df, "LoadTestQueryExecutions", run_id)))
+            ("QueryExecutions",
+             lambda: _replace_for_source(
+                 exec_df, "QueryExecutions", "LoadTestRun", run_id)))
     if trace_df is not None:
         write_tasks.append(
-            ("LoadTestTraceEvents",
-             lambda: _replace_for_run(trace_df, "LoadTestTraceEvents", run_id)))
+            ("TraceEvents",
+             lambda: _replace_for_source(
+                 trace_df, "TraceEvents", "LoadTestRun", run_id)))
 
     # Hint the Spark scheduler to interleave jobs from concurrent threads
     # rather than queue them strictly FIFO. Safe to set per-call; reverts

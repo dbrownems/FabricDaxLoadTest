@@ -265,7 +265,7 @@ def run(
         print(f"  Executions : {write_summary.executions_written:,}")
         print(f"  Trace evts : {write_summary.trace_events_written:,}")
         print("  Tables     : LoadTests, LoadTestRuns, LoadTestQueries, "
-              "LoadTestQueryExecutions, LoadTestTraceEvents")
+              "QueryExecutions, TraceEvents")
         print(f"  Lakehouse  : {boot.lakehouse.lakehouse_name} "
               f"({boot.lakehouse.lakehouse_id})  "
               f"base={boot.lakehouse.table_base}")

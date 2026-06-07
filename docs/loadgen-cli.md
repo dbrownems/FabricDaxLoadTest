@@ -95,9 +95,9 @@ per pass through the query list.
 For a run with `--log-dir=./logs --log-file=run.csv`:
 
 - `./logs/run.csv` — one row per query execution. Schema is the same as
-  the `LoadTestQueryExecutions` Delta table the notebook persists.
+  the `QueryExecutions` Delta table the notebook persists.
 - `./logs/run.trace.csv` — one row per captured trace event (when tracing
-  is enabled). Same schema as `LoadTestTraceEvents`.
+  is enabled). Same schema as `TraceEvents`.
 
 Both files are also emitted when `--json-progress` is set; the JSONL
 envelopes carry summary stats but the raw per-query rows live in the CSVs.

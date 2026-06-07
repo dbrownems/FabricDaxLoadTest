@@ -244,7 +244,7 @@ SKIP_RESULTS                 = False  # True → drain rows without parsing
 ENABLE_TRACING               = True   # subscribe to dataset XMLA trace and
                                       #   capture engine events (QueryEnd,
                                       #   ExecutionMetrics, VertiPaq SE) into
-                                      #   the LoadTestTraceEvents Delta table.
+                                      #   the TraceEvents Delta table.
                                       #   Requires Build/Read on the dataset.
                                       #   Set False to skip tracing entirely.
 

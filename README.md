@@ -43,7 +43,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `LoadTestQueryExecutions`, `LoadTestTraceEvents`) written from the notebook for Power BI Direct Lake reporting.
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows).
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
@@ -66,8 +66,8 @@ The tool deploys a single self-contained bundle into a workspace folder:
     │       ├── LoadTests
     │       ├── LoadTestRuns
     │       ├── LoadTestQueries
-    │       ├── LoadTestQueryExecutions
-    │       └── LoadTestTraceEvents
+    │       ├── QueryExecutions      ← keyed (Source, SourceId)
+    │       └── TraceEvents          ← keyed (Source, SourceId)
     └── LoadTest - Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
 ```
 
@@ -284,7 +284,7 @@ StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,
 ActiveUsersAtStart
 ```
 
-The CSV is the input to the Delta-table write — once `LoadTestQueryExecutions` is populated, the CSV is no longer needed for analytics.
+The CSV is the input to the Delta-table write — once `QueryExecutions` is populated, the CSV is no longer needed for analytics.
 
 ### Delta tables
 
@@ -295,8 +295,8 @@ The notebook MERGEs Run metadata into three small dimensions and bulk-loads the 
 | `LoadTests` | one row per Load Test (`LoadTestId` = Fabric NotebookId) | Identity + provenance: `Name`, `Description`, `WorkspaceId`/`WorkspaceName` (the *notebook's* workspace), `TargetWorkspace`/`TargetDataset`. |
 | `LoadTestRuns` | one row per Run (`RunId`) | Run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) + config snapshot (`UserCount`, `DurationSec`, …) + target (`TargetWorkspace`, `TargetDataset`, `XmlaEndpoint`). |
 | `LoadTestQueries` | one row per `(LoadTestId, RunId, QueryHash)` | The Scenario (DAX queries) snapshot for this Run, hashed for change-detection. |
-| `LoadTestQueryExecutions` | one row per query execution | Idempotent on `RunId`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. |
-| `LoadTestTraceEvents` | one row per AS trace event | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Best-effort — empty when tracing fails or is disabled. |
+| `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. Future Trace Capture rows (`Source="TraceCapture"`) land in the same table. |
+| `TraceEvents` | one row per AS trace event, keyed `(Source, SourceId, …)` | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Same `(Source, SourceId)` scheme as `QueryExecutions`. Best-effort — empty when tracing fails or is disabled. |
 
 All tables include `OwnerType` / `OwnerId` / `OwnerKey` columns so future trace facts (capture mode, monitor mode) can graft into the same star.
 
@@ -349,7 +349,7 @@ Pure-Python REST-based tools (e.g. the [Fabric Toolbox `FabricLoadTestTool`](htt
 
 - **Real XMLA wire path.** Each simulated user is a real ADOMD.NET connection — same TCP/TLS handshake, model attach, and session lifetime as Power BI Desktop, Excel, and Tabular Editor. REST tools only exercise the REST gateway path.
 - **Real thread parallelism, not notebook fan-out.** N users = N native threads in one .NET process. No `notebookutils.notebooks.runMultiple` per-user spin-up, no GIL, no Spark notebook concurrency cap. A 25-user / 60-second test on a starter pool drove 6,336 queries (≈105 qps from one driver pod) in smoke testing.
-- **Coordinated engine-trace capture.** An XMLA trace runs alongside the load test and stamps every command with a per-query `ActivityID`. After the run, `LoadTestQueryExecutions` has `ClientDurationMs`, `EngineDurationMs`, `EngineCpuMs`, SE/FE CPU split, peak memory, etc. on the same row — no post-hoc log correlation. The raw trace lands in `LoadTestTraceEvents` for forensics.
+- **Coordinated engine-trace capture.** An XMLA trace runs alongside the load test and stamps every command with a per-query `ActivityID`. After the run, `QueryExecutions` has `ClientDurationMs`, `EngineDurationMs`, `EngineCpuMs`, SE/FE CPU split, peak memory, etc. on the same row — no post-hoc log correlation. The raw trace lands in `TraceEvents` for forensics.
 - **First-class RLS impersonation.** `EffectiveUsername` / `Roles` per simulated user via a `users.json` on the Resources panel.
 
 ## License
