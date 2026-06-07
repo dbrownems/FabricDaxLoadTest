@@ -100,9 +100,6 @@ def normalize_users(raw_json: str) -> list[dict[str, str]]:
 
       * Object array: ``[{"effectiveUserName": "...", "customData": "...",
         "roles": "..." | ["..."]}, ...]`` (case-insensitive keys).
-      * Legacy aliases: ``email`` -> ``customData``, ``role`` -> ``roles``
-        (matches the v0.4.x semantic where the misnamed ``email`` field
-        actually drove ``CustomData``).
       * String array: ``["alice@contoso.com", ...]`` -> each entry maps to
         ``effectiveUserName`` (no customData/roles).
 
@@ -130,8 +127,8 @@ def normalize_users(raw_json: str) -> list[dict[str, str]]:
         if not isinstance(u, dict):
             continue
         eun = _ci_get(u, "effectiveUserName").strip()
-        cd = _ci_get(u, "customData") or _ci_get(u, "email")  # email is legacy alias
-        roles_val = u.get("roles") or u.get("Roles") or u.get("role") or u.get("Role") or ""
+        cd = _ci_get(u, "customData")
+        roles_val = u.get("roles") or u.get("Roles") or ""
         if isinstance(roles_val, list):
             roles = ",".join(str(r) for r in roles_val if isinstance(r, str) and r)
         else:

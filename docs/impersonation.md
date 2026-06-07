@@ -31,23 +31,13 @@ Three shapes are accepted, all in the same array:
 
   // 3. CustomData-only — useful for testing CUSTOMDATA()-driven RLS
   //    without granting real users access to the model.
-  { "customData": "USA" },
-
-  // 4. Legacy v0.4.x form (still accepted as deprecated aliases).
-  //    "email" → CustomData, "role" → Roles. NOT EffectiveUserName.
-  { "email": "USA", "role": "USA Role" }
+  { "customData": "USA" }
 ]
 ```
 
 Keys are case-insensitive. An entry with no recognized field becomes a
 slot with no impersonation (full token identity). Empty `[]` falls back
 to a single anonymous slot.
-
-> **Breaking change vs. v0.4.x**: a flat string array used to map each
-> entry to `CustomData=` (via the misnamed `email` field). It now maps to
-> `EffectiveUserName=`. Existing files that use the explicit
-> `{"email": "...", "role": "..."}` form keep their old behaviour because
-> `email` is preserved as a deprecated alias for `customData`.
 
 ## Combination semantics (verified against the PBI XMLA endpoint)
 

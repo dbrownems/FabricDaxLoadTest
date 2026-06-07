@@ -363,24 +363,6 @@ $nbText = $nbText.Replace('REPLACE_ME_WITH_WHEEL_URL', $WheelAbfssUrl)
 Set-Content -Path $NotebookPath -Value $nbText -Encoding UTF8 -NoNewline
 Info "Patched WHEEL_URL into $NotebookPath"
 
-# Best-effort cleanup of legacy artifacts from pre-v0.5.0 deploys.
-# The old loadgen-bin.zip and Files/bin/ tree are no longer used —
-# leave them in place by default (cleaning them could break a
-# pre-upgrade saved notebook the user hasn't migrated yet), but log
-# a hint so users know they can delete by hand.
-$legacyZip = "/$Workspace.workspace/LoadTests.lakehouse/Files/loadgen-bin.zip"
-$legacyZipExists = & fab exists $legacyZip 2>&1 | Select-String -Pattern '"data": true' -Quiet
-if ($legacyZipExists) {
-    Warn "Legacy Files/loadgen-bin.zip still present (from a pre-v0.5.0 deploy)."
-    Warn "  Safe to delete once all `LoadTest - …` notebooks have been redeployed/regenerated."
-}
-$legacyBin = "/$Workspace.workspace/LoadTests.lakehouse/Files/bin"
-$legacyExists = & fab exists $legacyBin 2>&1 | Select-String -Pattern '"data": true' -Quiet
-if ($legacyExists) {
-    Info "Removing legacy Files/bin/ tree"
-    & fab rm -r $legacyBin -f 2>&1 | Out-Null
-}
-
 # ---- create/update notebook via REST (folderId at create time) --------------
 function Deploy-Notebook {
     param(

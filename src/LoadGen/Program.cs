@@ -40,12 +40,12 @@ class Program
         var durationOption = new Option<int>("--duration", () => 60, "Test duration in seconds");
         var usersOption = new Option<int>("--users", () => 100, "Number of concurrent simulated users");
         var concurrentQueriesPerUserOption = new Option<int>(
-            aliases: new[] { "--concurrent-queries-per-user", "--queries-per-batch" },
+            name: "--concurrent-queries-per-user",
             getDefaultValue: () => 1,
             description: "Concurrent in-flight queries per virtual user. Each user runs a rolling drain over " +
                          "the iteration's queries — when one finishes, the next pending query is dispatched on " +
                          "the freed connection (Power BI Desktop-style; not batched all-finish-then-fire-next). " +
-                         "1 = strictly serial. (--queries-per-batch retained as deprecated alias.)");
+                         "1 = strictly serial.");
         var pauseIterOption = new Option<int>("--pause-iterations", () => 1000, "Pause between iterations (ms)");
         var pauseQueryOption = new Option<int>("--pause-queries", () => 0, "Pause between queries (ms)");
         var rampOption = new Option<int>("--ramp-time", () => 30, "User ramp-up time (seconds)");
@@ -295,9 +295,7 @@ class Program
     // See docs/impersonation.md.
     internal sealed record VirtualUser(string EffectiveUserName, string CustomData, string Roles);
 
-    // Legacy human-readable mode: stdout banner + log echo + PrintResults
-    // summary. Preserved 1:1 for CLI users so a `dotnet run` against the
-    // tool still feels familiar.
+    // Human-readable mode: stdout banner + log echo + PrintResults summary.
     static int RunHumanReadable(string[] queries, string xmlaEndpoint, string dataset,
         string token, string[] emailArr, string[] customDataArr, string[] roleArr,
         int duration, int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
@@ -305,19 +303,33 @@ class Program
         bool enableTracing,
         VirtualUser[] users)
     {
+        var config = new LoadTestConfig
+        {
+            Queries = queries,
+            XmlaEndpoint = xmlaEndpoint,
+            Dataset = dataset,
+            Token = token,
+            UserEffectiveNames = emailArr,
+            UserCustomData = customDataArr,
+            UserRoles = roleArr,
+            DurationSeconds = duration,
+            ConcurrentQueriesPerUser = concurrentQueriesPerUser,
+            PauseBetweenIterationsMs = pauseIter,
+            PauseBetweenQueriesMs = pauseQuery,
+            LogDirectory = logDir,
+            UserRampTimeSec = rampTime,
+            LogFileName = logFile,
+            SkipResults = skipResults,
+            ErrorPolicy = errorPolicy,
+            EnableTracing = enableTracing,
+            LogCallback = Console.WriteLine,
+        };
+
         string resultJson;
         try
         {
-            resultJson = QueryRunner.RunLoadTest(
-                queries, xmlaEndpoint, dataset, token,
-                emailArr, customDataArr, roleArr,
-                duration, concurrentQueriesPerUser,
-                pauseIter, pauseQuery,
-                logDir, rampTime, logFile,
-                skipResults,
-                Console.WriteLine,
-                errorPolicy,
-                enableTracing);
+            using var handle = QueryRunner.StartLoadTest(config);
+            resultJson = handle.Wait();
         }
         catch (Exception ex)
         {
@@ -561,7 +573,6 @@ class Program
     // Parse users.json. Accepted shapes:
     //   * Object array: [{"effectiveUserName": "...", "customData": "...",
     //                     "roles": "..." | ["..."]}, ...]  (case-insensitive)
-    //   * Back-compat keys: "email" -> CustomData, "role" -> Roles.
     //   * String array: ["alice@..."]  -> EffectiveUserName per slot.
     //   * Empty {} entries are allowed (slot with no impersonation).
     // See docs/impersonation.md.
@@ -590,7 +601,7 @@ class Program
                 return "";
             }
 
-            string roles = get("roles", "role");
+            string roles = get("roles");
             if (string.IsNullOrEmpty(roles))
             {
                 // Roles array form: ["R1", "R2"] -> "R1,R2"
@@ -606,13 +617,8 @@ class Program
                     }
             }
 
-            // effectiveUserName preferred; "email" is a legacy alias for
-            // customData (NOT EffectiveUserName -- v0.4.x and earlier
-            // mapped "email" -> CustomData).
             string eun = get("effectiveUserName", "effectiveusername");
             string cd = get("customData", "customdata");
-            if (string.IsNullOrEmpty(cd))
-                cd = get("email"); // legacy alias
 
             return new VirtualUser(eun, cd, roles);
         }).ToArray();

@@ -337,48 +337,6 @@ namespace FabricDaxLoadTest
         private static void Log(string message) => _logger?.Log(message);
 
         /// <summary>
-        /// Legacy entry point preserved for back-compat. Builds a
-        /// <see cref="LoadTestConfig"/> from the positional parameters,
-        /// starts a run, and blocks until completion.
-        /// </summary>
-        public static string RunLoadTest(
-            string[] queries, string xmlaEndpoint, string dataset, string token,
-            string[] userEffectiveNames, string[] userCustomData, string[] userRoles,
-            int durationSeconds = 60, int concurrentQueriesPerUser = 4,
-            int pauseBetweenIterationsMs = 1000, int pauseBetweenQueriesMs = 0,
-            string? logDirectory = null, int userRampTimeSec = 0,
-            string? logFileName = null,
-            bool skipResults = false,
-            Action<string>? logCallback = null,
-            ErrorPolicy errorPolicy = ErrorPolicy.Continue,
-            bool enableTracing = true)
-        {
-            var config = new LoadTestConfig
-            {
-                Queries = queries,
-                XmlaEndpoint = xmlaEndpoint,
-                Dataset = dataset,
-                Token = token,
-                UserEffectiveNames = userEffectiveNames,
-                UserCustomData = userCustomData,
-                UserRoles = userRoles,
-                DurationSeconds = durationSeconds,
-                ConcurrentQueriesPerUser = concurrentQueriesPerUser,
-                PauseBetweenIterationsMs = pauseBetweenIterationsMs,
-                PauseBetweenQueriesMs = pauseBetweenQueriesMs,
-                LogDirectory = logDirectory,
-                UserRampTimeSec = userRampTimeSec,
-                LogFileName = logFileName,
-                SkipResults = skipResults,
-                ErrorPolicy = errorPolicy,
-                EnableTracing = enableTracing,
-                LogCallback = logCallback,
-            };
-            using var handle = StartLoadTest(config);
-            return handle.Wait();
-        }
-
-        /// <summary>
         /// Starts a load test on a background <see cref="Task"/> and
         /// returns a <see cref="LoadTestHandle"/> that the caller polls
         /// for progress and joins via <see cref="LoadTestHandle.Wait"/>.

@@ -50,14 +50,6 @@ namespace FabricDaxLoadTest
         /// </summary>
         public int ConcurrentQueriesPerUser { get; set; } = 4;
 
-        /// <summary>Deprecated alias for <see cref="ConcurrentQueriesPerUser"/>.</summary>
-        [Obsolete("Use ConcurrentQueriesPerUser. Retained for source compatibility.")]
-        public int QueriesPerBatch
-        {
-            get => ConcurrentQueriesPerUser;
-            set => ConcurrentQueriesPerUser = value;
-        }
-
         public int PauseBetweenIterationsMs { get; set; } = 1000;
         public int PauseBetweenQueriesMs { get; set; }
         public string? LogDirectory { get; set; }
