@@ -343,7 +343,7 @@ namespace FabricDaxLoadTest
         /// </summary>
         public static string RunLoadTest(
             string[] queries, string xmlaEndpoint, string dataset, string token,
-            string[] userEmails, string[] userRoles,
+            string[] userEffectiveNames, string[] userCustomData, string[] userRoles,
             int durationSeconds = 60, int queriesPerBatch = 4,
             int pauseBetweenIterationsMs = 1000, int pauseBetweenQueriesMs = 0,
             string? logDirectory = null, int userRampTimeSec = 0,
@@ -359,7 +359,8 @@ namespace FabricDaxLoadTest
                 XmlaEndpoint = xmlaEndpoint,
                 Dataset = dataset,
                 Token = token,
-                UserEmails = userEmails,
+                UserEffectiveNames = userEffectiveNames,
+                UserCustomData = userCustomData,
                 UserRoles = userRoles,
                 DurationSeconds = durationSeconds,
                 QueriesPerBatch = queriesPerBatch,
@@ -400,7 +401,7 @@ namespace FabricDaxLoadTest
             {
                 UtcNow = DateTime.UtcNow,
                 Phase = "Pending",
-                TargetUsers = config.UserEmails.Length,
+                TargetUsers = SlotCount(config),
             });
 
             Task<string> task;
@@ -427,12 +428,17 @@ namespace FabricDaxLoadTest
             if (config == null) throw new ArgumentNullException(nameof(config));
             if (config.Queries == null || config.Queries.Length == 0)
                 throw new ArgumentException("Queries must not be empty.", nameof(config));
-            if (config.UserEmails == null || config.UserEmails.Length == 0)
-                throw new ArgumentException("UserEmails must not be empty.", nameof(config));
-            if (config.UserRoles == null || config.UserRoles.Length != config.UserEmails.Length)
+            int nUsers = SlotCount(config);
+            if (nUsers <= 0)
                 throw new ArgumentException(
-                    "UserRoles must be non-null and have the same length as UserEmails.",
+                    "At least one of UserEffectiveNames / UserCustomData / UserRoles must be non-empty.",
                     nameof(config));
+            // Each non-empty array must have the same length so they can
+            // be indexed in lockstep per slot. Empty means "no value for
+            // any slot".
+            ThrowIfMismatched(config.UserEffectiveNames, nUsers, nameof(config.UserEffectiveNames));
+            ThrowIfMismatched(config.UserCustomData,     nUsers, nameof(config.UserCustomData));
+            ThrowIfMismatched(config.UserRoles,          nUsers, nameof(config.UserRoles));
             if (string.IsNullOrEmpty(config.XmlaEndpoint))
                 throw new ArgumentException("XmlaEndpoint must be set.", nameof(config));
             if (string.IsNullOrEmpty(config.Dataset))
@@ -455,8 +461,10 @@ namespace FabricDaxLoadTest
             var xmlaEndpoint = config.XmlaEndpoint;
             var dataset = config.Dataset;
             var token = config.Token;
-            var userEmails = config.UserEmails;
-            var userRoles = config.UserRoles;
+            var userEffectiveNames = NormalizeSlotArray(config.UserEffectiveNames, SlotCount(config));
+            var userCustomData     = NormalizeSlotArray(config.UserCustomData,     SlotCount(config));
+            var userRoles          = NormalizeSlotArray(config.UserRoles,          SlotCount(config));
+            int nUsers = userRoles.Length;
             int durationSeconds = config.DurationSeconds;
             int queriesPerBatch = config.QueriesPerBatch;
             int pauseBetweenIterationsMs = config.PauseBetweenIterationsMs;
@@ -512,10 +520,10 @@ namespace FabricDaxLoadTest
                 UtcNow = DateTime.UtcNow,
                 Elapsed = TimeSpan.Zero,
                 Phase = Volatile.Read(ref phase),
-                TargetUsers = userEmails.Length,
+                TargetUsers = nUsers,
             });
 
-            Log($"Starting: {userEmails.Length} users, {queries.Length} queries, {durationSeconds}s, {queriesPerBatch} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
+            Log($"Starting: {nUsers} users, {queries.Length} queries, {durationSeconds}s, {queriesPerBatch} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
             if (textLogPath != null)
                 Log($"Text log: {textLogPath}");
 
@@ -622,7 +630,6 @@ namespace FabricDaxLoadTest
             {
 
             // Calculate per-user start delays for ramp-up
-            int nUsers = userEmails.Length;
             double rampIntervalMs = nUsers > 1 && userRampTimeSec > 0
                 ? (userRampTimeSec * 1000.0) / (nUsers - 1)
                 : 0;
@@ -650,7 +657,7 @@ namespace FabricDaxLoadTest
             for (int i = 0; i < nUsers; i++)
             {
                 connStrings[i] = BuildConnectionString(xmlaEndpoint, dataset, token,
-                    userEmails[i], userRoles[i], runId);
+                    userEffectiveNames[i], userCustomData[i], userRoles[i], runId);
             }
 
             // Pre-warm the model/gateway with a single shared warmup connection BEFORE
@@ -720,14 +727,14 @@ namespace FabricDaxLoadTest
                         Interlocked.Increment(ref connectFailures);
                         if (connectExceptions.Count < MaxKeptConnectExceptions)
                             connectExceptions.Enqueue(ex);
-                        Log($"ERROR connecting user {userIdx} ({userEmails[userIdx]}): {ex.GetType().Name}: {ex.Message}");
+                        Log($"ERROR connecting user {userIdx} ({UserLabel(userEffectiveNames, userCustomData, userIdx)}): {ex.GetType().Name}: {ex.Message}");
                         if (connections != null)
                             for (int c = 0; c < connections.Length; c++)
                                 try { connections[c]?.Dispose(); } catch { }
                         return;
                     }
 
-                    SimulateUserWithConnections(userIdx, queries, userEmails[userIdx],
+                    SimulateUserWithConnections(userIdx, queries, UserLabel(userEffectiveNames, userCustomData, userIdx),
                         queriesPerBatch, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
                         testStart, runId, testStartTime, telemetryQueue,
@@ -834,7 +841,10 @@ namespace FabricDaxLoadTest
 
             // ── Connection summary after ramp-up ──
             int totalConns = connectedUsers * queriesPerBatch;
-            var distinctEmails = userEmails.Distinct().Count();
+            // Distinct identities = distinct (effectiveName,customData) pairs.
+            var distinctEmails = Enumerable.Range(0, nUsers)
+                .Select(i => UserLabel(userEffectiveNames, userCustomData, i))
+                .Distinct().Count();
             var distinctRoles = userRoles.Distinct().Count();
             status.SetConnectionInfo(totalConns, distinctEmails);
             double avgConnMs = connectedUsers > 0 ? Volatile.Read(ref totalConnectTimeMs[0]) / (double)connectedUsers : 0;
@@ -937,7 +947,7 @@ namespace FabricDaxLoadTest
                 Log($"Done: {status.TotalQueries} executions in {testStart.Elapsed.TotalSeconds:F1}s");
 
                 builtResult = BuildStats(status.AllResults, testStart.Elapsed.TotalMilliseconds,
-                    userEmails.Length, queries.Length, logFilePath);
+                    nUsers, queries.Length, logFilePath);
 
                 // Publish the final snapshot so a polling caller sees
                 // accurate "Done"/"Cancelled"/"Failed" without racing
@@ -948,7 +958,7 @@ namespace FabricDaxLoadTest
                     Elapsed = testStart.Elapsed,
                     Phase = Volatile.Read(ref phase),
                     ActiveUsers = status.ActiveUsers,
-                    TargetUsers = userEmails.Length,
+                    TargetUsers = nUsers,
                     Successful = status.TotalQueries - status.TotalErrors,
                     Failed = status.TotalErrors,
                     RollingQps = 0,
@@ -1268,9 +1278,13 @@ namespace FabricDaxLoadTest
             return text;
         }
 
+        // Per-slot impersonation arrays: see docs/impersonation.md.
+        // EffectiveUserName / CustomData / Roles connection-string
+        // properties are emitted only when their per-slot string is
+        // non-empty. Roles is comma-separated when multiple roles apply.
         private static string BuildConnectionString(
             string xmlaEndpoint, string dataset, string token,
-            string userEmail, string userRole, Guid runId)
+            string effectiveUserName, string customData, string roles, Guid runId)
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={xmlaEndpoint};Initial Catalog={dataset};");
@@ -1285,11 +1299,48 @@ namespace FabricDaxLoadTest
             // Power BI Service / Fabric XMLA endpoint a bearer token is required.
             if (!string.IsNullOrEmpty(token))
                 sb.Append($"password={token};");
-            if (!string.IsNullOrEmpty(userEmail))
-                sb.Append($"CustomData={userEmail};");
-            if (!string.IsNullOrEmpty(userRole))
-                sb.Append($"Roles={userRole};");
+            if (!string.IsNullOrEmpty(effectiveUserName))
+                sb.Append($"EffectiveUserName={effectiveUserName};");
+            if (!string.IsNullOrEmpty(customData))
+                sb.Append($"CustomData={customData};");
+            if (!string.IsNullOrEmpty(roles))
+                sb.Append($"Roles={roles};");
             return sb.ToString();
+        }
+
+        // ── Slot-array helpers ──────────────────────────────────────────
+        // The three impersonation arrays (EffectiveNames / CustomData /
+        // Roles) all have length 0 OR length nUsers. SlotCount picks the
+        // common slot count from whichever is populated; NormalizeSlotArray
+        // pads an empty array so the runtime can index it uniformly.
+
+        private static int SlotCount(LoadTestConfig c) => Math.Max(
+            (c.UserEffectiveNames ?? Array.Empty<string>()).Length,
+            Math.Max(
+                (c.UserCustomData ?? Array.Empty<string>()).Length,
+                (c.UserRoles      ?? Array.Empty<string>()).Length));
+
+        private static void ThrowIfMismatched(string[]? arr, int n, string name)
+        {
+            if (arr != null && arr.Length != 0 && arr.Length != n)
+                throw new ArgumentException(
+                    $"{name} must be empty or have {n} entries (matching the longest of the three impersonation arrays).",
+                    name);
+        }
+
+        private static string[] NormalizeSlotArray(string[]? arr, int n)
+        {
+            if (arr == null || arr.Length == 0) return new string[n];
+            return arr;
+        }
+
+        // Friendly per-slot label for log/error messages: prefer
+        // EffectiveUserName, fall back to CustomData, fall back to slot index.
+        private static string UserLabel(string[] effectiveNames, string[] customData, int i)
+        {
+            if (i < effectiveNames.Length && !string.IsNullOrEmpty(effectiveNames[i])) return effectiveNames[i];
+            if (i < customData.Length     && !string.IsNullOrEmpty(customData[i]))     return $"cd:{customData[i]}";
+            return $"slot-{i}";
         }
 
         private static string BuildStats(List<QueryResult> results, double totalMs,

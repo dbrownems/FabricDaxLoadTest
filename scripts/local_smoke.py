@@ -56,12 +56,12 @@ def main() -> int:
 
     queries_json = run_dir / "queries.json"
     users_json   = run_dir / "users.json"
-    # For local SSAS connections we don't have a real upn/role — pass empty
-    # to bypass EffectiveUserName / Roles clauses.
+    # For local SSAS connections we don't have a real identity — pass an
+    # empty entry to bypass EffectiveUserName / CustomData / Roles clauses.
     if args.no_token:
-        users_payload = [{"email": "", "role": ""}]
+        users_payload = [{}]
     else:
-        users_payload = [{"email": "anonymous@local", "role": ""}]
+        users_payload = [{"effectiveUserName": "anonymous@local"}]
     queries_json.write_text(json.dumps(['EVALUATE ROW("x", 1)']), encoding="utf-8")
     users_json.write_text(json.dumps(users_payload), encoding="utf-8")
 

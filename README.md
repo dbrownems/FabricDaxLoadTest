@@ -208,24 +208,17 @@ The notebook accepts any of these shapes for `queries.json`:
 
 #### User list formats
 
-`USERS_FILE` (Resources panel) or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation). To exercise RLS:
+`USERS_FILE` (Resources panel) or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation).
 
-- **Object array** with email + role:
+```json
+[
+  "alice@contoso.com",
+  { "effectiveUserName": "bob@contoso.com", "roles": ["Sales East"] },
+  { "customData": "USA" }
+]
+```
 
-  ```json
-  [
-    { "email": "alice@contoso.com", "role": "Sales East" },
-    { "email": "bob@contoso.com",   "role": "Sales West" }
-  ]
-  ```
-
-  `email` lands on the AS `EffectiveUserName=` connection property; `role` lands on `Roles=`. The notebook's token holder needs **Build** permission on the model and the right to test as those roles.
-
-- **String array** when you only care about `EffectiveUserName`:
-
-  ```json
-  [ "alice@contoso.com", "bob@contoso.com" ]
-  ```
+Each entry can be a string (sets `EffectiveUserName=` only) or an object with any of `effectiveUserName` / `customData` / `roles`. Roles can be a string or an array. See [docs/impersonation.md](docs/impersonation.md) for the full schema, combination semantics, model permissions, and a token-acquisition gotcha when running locally.
 
 `USERS_FILE` is **not** auto-discovered — pass an explicit filename. (Auto-discovery of a single `.json` in Resources always goes to `QUERIES_FILE`.)
 
@@ -233,7 +226,7 @@ The notebook accepts any of these shapes for `queries.json`:
 
 ## Local CLI
 
-The same `LoadGen` binary that runs in the notebook also runs locally — useful for ad-hoc tests against PBI in your tenant without involving a workspace lakehouse.
+The same `LoadGen` binary that runs in the notebook also runs locally — useful for ad-hoc tests against PBI in your tenant without involving a workspace lakehouse. See [docs/loadgen-cli.md](docs/loadgen-cli.md) for the full switch reference.
 
 ```bash
 git clone https://github.com/dbrownems/FabricDaxLoadTest.git

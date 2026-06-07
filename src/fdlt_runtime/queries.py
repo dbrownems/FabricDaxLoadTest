@@ -89,29 +89,59 @@ def normalize_queries(raw_json: str) -> list[str]:
 
 
 def normalize_users(raw_json: str) -> list[dict[str, str]]:
-    """Parse a users JSON blob into a list of ``{email, role}`` dicts.
+    """Parse a users JSON blob into a list of impersonation dicts.
+
+    Returns dicts with keys ``effectiveUserName``, ``customData``, ``roles``
+    (always all three; missing values default to ``""``). ``roles`` is a
+    comma-separated string when multiple roles apply (matching the AS
+    connection-string ``Roles=R1,R2`` wire format).
 
     Accepted shapes:
 
-      * Object array: ``[{"email": "...", "role": "..."}, ...]``
-        (case-insensitive keys)
-      * String array: ``["alice@contoso.com", "bob@contoso.com"]``
-        (roles default to "")
+      * Object array: ``[{"effectiveUserName": "...", "customData": "...",
+        "roles": "..." | ["..."]}, ...]`` (case-insensitive keys).
+      * Legacy aliases: ``email`` -> ``customData``, ``role`` -> ``roles``
+        (matches the v0.4.x semantic where the misnamed ``email`` field
+        actually drove ``CustomData``).
+      * String array: ``["alice@contoso.com", ...]`` -> each entry maps to
+        ``effectiveUserName`` (no customData/roles).
+
+    See ``docs/impersonation.md`` for combination semantics.
     """
     obj = json.loads(raw_json.lstrip("\ufeff"))
     if not isinstance(obj, list):
         raise ValueError("users.json must be a JSON array")
+
+    def _ci_get(d: dict, *keys: str) -> str:
+        lc = {k.lower(): v for k, v in d.items()}
+        for k in keys:
+            v = lc.get(k.lower())
+            if isinstance(v, str):
+                return v
+        return ""
+
     out: list[dict[str, str]] = []
     for u in obj:
         if isinstance(u, str):
-            email = u.strip()
-            if email:
-                out.append({"email": email, "role": ""})
-        elif isinstance(u, dict):
-            email = (u.get("email") or u.get("Email") or "").strip()
-            role = (u.get("role") or u.get("Role") or "")
-            if email:
-                out.append({"email": email, "role": role})
+            s = u.strip()
+            if s:
+                out.append({"effectiveUserName": s, "customData": "", "roles": ""})
+            continue
+        if not isinstance(u, dict):
+            continue
+        eun = _ci_get(u, "effectiveUserName").strip()
+        cd = _ci_get(u, "customData") or _ci_get(u, "email")  # email is legacy alias
+        roles_val = u.get("roles") or u.get("Roles") or u.get("role") or u.get("Role") or ""
+        if isinstance(roles_val, list):
+            roles = ",".join(str(r) for r in roles_val if isinstance(r, str) and r)
+        else:
+            roles = str(roles_val)
+        # Skip entirely-empty entries unless string shorthand asked for one.
+        if eun or cd or roles:
+            out.append({"effectiveUserName": eun, "customData": cd, "roles": roles})
+        elif not u:
+            # An empty {} is intentional: a slot with no impersonation.
+            out.append({"effectiveUserName": "", "customData": "", "roles": ""})
     return out
 
 
@@ -157,5 +187,5 @@ def load_users(
         return normalize_users(_read_text(p, read_abfss)), src
     inline = list(users_inline)
     if inline:
-        return [{"email": u.get("email", ""), "role": u.get("role", "")} for u in inline], "(USERS_INLINE)"
-    return [{"email": "anonymous@local", "role": ""}], "(default anonymous user)"
+        return normalize_users(json.dumps(inline)), "(USERS_INLINE)"
+    return [{"effectiveUserName": "", "customData": "", "roles": ""}], "(default anonymous user)"

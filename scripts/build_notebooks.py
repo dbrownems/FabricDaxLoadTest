@@ -157,9 +157,10 @@ def build_run():
          Fine for one-off tests; doesn't scale to large Scenarios.
 
        Optional: drop a `users.json` onto Resources too and set
-       `USERS_FILE = "users.json"` in cell 1 to drive role / EffectiveUserName
-       impersonation. Accepted shapes: `[{"email": "...", "role": "..."}, …]`
-       or `["alice@contoso.com", "bob@contoso.com"]`.
+       `USERS_FILE = "users.json"` in cell 1 to drive RLS / impersonation
+       via `EffectiveUserName=` / `CustomData=` / `Roles=` connection-string
+       properties. See [docs/impersonation.md](../docs/impersonation.md)
+       for the full schema.
 
     2. Edit cell **1** to point at the target workspace + dataset and tweak
        load parameters. `LOAD_TEST_NAME` defaults to the notebook name with
@@ -268,7 +269,7 @@ QUERIES_INLINE = [
 # ── Virtual users (optional impersonation list) ──────────────────────────────
 # USERS_FILE — name of a .json in this notebook's Resources panel
 # describing virtual-user identities for AS `EffectiveUserName=` /
-# `Roles=` impersonation. Resolution order:
+# `CustomData=` / `Roles=` impersonation. Resolution order:
 #
 #   1. None       → use `USERS_INLINE` below (or a single anonymous user).
 #   2. "name.json" → load `builtin/name.json` from Resources.
@@ -277,9 +278,10 @@ QUERIES_INLINE = [
 # Auto-discovery does NOT pick up a stray .json for users — single-.json
 # Resources always go to QUERIES_FILE. Users must be named explicitly.
 #
-# Accepted JSON shapes (see README → "User list formats"):
-#   • [{{"email": "alice@contoso.com", "role": "Sales"}}, …]
-#   • ["alice@contoso.com", "bob@contoso.com"]   (roles default to "")
+# Three entry shapes (see docs/impersonation.md for full semantics):
+#   • "alice@contoso.com"                              → EffectiveUserName
+#   • {{"effectiveUserName":"a","customData":"…","roles":["R1"]}}
+#   • {{"customData":"USA"}}                            → CUSTOMDATA() only
 USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 

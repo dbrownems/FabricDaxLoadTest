@@ -205,7 +205,7 @@ class Program
             return 1;
         }
 
-        (string email, string role)[] allUsers;
+        VirtualUser[] allUsers;
         try { allUsers = ParseUsers(File.ReadAllText(usersFile.FullName)); }
         catch (Exception ex)
         {
@@ -269,36 +269,42 @@ class Program
             });
         }
 
-        var emailArr = users.Select(u => u.email).ToArray();
-        var roleArr = users.Select(u => u.role).ToArray();
+        var emailArr = users.Select(u => u.EffectiveUserName).ToArray();
+        var customDataArr = users.Select(u => u.CustomData).ToArray();
+        var roleArr = users.Select(u => u.Roles).ToArray();
 
         Directory.CreateDirectory(logDir);
 
         return jsonProgress
-            ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
+            ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
                 logDir, logFile, skipResults, errorPolicy, enableTracing, users)
-            : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, roleArr,
+            : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
                 duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
                 logDir, logFile, skipResults, errorPolicy, enableTracing, users);
     }
+
+    // Per-virtual-user impersonation tuple. Any field may be empty to mean
+    // "do not set this connection-string property for this slot".
+    // See docs/impersonation.md.
+    internal sealed record VirtualUser(string EffectiveUserName, string CustomData, string Roles);
 
     // Legacy human-readable mode: stdout banner + log echo + PrintResults
     // summary. Preserved 1:1 for CLI users so a `dotnet run` against the
     // tool still feels familiar.
     static int RunHumanReadable(string[] queries, string xmlaEndpoint, string dataset,
-        string token, string[] emailArr, string[] roleArr,
+        string token, string[] emailArr, string[] customDataArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         bool enableTracing,
-        (string email, string role)[] users)
+        VirtualUser[] users)
     {
         string resultJson;
         try
         {
             resultJson = QueryRunner.RunLoadTest(
                 queries, xmlaEndpoint, dataset, token,
-                emailArr, roleArr,
+                emailArr, customDataArr, roleArr,
                 duration, queriesPerBatch,
                 pauseIter, pauseQuery,
                 logDir, rampTime, logFile,
@@ -324,11 +330,11 @@ class Program
     // graceful Cancel() instead of letting the runtime kill the process
     // mid-query and leak ADOMD connections.
     static int RunJsonProgress(string[] queries, string xmlaEndpoint, string dataset,
-        string token, string[] emailArr, string[] roleArr,
+        string token, string[] emailArr, string[] customDataArr, string[] roleArr,
         int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         bool enableTracing,
-        (string email, string role)[] users)
+        VirtualUser[] users)
     {
         var config = new LoadTestConfig
         {
@@ -336,7 +342,8 @@ class Program
             XmlaEndpoint = xmlaEndpoint,
             Dataset = dataset,
             Token = token,
-            UserEmails = emailArr,
+            UserEffectiveNames = emailArr,
+            UserCustomData = customDataArr,
             UserRoles = roleArr,
             DurationSeconds = duration,
             QueriesPerBatch = queriesPerBatch,
@@ -545,18 +552,67 @@ class Program
         }).ToArray();
     }
 
-    static (string email, string role)[] ParseUsers(string json)
+    // Parse users.json. Accepted shapes:
+    //   * Object array: [{"effectiveUserName": "...", "customData": "...",
+    //                     "roles": "..." | ["..."]}, ...]  (case-insensitive)
+    //   * Back-compat keys: "email" -> CustomData, "role" -> Roles.
+    //   * String array: ["alice@..."]  -> EffectiveUserName per slot.
+    //   * Empty {} entries are allowed (slot with no impersonation).
+    // See docs/impersonation.md.
+    static VirtualUser[] ParseUsers(string json)
     {
         using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("users.json must be a JSON array.");
+
         return doc.RootElement.EnumerateArray().Select(el =>
         {
-            var email = el.GetProperty("email").GetString()!;
-            var role = el.GetProperty("role").GetString()!;
-            return (email, role);
+            if (el.ValueKind == JsonValueKind.String)
+                return new VirtualUser(el.GetString() ?? "", "", "");
+
+            if (el.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException(
+                    $"users.json entries must be strings or objects (got {el.ValueKind}).");
+
+            string get(params string[] keys)
+            {
+                foreach (var k in keys)
+                    foreach (var p in el.EnumerateObject())
+                        if (string.Equals(p.Name, k, StringComparison.OrdinalIgnoreCase)
+                            && p.Value.ValueKind == JsonValueKind.String)
+                            return p.Value.GetString() ?? "";
+                return "";
+            }
+
+            string roles = get("roles", "role");
+            if (string.IsNullOrEmpty(roles))
+            {
+                // Roles array form: ["R1", "R2"] -> "R1,R2"
+                foreach (var p in el.EnumerateObject())
+                    if (string.Equals(p.Name, "roles", StringComparison.OrdinalIgnoreCase)
+                        && p.Value.ValueKind == JsonValueKind.Array)
+                    {
+                        roles = string.Join(",",
+                            p.Value.EnumerateArray()
+                                .Where(x => x.ValueKind == JsonValueKind.String)
+                                .Select(x => x.GetString()));
+                        break;
+                    }
+            }
+
+            // effectiveUserName preferred; "email" is a legacy alias for
+            // customData (NOT EffectiveUserName -- v0.4.x and earlier
+            // mapped "email" -> CustomData).
+            string eun = get("effectiveUserName", "effectiveusername");
+            string cd = get("customData", "customdata");
+            if (string.IsNullOrEmpty(cd))
+                cd = get("email"); // legacy alias
+
+            return new VirtualUser(eun, cd, roles);
         }).ToArray();
     }
 
-    static void PrintResults(string resultJson, (string email, string role)[] users)
+    static void PrintResults(string resultJson, VirtualUser[] users)
     {
         using var doc = JsonDocument.Parse(resultJson);
         var stats = doc.RootElement;
@@ -593,7 +649,11 @@ class Program
             foreach (var u in perUser.EnumerateArray())
             {
                 var idx = u.GetProperty("userIndex").GetInt32();
-                var email = idx < users.Length ? users[idx].email : $"user-{idx}";
+                var email = idx < users.Length
+                    ? (!string.IsNullOrEmpty(users[idx].EffectiveUserName)
+                        ? users[idx].EffectiveUserName
+                        : !string.IsNullOrEmpty(users[idx].CustomData) ? users[idx].CustomData : $"slot-{idx}")
+                    : $"user-{idx}";
                 var iters = u.GetProperty("iterations").GetInt32();
                 var execs = u.GetProperty("executions").GetInt32();
                 var errs = u.GetProperty("errors").GetInt32();

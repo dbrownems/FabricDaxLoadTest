@@ -1,5 +1,5 @@
 [
-  { "email": "user1@contoso.com", "role": "" },
-  { "email": "user2@contoso.com", "role": "" },
-  { "email": "user3@contoso.com", "role": "" }
+  "user1@contoso.com",
+  { "effectiveUserName": "user2@contoso.com", "roles": "Sales East" },
+  { "customData": "USA" }
 ]

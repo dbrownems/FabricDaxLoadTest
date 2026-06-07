@@ -117,10 +117,22 @@ def run_load_test(
     with open(queries_json, "w", encoding="utf-8") as f:
         json.dump(list(cfg.queries), f)
     with open(users_json, "w", encoding="utf-8") as f:
-        json.dump(
-            [{"email": u["email"], "role": u.get("role", "")} for u in cfg.users],
-            f,
-        )
+        # Write canonical v2 keys so LoadGen sees them directly. cfg.users
+        # has already been through normalize_users -- but if a caller
+        # bypassed that, fall back to the legacy email/role keys.
+        def _user_to_v2(u: dict) -> dict:
+            if "effectiveUserName" in u or "customData" in u:
+                return {
+                    "effectiveUserName": u.get("effectiveUserName", ""),
+                    "customData": u.get("customData", ""),
+                    "roles": u.get("roles", ""),
+                }
+            return {
+                "effectiveUserName": "",
+                "customData": u.get("email", ""),
+                "roles": u.get("role", ""),
+            }
+        json.dump([_user_to_v2(u) for u in cfg.users], f)
 
     cmd = [
         dotnet, loadgen_dll, "--json-progress",

@@ -28,7 +28,14 @@ namespace FabricDaxLoadTest
         public string XmlaEndpoint { get; set; } = "";
         public string Dataset { get; set; } = "";
         public string Token { get; set; } = "";
-        public string[] UserEmails { get; set; } = Array.Empty<string>();
+        // Per-slot impersonation arrays. All three are parallel; index `i`
+        // refers to the same virtual user. Any array may be empty (=> the
+        // corresponding connection-string property is omitted for every
+        // slot) or have UserCount entries. UserCount is derived from the
+        // longest of the three; all non-empty arrays must equal it.
+        // See docs/impersonation.md for semantics.
+        public string[] UserEffectiveNames { get; set; } = Array.Empty<string>();
+        public string[] UserCustomData { get; set; } = Array.Empty<string>();
         public string[] UserRoles { get; set; } = Array.Empty<string>();
         public int DurationSeconds { get; set; } = 60;
         public int QueriesPerBatch { get; set; } = 4;
