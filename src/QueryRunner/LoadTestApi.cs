@@ -38,7 +38,26 @@ namespace FabricDaxLoadTest
         public string[] UserCustomData { get; set; } = Array.Empty<string>();
         public string[] UserRoles { get; set; } = Array.Empty<string>();
         public int DurationSeconds { get; set; } = 60;
-        public int QueriesPerBatch { get; set; } = 4;
+
+        /// <summary>
+        /// Concurrent in-flight queries per virtual user. Each user has this
+        /// many ADOMD connections and a rolling drain over the iteration's
+        /// query list — when any connection finishes, it picks up the next
+        /// pending query (this matches Power BI Desktop, which fires up to
+        /// 6 visual queries concurrently and dispatches the next as each
+        /// one finishes; not in batched all-finish-then-fire-next-batch
+        /// rounds). 1 = strictly serial per user.
+        /// </summary>
+        public int ConcurrentQueriesPerUser { get; set; } = 4;
+
+        /// <summary>Deprecated alias for <see cref="ConcurrentQueriesPerUser"/>.</summary>
+        [Obsolete("Use ConcurrentQueriesPerUser. Retained for source compatibility.")]
+        public int QueriesPerBatch
+        {
+            get => ConcurrentQueriesPerUser;
+            set => ConcurrentQueriesPerUser = value;
+        }
+
         public int PauseBetweenIterationsMs { get; set; } = 1000;
         public int PauseBetweenQueriesMs { get; set; }
         public string? LogDirectory { get; set; }

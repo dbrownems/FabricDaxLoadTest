@@ -41,7 +41,7 @@ class RunConfig:
     # Load shape
     duration_seconds: int = 60
     concurrent_users: int = 5
-    queries_per_batch: int = 1
+    concurrent_queries_per_user: int = 1
     pause_between_iterations_ms: int = 1000
     pause_between_queries_ms: int = 0
     user_ramp_time_sec: int = 15
@@ -140,7 +140,7 @@ def run_load_test(
         "--dataset", cfg.target_dataset,
         "--duration", str(cfg.duration_seconds),
         "--users", str(cfg.concurrent_users),
-        "--queries-per-batch", str(cfg.queries_per_batch),
+        "--concurrent-queries-per-user", str(cfg.concurrent_queries_per_user),
         "--pause-iterations", str(cfg.pause_between_iterations_ms),
         "--pause-queries", str(cfg.pause_between_queries_ms),
         "--ramp-time", str(cfg.user_ramp_time_sec),

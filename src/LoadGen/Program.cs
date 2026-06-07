@@ -39,7 +39,13 @@ class Program
         var datasetOption = new Option<string>("--dataset", "Semantic model name") { IsRequired = true };
         var durationOption = new Option<int>("--duration", () => 60, "Test duration in seconds");
         var usersOption = new Option<int>("--users", () => 100, "Number of concurrent simulated users");
-        var queriesPerBatchOption = new Option<int>("--queries-per-batch", () => 1, "Concurrent queries per user");
+        var concurrentQueriesPerUserOption = new Option<int>(
+            aliases: new[] { "--concurrent-queries-per-user", "--queries-per-batch" },
+            getDefaultValue: () => 1,
+            description: "Concurrent in-flight queries per virtual user. Each user runs a rolling drain over " +
+                         "the iteration's queries — when one finishes, the next pending query is dispatched on " +
+                         "the freed connection (Power BI Desktop-style; not batched all-finish-then-fire-next). " +
+                         "1 = strictly serial. (--queries-per-batch retained as deprecated alias.)");
         var pauseIterOption = new Option<int>("--pause-iterations", () => 1000, "Pause between iterations (ms)");
         var pauseQueryOption = new Option<int>("--pause-queries", () => 0, "Pause between queries (ms)");
         var rampOption = new Option<int>("--ramp-time", () => 30, "User ramp-up time (seconds)");
@@ -68,7 +74,7 @@ class Program
         var rootCommand = new RootCommand("LoadGen — DAX load test runner for Power BI / Fabric semantic models")
         {
             xmlaOption, datasetOption, durationOption, usersOption,
-            queriesPerBatchOption, pauseIterOption, pauseQueryOption,
+            concurrentQueriesPerUserOption, pauseIterOption, pauseQueryOption,
             rampOption, replicaOption, queriesFileOption, usersFileOption,
             logDirOption, logFileOption, tokenOption, tokenFileOption,
             skipResultsOption, noAuthOption, jsonProgressOption,
@@ -81,7 +87,7 @@ class Program
             var dataset = ctx.ParseResult.GetValueForOption(datasetOption)!;
             var duration = ctx.ParseResult.GetValueForOption(durationOption);
             var userCount = ctx.ParseResult.GetValueForOption(usersOption);
-            var queriesPerBatch = ctx.ParseResult.GetValueForOption(queriesPerBatchOption);
+            var concurrentQueriesPerUser = ctx.ParseResult.GetValueForOption(concurrentQueriesPerUserOption);
             var pauseIter = ctx.ParseResult.GetValueForOption(pauseIterOption);
             var pauseQuery = ctx.ParseResult.GetValueForOption(pauseQueryOption);
             var rampTime = ctx.ParseResult.GetValueForOption(rampOption);
@@ -104,7 +110,7 @@ class Program
             };
             var noTrace = ctx.ParseResult.GetValueForOption(noTraceOption);
 
-            ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, queriesPerBatch,
+            ctx.ExitCode = RunOuter(xmla, dataset, duration, userCount, concurrentQueriesPerUser,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
                 logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
                 errorPolicy, enableTracing: !noTrace);
@@ -121,7 +127,7 @@ class Program
     // envelope on stdout — so the notebook subprocess reader would see
     // the stream EOF without a result|error envelope and have to guess.
     static int RunOuter(string xmla, string dataset, int duration, int userCount,
-        int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
         bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy,
@@ -129,7 +135,7 @@ class Program
     {
         try
         {
-            return Run(xmla, dataset, duration, userCount, queriesPerBatch,
+            return Run(xmla, dataset, duration, userCount, concurrentQueriesPerUser,
                 pauseIter, pauseQuery, rampTime, replica, queriesFile, usersFile,
                 logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
                 errorPolicy, enableTracing);
@@ -154,7 +160,7 @@ class Program
     // so they never collide with the JSON protocol. The notebook drains
     // stderr concurrently and surfaces it on failure.
     static int Run(string xmla, string dataset, int duration, int userCount,
-        int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
         string replica, FileInfo queriesFile, FileInfo usersFile,
         string logDir, string logFile, string? tokenDirect, FileInfo? tokenFile,
         bool skipResults, bool noAuth, bool jsonProgress, ErrorPolicy errorPolicy,
@@ -239,7 +245,7 @@ class Program
             info.WriteLine($"  Duration:    {duration}s");
             info.WriteLine($"  Users:       {userCount} (from {allUsers.Length} in users.json)");
             info.WriteLine($"  Queries:     {queries.Length}");
-            info.WriteLine($"  Per batch:   {queriesPerBatch}");
+            info.WriteLine($"  Concurrent/user: {concurrentQueriesPerUser}");
             info.WriteLine($"  Pause iter:  {pauseIter}ms");
             info.WriteLine($"  Pause query: {pauseQuery}ms");
             info.WriteLine($"  Ramp time:   {rampTime}s");
@@ -262,7 +268,7 @@ class Program
                 ["duration"] = duration,
                 ["users"] = userCount,
                 ["queries"] = queries.Length,
-                ["queriesPerBatch"] = queriesPerBatch,
+                ["concurrentQueriesPerUser"] = concurrentQueriesPerUser,
                 ["rampTime"] = rampTime,
                 ["logDir"] = logDir,
                 ["skipResults"] = skipResults,
@@ -277,10 +283,10 @@ class Program
 
         return jsonProgress
             ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
-                duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
+                duration, concurrentQueriesPerUser, pauseIter, pauseQuery, rampTime,
                 logDir, logFile, skipResults, errorPolicy, enableTracing, users)
             : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
-                duration, queriesPerBatch, pauseIter, pauseQuery, rampTime,
+                duration, concurrentQueriesPerUser, pauseIter, pauseQuery, rampTime,
                 logDir, logFile, skipResults, errorPolicy, enableTracing, users);
     }
 
@@ -294,7 +300,7 @@ class Program
     // tool still feels familiar.
     static int RunHumanReadable(string[] queries, string xmlaEndpoint, string dataset,
         string token, string[] emailArr, string[] customDataArr, string[] roleArr,
-        int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        int duration, int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         bool enableTracing,
         VirtualUser[] users)
@@ -305,7 +311,7 @@ class Program
             resultJson = QueryRunner.RunLoadTest(
                 queries, xmlaEndpoint, dataset, token,
                 emailArr, customDataArr, roleArr,
-                duration, queriesPerBatch,
+                duration, concurrentQueriesPerUser,
                 pauseIter, pauseQuery,
                 logDir, rampTime, logFile,
                 skipResults,
@@ -331,7 +337,7 @@ class Program
     // mid-query and leak ADOMD connections.
     static int RunJsonProgress(string[] queries, string xmlaEndpoint, string dataset,
         string token, string[] emailArr, string[] customDataArr, string[] roleArr,
-        int duration, int queriesPerBatch, int pauseIter, int pauseQuery, int rampTime,
+        int duration, int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
         bool enableTracing,
         VirtualUser[] users)
@@ -346,7 +352,7 @@ class Program
             UserCustomData = customDataArr,
             UserRoles = roleArr,
             DurationSeconds = duration,
-            QueriesPerBatch = queriesPerBatch,
+            ConcurrentQueriesPerUser = concurrentQueriesPerUser,
             PauseBetweenIterationsMs = pauseIter,
             PauseBetweenQueriesMs = pauseQuery,
             LogDirectory = logDir,

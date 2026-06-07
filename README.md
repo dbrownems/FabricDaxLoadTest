@@ -259,7 +259,7 @@ az account get-access-token --resource "https://analysis.windows.net/powerbi/api
 | `--duration` | 60 | Test duration in seconds |
 | `--users` | 100 | Concurrent simulated users |
 | `--ramp-time` | 30 | Seconds to ramp from 0 → `--users` |
-| `--queries-per-batch` | 1 | Concurrent queries per user |
+| `--concurrent-queries-per-user` | 1 | In-flight queries per user (rolling drain) |
 | `--pause-iterations` | 1000 | Pause between iterations (ms) |
 | `--pause-queries` | 0 | Pause after each query (ms) |
 | `--replica` | `""` | `readonly` to target the scale-out read replica |

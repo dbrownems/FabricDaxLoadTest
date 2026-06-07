@@ -36,39 +36,46 @@ the response, then issues the next. There is no fixed-rate firing.
 
 | Arg                   | Default | What it does                                                                                            |
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
-| `--users`             | 100     | Number of concurrent virtual users (= number of slots in the per-user queue, = parallel ADOMD connections × `--queries-per-batch`). |
+| `--users`             | 100     | Number of concurrent virtual users. Each user owns its own ADOMD connection pool and DAX iteration loop. |
 | `--duration`          | 60      | Wall-clock seconds. Each user finishes its current iteration after this elapses; tail can run a few seconds longer. |
-| `--queries-per-batch` | 1       | How many queries each user fires concurrently (per iteration). `1` = strictly serial per user. Higher values stress the per-user connection multiplexing. |
+| `--concurrent-queries-per-user` | 1 | In-flight DAX queries per user. Each user has this many ADOMD connections and a **rolling drain** over the iteration's query list — when any connection finishes, the next pending query is dispatched on the freed connection. This matches Power BI Desktop, which fires up to 6 visual queries concurrently and dispatches the next as each finishes (not in batched all-finish-then-fire-next-batch rounds). `1` = strictly serial per user. (`--queries-per-batch` retained as a deprecated alias.) |
 | `--ramp-time`         | 30      | Seconds over which to stagger the start of all users (linearly). `0` = all start together (cold-cache hammer).        |
-| `--pause-iterations`  | 1000ms  | Sleep between iterations (one full pass through the query list).                                        |
-| `--pause-queries`     | 0ms     | Sleep between individual queries within an iteration.                                                   |
+| `--pause-iterations`  | 1000ms  | Sleep between iterations (one full pass through the query list). Applied per-user once all queries in the iteration have completed. |
+| `--pause-queries`     | 0ms     | Sleep on a connection after each individual query completes, before that connection picks up the next pending query. |
 
 ### How a "user" iterates
 
-Each slot's loop is:
+With `--concurrent-queries-per-user=N`, each virtual user runs N
+worker tasks sharing one queue per iteration:
 
 ```
 for iter in 0..∞:
-  for query in queries:
-    fire(query); wait_response(); sleep(pause-queries)
+  enqueue all queries
+  N workers (each holds 1 ADOMD connection) run in parallel:
+    while queue not empty:
+      q = dequeue();  fire(q);  wait_response();  sleep(pause-queries)
+  await all N workers   ← end of iteration
   sleep(pause-iterations)
   exit if duration elapsed
 ```
 
-When `queries-per-batch > 1`, the inner loop fires the next N queries in
-parallel (across N ADOMD connections) and waits for all of them before
-moving on.
+So **a slow query never blocks a fast worker** — the fast worker just
+picks up the next pending query and keeps going. The end-of-iteration
+barrier exists only so `pause-iterations` think-time is honored once
+per pass through the query list.
 
 ### Choosing values
 
 - **Capacity planning** ("how many users can this thing serve?"): set
-  `--queries-per-batch=1`, ramp slowly (`--ramp-time` ≈ duration/2), pick
-  realistic `--pause-iterations` matching real user think time. Sweep
+  `--concurrent-queries-per-user=1`, ramp slowly (`--ramp-time` ≈ duration/2),
+  pick realistic `--pause-iterations` matching real user think time. Sweep
   `--users`.
 - **Cold-cache hit-rate measurement**: set `--ramp-time=0` so all users
   pile in at once.
-- **Per-user multiplexing stress**: keep `--users` low, raise
-  `--queries-per-batch`.
+- **Power-BI-Desktop-like load** (one user opening a report with many
+  visuals): keep `--users` low (1-3) and set
+  `--concurrent-queries-per-user=6` to match Desktop's per-report
+  parallelism cap.
 
 ## Other options
 

@@ -228,9 +228,16 @@ LOAD_TEST_DESCRIPTION = ""               # optional free-text notes for the run
 DURATION_SECONDS             = 60     # how long virtual users execute queries
 CONCURRENT_USERS             = 25     # max concurrency at steady state
 USER_RAMP_TIME_SEC           = 15     # linear ramp from 0 → CONCURRENT_USERS
-QUERIES_PER_BATCH            = 1      # queries per user iteration (>1 = bursts)
-PAUSE_BETWEEN_ITERATIONS_MS  = 1000   # think-time between batches per user
-PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside a batch
+CONCURRENT_QUERIES_PER_USER  = 1      # in-flight queries per user. Each user
+                                      #   has this many ADOMD connections and
+                                      #   rolls through the iteration's queries:
+                                      #   when one finishes, the next pending
+                                      #   query is dispatched on the freed
+                                      #   connection (Power BI Desktop-style;
+                                      #   not batched all-finish-then-fire).
+                                      #   1 = strictly serial.
+PAUSE_BETWEEN_ITERATIONS_MS  = 1000   # think-time between iterations per user
+PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside an iteration
 SKIP_RESULTS                 = False  # True → drain rows without parsing
                                       #   useful for stress-testing the engine
                                       #   when result-set parsing would dominate
@@ -382,7 +389,7 @@ outcome = fdlt_nb.run(
     target_replica=TARGET_REPLICA,
     duration_seconds=DURATION_SECONDS,
     concurrent_users=CONCURRENT_USERS,
-    queries_per_batch=QUERIES_PER_BATCH,
+    concurrent_queries_per_user=CONCURRENT_QUERIES_PER_USER,
     pause_between_iterations_ms=PAUSE_BETWEEN_ITERATIONS_MS,
     pause_between_queries_ms=PAUSE_BETWEEN_QUERIES_MS,
     user_ramp_time_sec=USER_RAMP_TIME_SEC,

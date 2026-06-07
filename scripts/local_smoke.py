@@ -75,7 +75,7 @@ def main() -> int:
         "--dataset", args.dataset,
         "--duration", str(args.duration),
         "--users", str(args.users),
-        "--queries-per-batch", "1",
+        "--concurrent-queries-per-user", "1",
         "--pause-iterations", "100",
         "--pause-queries", "0",
         "--ramp-time", str(args.ramp),

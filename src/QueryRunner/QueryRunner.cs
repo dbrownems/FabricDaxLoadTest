@@ -344,7 +344,7 @@ namespace FabricDaxLoadTest
         public static string RunLoadTest(
             string[] queries, string xmlaEndpoint, string dataset, string token,
             string[] userEffectiveNames, string[] userCustomData, string[] userRoles,
-            int durationSeconds = 60, int queriesPerBatch = 4,
+            int durationSeconds = 60, int concurrentQueriesPerUser = 4,
             int pauseBetweenIterationsMs = 1000, int pauseBetweenQueriesMs = 0,
             string? logDirectory = null, int userRampTimeSec = 0,
             string? logFileName = null,
@@ -363,7 +363,7 @@ namespace FabricDaxLoadTest
                 UserCustomData = userCustomData,
                 UserRoles = userRoles,
                 DurationSeconds = durationSeconds,
-                QueriesPerBatch = queriesPerBatch,
+                ConcurrentQueriesPerUser = concurrentQueriesPerUser,
                 PauseBetweenIterationsMs = pauseBetweenIterationsMs,
                 PauseBetweenQueriesMs = pauseBetweenQueriesMs,
                 LogDirectory = logDirectory,
@@ -447,8 +447,8 @@ namespace FabricDaxLoadTest
             // The Service / Fabric XMLA endpoint will reject an empty-token connection at Open().
             if (config.DurationSeconds <= 0)
                 throw new ArgumentException("DurationSeconds must be > 0.", nameof(config));
-            if (config.QueriesPerBatch <= 0)
-                throw new ArgumentException("QueriesPerBatch must be > 0.", nameof(config));
+            if (config.ConcurrentQueriesPerUser <= 0)
+                throw new ArgumentException("ConcurrentQueriesPerUser must be > 0.", nameof(config));
             if (config.UserRampTimeSec < 0)
                 throw new ArgumentException("UserRampTimeSec must be >= 0.", nameof(config));
         }
@@ -466,7 +466,7 @@ namespace FabricDaxLoadTest
             var userRoles          = NormalizeSlotArray(config.UserRoles,          SlotCount(config));
             int nUsers = userRoles.Length;
             int durationSeconds = config.DurationSeconds;
-            int queriesPerBatch = config.QueriesPerBatch;
+            int concurrentQueriesPerUser = config.ConcurrentQueriesPerUser;
             int pauseBetweenIterationsMs = config.PauseBetweenIterationsMs;
             int pauseBetweenQueriesMs = config.PauseBetweenQueriesMs;
             string? logDirectory = config.LogDirectory;
@@ -523,7 +523,7 @@ namespace FabricDaxLoadTest
                 TargetUsers = nUsers,
             });
 
-            Log($"Starting: {nUsers} users, {queries.Length} queries, {durationSeconds}s, {queriesPerBatch} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
+            Log($"Starting: {nUsers} users, {queries.Length} queries, {durationSeconds}s, {concurrentQueriesPerUser} concurrent/user, pause={pauseBetweenIterationsMs}ms/iter, {pauseBetweenQueriesMs}ms/query, ramp={userRampTimeSec}s, skipResults={skipResults}");
             if (textLogPath != null)
                 Log($"Text log: {textLogPath}");
 
@@ -641,7 +641,7 @@ namespace FabricDaxLoadTest
             // hit the ThreadPool's slow injection rate (~1 thread per 500ms-1s) and ramp serializes.
             // Setting MinThreads up-front makes the pool eagerly create workers on demand
             // instead of throttling injection.
-            int targetWorkers = Math.Max(nUsers * Math.Max(1, queriesPerBatch) + 32, 64);
+            int targetWorkers = Math.Max(nUsers * Math.Max(1, concurrentQueriesPerUser) + 32, 64);
             ThreadPool.GetMinThreads(out int minWorker0, out int minIo0);
             ThreadPool.GetMaxThreads(out int maxWorker, out int maxIo);
             int newMinWorker = Math.Min(targetWorkers, maxWorker);
@@ -711,8 +711,8 @@ namespace FabricDaxLoadTest
                     try
                     {
                         var sw = Stopwatch.StartNew();
-                        connections = new IDbConnection[queriesPerBatch];
-                        for (int c = 0; c < queriesPerBatch; c++)
+                        connections = new IDbConnection[concurrentQueriesPerUser];
+                        for (int c = 0; c < concurrentQueriesPerUser; c++)
                         {
                             connections[c] = new AdomdConnection(connStrings[userIdx]);
                             connections[c].Open();
@@ -735,7 +735,7 @@ namespace FabricDaxLoadTest
                     }
 
                     SimulateUserWithConnections(userIdx, queries, UserLabel(userEffectiveNames, userCustomData, userIdx),
-                        queriesPerBatch, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
+                        concurrentQueriesPerUser, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
                         testStart, runId, testStartTime, telemetryQueue,
                         config.ErrorPolicy, cts.Token);
@@ -840,7 +840,7 @@ namespace FabricDaxLoadTest
                 Log($"WARNING: Only {connectedUsers}/{nUsers} users connected successfully");
 
             // ── Connection summary after ramp-up ──
-            int totalConns = connectedUsers * queriesPerBatch;
+            int totalConns = connectedUsers * concurrentQueriesPerUser;
             // Distinct identities = distinct (effectiveName,customData) pairs.
             var distinctEmails = Enumerable.Range(0, nUsers)
                 .Select(i => UserLabel(userEffectiveNames, userCustomData, i))
@@ -855,7 +855,7 @@ namespace FabricDaxLoadTest
             Log($"│  Users:             {connectedUsers,-20}│");
             Log($"│  Distinct emails:   {distinctEmails,-20}│");
             Log($"│  Distinct roles:    {distinctRoles,-20}│");
-            Log($"│  Connections/user:  {queriesPerBatch,-20}│");
+            Log($"│  Connections/user:  {concurrentQueriesPerUser,-20}│");
             Log($"│  Total connections: {totalConns,-20}│");
             Log($"│  Avg connect time:  {avgConnMs:F0}ms{new string(' ', Math.Max(0, 17 - avgConnMs.ToString("F0").Length))}│");
             Log($"│  Ramp-up time:      {testStart.Elapsed.TotalSeconds:F1}s{new string(' ', Math.Max(0, 17 - testStart.Elapsed.TotalSeconds.ToString("F1").Length))}│");
@@ -1047,7 +1047,7 @@ namespace FabricDaxLoadTest
 
         private static void SimulateUserWithConnections(
             int userIndex, string[] queries, string email,
-            int queriesPerBatch, int pauseMs, int pauseBetweenQueriesMs,
+            int concurrentQueriesPerUser, int pauseMs, int pauseBetweenQueriesMs,
             IDbConnection[] connections, string connStr,
             bool skipResults,
             Stopwatch testStart,
