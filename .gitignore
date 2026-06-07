@@ -49,3 +49,6 @@ src/fdlt_runtime/_version.py
 __pycache__/
 *.pyc
 
+
+# Local diagnostic probes (not part of the shipped product)
+tools/xmla-impersonation-probe/
