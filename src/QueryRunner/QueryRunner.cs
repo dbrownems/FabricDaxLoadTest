@@ -561,20 +561,23 @@ namespace FabricDaxLoadTest
                     var runIdLocal = runId;
                     traceWriterTask = Task.Run(async () =>
                     {
+                        // Buffered writer: keep one file handle open for the
+                        // life of the run instead of doing open/write/close
+                        // per row (File.AppendAllText). Buffer is sized for
+                        // ~500 trace events (~256 KB at ~500 B/event avg);
+                        // StreamWriter flushes on its own when full and is
+                        // also explicitly flushed in finally so partial
+                        // buffers reach disk on every exit path (normal
+                        // completion, exception, cancellation).
+                        const int bufBytes = 256 * 1024;
+                        FileStream? fs = null;
+                        StreamWriter? sw = null;
                         try
                         {
-                            // Buffered writer: keep one file handle open for the
-                            // life of the run instead of doing open/write/close
-                            // per row (File.AppendAllText). Buffer is sized for
-                            // ~500 trace events (~256 KB at ~500 B/event avg);
-                            // StreamWriter flushes on its own when full and on
-                            // Dispose. This avoids ~4 syscalls per event and is
-                            // what unsticks the writer task at high event rates.
-                            const int bufBytes = 256 * 1024;
-                            using var fs = new FileStream(
+                            fs = new FileStream(
                                 traceFile, FileMode.Append, FileAccess.Write,
                                 FileShare.Read, bufferSize: bufBytes);
-                            using var sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
+                            sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
                             await foreach (var ev in traceCapture.Events.ReadAllAsync().ConfigureAwait(false))
                             {
                                 sw.Write(runIdLocal.ToString("D")); sw.Write(',');
@@ -595,6 +598,24 @@ namespace FabricDaxLoadTest
                         catch (Exception ex)
                         {
                             Log($"Trace writer error: {ex.GetType().Name}: {ex.Message}");
+                        }
+                        finally
+                        {
+                            // Flush order matters: StreamWriter buffers chars
+                            // in user space, FileStream buffers bytes before
+                            // the OS write. We must Flush sw FIRST (pushing
+                            // chars -> fs's byte buffer), THEN Flush fs
+                            // (pushing bytes -> OS), then dispose. Disposing
+                            // sw before fs is also valid because StreamWriter
+                            // owns the underlying stream by default and
+                            // Dispose will flush+close fs in the correct
+                            // order — but we do it explicitly here so the
+                            // intent is visible and any I/O failure surfaces
+                            // in the log instead of being swallowed.
+                            try { sw?.Flush(); } catch (Exception ex) { Log($"Trace writer sw.Flush error: {ex.GetType().Name}: {ex.Message}"); }
+                            try { fs?.Flush(); } catch (Exception ex) { Log($"Trace writer fs.Flush error: {ex.GetType().Name}: {ex.Message}"); }
+                            try { sw?.Dispose(); } catch { } // also disposes fs (StreamWriter owns it)
+                            try { fs?.Dispose(); } catch { } // idempotent / safe after sw.Dispose
                         }
                     });
                 }
