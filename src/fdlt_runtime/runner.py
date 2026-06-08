@@ -92,6 +92,7 @@ def run_load_test(
     dotnet: str,
     loadgen_dll: str,
     on_status: Optional[Callable[[Dict[str, Any]], None]] = None,
+    log_folder: Optional[str] = None,
 ) -> RunResult:
     """Launch LoadGen, stream JSONL progress, and return a RunResult.
 
@@ -100,12 +101,31 @@ def run_load_test(
     progress envelope formatted; this lets cell 3 own the IPython
     `update_display` calls without burying the formatting in here.
 
+    `log_folder` controls where the LoadGen subprocess writes its
+    artifacts (executions CSV, trace CSV, *.log). When None (default),
+    a fresh ``/tmp/fdlt-run-<id>`` dir is used — driver-local, fast,
+    and discarded when the kernel cycles. Pass a local path
+    (e.g. ``/lakehouse/default/Files/loadtest-logs``) to write
+    directly to that location — useful when you want artifacts to land
+    in OneLake live during the run rather than via the post-run copy.
+    ``abfss://`` URLs are NOT supported here (the .NET process can't
+    write to OneLake directly); the caller should leave ``log_folder``
+    None and use a notebookutils-based copy after the run instead.
+
     Cancellation: a `KeyboardInterrupt` raised by the caller (Spark
     "Interrupt Kernel") is forwarded to the child as SIGINT; LoadGen
     drains and exits with code 130.
     """
     staging_id = uuid.uuid4().hex[:8]
-    run_local = f"/tmp/fdlt-run-{staging_id}"
+    if log_folder is None:
+        run_local = f"/tmp/fdlt-run-{staging_id}"
+    else:
+        if log_folder.startswith("abfss://"):
+            raise ValueError(
+                "run_load_test() log_folder must be a local path. "
+                "abfss:// destinations are post-run copies handled by "
+                "notebook.py::_persist_run_logs.")
+        run_local = os.path.join(log_folder, f"fdlt-run-{staging_id}")
     os.makedirs(run_local, exist_ok=True)
     log_file = (
         f"LoadTest.{cfg.concurrent_users}u."

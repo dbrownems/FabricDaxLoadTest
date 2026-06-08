@@ -161,10 +161,26 @@ def run(
     queries_inline: Optional[Sequence[str]] = None,
     users_file: Optional[str] = None,
     users_inline: Optional[Sequence[Mapping[str, str]]] = None,
+    # Where LoadGen writes its artifacts (CSV/trace/log)
+    log_folder: Optional[str] = None,
     # Spark for the Delta writer (auto-fetched if None)
     spark: Any = None,
 ) -> RunOutcome:
-    """Resolve target + run LoadGen + persist Delta tables. One-shot."""
+    """Resolve target + run LoadGen + persist Delta tables. One-shot.
+
+    ``log_folder`` controls where the LoadGen subprocess writes its
+    artifacts:
+      * ``None`` (default) → ``/tmp/fdlt-run-<id>`` on the Spark driver;
+        a post-run copy of ``*.log`` / ``*.trace.csv`` lands under
+        ``{default_lakehouse}/Files/run-logs/<run_id>/``.
+      * Local path (e.g. ``/lakehouse/default/Files/loadtest-logs``) →
+        LoadGen writes there directly. No post-run copy needed; the
+        artifacts already live in OneLake.
+      * ``abfss://...`` URL → LoadGen still writes to /tmp (the .NET
+        process can't target OneLake directly), but the post-run copy
+        targets ``<abfss>/<run_id>/`` instead of the default
+        Files/run-logs/ location.
+    """
     import notebookutils  # type: ignore[import-not-found]
 
     from . import __version__
@@ -220,9 +236,17 @@ def run(
 
     on_status = _make_on_status()
 
+    # log_folder semantics:
+    #   None / "abfss://..."  →  LoadGen writes to /tmp (driver-local)
+    #   local path            →  LoadGen writes there directly (live to OneLake
+    #                            via /lakehouse/default mount etc.)
+    runner_log_folder = None
+    if log_folder and not log_folder.startswith("abfss://"):
+        runner_log_folder = log_folder
+
     rr = run_load_test(
         cfg, dotnet=boot.dotnet, loadgen_dll=boot.loadgen_dll,
-        on_status=on_status)
+        on_status=on_status, log_folder=runner_log_folder)
 
     # Forensic artifacts (executions CSV, trace CSV, result.json, *.log)
     # stay on the Spark driver's local disk under run_local_dir. We
@@ -293,28 +317,38 @@ def run(
         else:
             print("  SQL sync   : (skipped — no sqlEndpointId on lakehouse)")
 
-        # Best-effort: copy the LoadGen *.log + *.trace.csv from the
-        # driver's run_local_dir to OneLake Files/run-logs/<run_id>/ so
-        # they survive kernel cycles. Drives post-mortem diagnosis of
-        # issues like trace-stream truncation that aren't reconstructable
-        # from the Delta tables alone.
-        try:
-            _persist_run_logs(rr, boot.lakehouse, write_summary.run_id)
-        except Exception as ex:  # noqa: BLE001 — best-effort
-            print(f"  Log copy   : (warning: {ex})")
+        # Persist LoadGen *.log + *.trace.csv so they survive kernel
+        # cycles. Routing depends on log_folder:
+        #   None              → copy to {default_lh}/Files/run-logs/<run_id>/
+        #   "abfss://..."     → copy to <log_folder>/<run_id>/
+        #   local path        → SKIP (LoadGen already wrote them there)
+        if log_folder and not log_folder.startswith("abfss://"):
+            print(f"  Log copy   : (skipped — LoadGen wrote directly to {log_folder})")
+        else:
+            try:
+                _persist_run_logs(
+                    rr, boot.lakehouse, write_summary.run_id,
+                    dest_override=log_folder,  # None or abfss://
+                )
+            except Exception as ex:  # noqa: BLE001 — best-effort
+                print(f"  Log copy   : (warning: {ex})")
 
     return RunOutcome(
         result=rr, write_summary=write_summary,
         load_test_name=resolved_name, cfg=cfg, run_dest=run_dest)
 
 
-def _persist_run_logs(rr: RunResult, lh, run_id: str) -> None:
+def _persist_run_logs(rr: RunResult, lh, run_id: str,
+                      dest_override: Optional[str] = None) -> None:
     """Copy *.log + *.trace.csv from rr.run_local_dir to OneLake.
 
-    Destination: ``{lakehouse-abfss}/Files/run-logs/{run_id}/``. Uses
-    ``notebookutils.fs.cp`` when available (the standard Fabric notebook
-    path); falls back to the ``/lakehouse/default/Files/...`` mount when
-    it's the configured default lakehouse. Caller wraps in try/except.
+    Default destination: ``{lakehouse-abfss}/Files/run-logs/{run_id}/``.
+    Pass ``dest_override="abfss://.../some/folder"`` to redirect to an
+    arbitrary lakehouse folder; the run_id is appended as a
+    subdirectory. Uses ``notebookutils.fs.cp`` when available (the
+    standard Fabric notebook path); falls back to the
+    ``/lakehouse/default/Files/...`` mount when it's the configured
+    default lakehouse. Caller wraps in try/except.
     """
     import glob
     import os
@@ -325,7 +359,12 @@ def _persist_run_logs(rr: RunResult, lh, run_id: str) -> None:
              sorted(glob.glob(os.path.join(src_dir, "*.trace.csv"))))
     if not files:
         return
-    dest_dir_abfss = f"{lh.abfss}/Files/run-logs/{run_id}"
+    if dest_override:
+        # Strip any trailing slash from the user's folder URL so we
+        # don't end up with a double-slash before the run_id segment.
+        dest_dir_abfss = f"{dest_override.rstrip('/')}/{run_id}"
+    else:
+        dest_dir_abfss = f"{lh.abfss}/Files/run-logs/{run_id}"
 
     # Prefer notebookutils.fs.cp — it knows how to authenticate against
     # OneLake from the running Spark driver without an explicit token.

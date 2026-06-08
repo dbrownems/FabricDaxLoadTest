@@ -248,6 +248,30 @@ ENABLE_TRACING               = True   # subscribe to dataset XMLA trace and
                                       #   Requires Build/Read on the dataset.
                                       #   Set False to skip tracing entirely.
 
+# ── Log folder (where LoadGen writes CSV / trace / *.log) ────────────────────
+# Controls the destination of the LoadGen subprocess's raw artifacts
+# (executions CSV, engine trace CSV, *.log). The Delta tables are
+# always written to the lakehouse regardless of this setting — this
+# only affects the raw forensic files.
+#
+#   None
+#     /tmp/fdlt-run-<id>/ on the Spark driver. Fast (local SSD) but
+#     discarded when the kernel cycles. After the run, *.log and
+#     *.trace.csv are copied to
+#     {{LAKEHOUSE}}/Files/run-logs/<RunId>/ so they survive.
+#   "/lakehouse/default/Files/<folder>" (or any other local path)
+#     LoadGen writes directly there — files are visible in OneLake
+#     LIVE as the run progresses. No post-run copy. Use this when you
+#     want to tail logs in real time, or when the run might be killed
+#     before completion.
+#   "abfss://..."
+#     LoadGen still writes to /tmp (the .NET process can't target
+#     OneLake directly), but the post-run copy lands under
+#     <LOG_FOLDER>/<RunId>/ instead of the default Files/run-logs/.
+#     Use this to redirect to a different lakehouse / folder for
+#     long-term retention or shared review.
+LOG_FOLDER = None
+
 # ── Load Test Scenario (queries) ─────────────────────────────────────────────
 # QUERIES_FILE — name of a .json in this notebook's *Resources* panel
 # (left sidebar). Cell 3 resolves it in this order:
@@ -301,6 +325,11 @@ USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 # Forms supported:
 #   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/vX.Y.Z/fdlt_runtime-X.Y.Z-py3-none-any.whl
 #       (default — direct from GitHub; needs outbound internet from Spark)
+#   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/v*.*.*/fdlt_runtime-*.*.*-py3-none-any.whl
+#       (wildcard — `*.*.*` is resolved at run time to the latest GitHub
+#        release tag. Use this to opt INTO auto-upgrade on every Run-All;
+#        skip it to stay pinned to a specific version. Resolution is a
+#        single unauthenticated GET against the public releases API.)
 #   - abfss://<wsid>@onelake.dfs.fabric.microsoft.com/<lhid>/Files/<file>.whl
 #       (offline-friendly — set by scripts/Deploy-LoadTests.ps1)
 #   - /lakehouse/default/Files/<file>.whl
@@ -327,8 +356,22 @@ if WHEEL_URL == _SENTINEL:
         "scripts/Deploy-LoadTests.ps1 (patches the URL to the locally "
         "uploaded wheel), or paste a release wheel URL by hand.")
 
-import importlib, os, subprocess, sys
+import importlib, json, os, subprocess, sys, urllib.request
 import notebookutils
+
+# `*.*.*` is a "always use latest release" opt-in. Resolve it to the
+# current GitHub release tag (e.g. v0.9.2) before any other URL
+# handling. One GET against the public releases API; failures bubble
+# up so the user knows their wildcard didn't resolve (vs. silently
+# falling back to a stale pin).
+if "*.*.*" in WHEEL_URL:
+    _api = "https://api.github.com/repos/dbrownems/FabricDaxLoadTest/releases/latest"
+    print(f"WHEEL_URL contains *.*.* — resolving latest release from {_api}")
+    with urllib.request.urlopen(_api, timeout=30) as _r:
+        _tag = json.loads(_r.read().decode("utf-8"))["tag_name"]
+    _ver = _tag.lstrip("v")
+    WHEEL_URL = WHEEL_URL.replace("v*.*.*", _tag).replace("*.*.*", _ver)
+    print(f"Resolved WHEEL_URL = {WHEEL_URL}")
 
 if WHEEL_URL.startswith("abfss://"):
     # pip requires wheel filenames to match PEP 427 (name-version-...-py3-none-any.whl);
@@ -353,7 +396,7 @@ _pip = subprocess.run(
     capture_output=True, text=True, timeout=180)
 if _pip.returncode != 0:
     raise RuntimeError(
-        f"pip install of {{_src}} failed:\n{{_pip.stderr or _pip.stdout}}")
+        f"pip install of {_src} failed:\n{_pip.stderr or _pip.stdout}")
 
 # Purge any cached fdlt_runtime modules so the import picks up the
 # just-installed wheel (relevant on subsequent Run-All cycles when the
@@ -399,6 +442,7 @@ outcome = fdlt_nb.run(
     queries_inline=QUERIES_INLINE,
     users_file=USERS_FILE,
     users_inline=USERS_INLINE,
+    log_folder=LOG_FOLDER,
     spark=spark,
 )
 """)
