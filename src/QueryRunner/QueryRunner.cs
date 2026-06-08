@@ -563,22 +563,32 @@ namespace FabricDaxLoadTest
                     {
                         try
                         {
+                            // Buffered writer: keep one file handle open for the
+                            // life of the run instead of doing open/write/close
+                            // per row (File.AppendAllText). Buffer is sized for
+                            // ~500 trace events (~256 KB at ~500 B/event avg);
+                            // StreamWriter flushes on its own when full and on
+                            // Dispose. This avoids ~4 syscalls per event and is
+                            // what unsticks the writer task at high event rates.
+                            const int bufBytes = 256 * 1024;
+                            using var fs = new FileStream(
+                                traceFile, FileMode.Append, FileAccess.Write,
+                                FileShare.Read, bufferSize: bufBytes);
+                            using var sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
                             await foreach (var ev in traceCapture.Events.ReadAllAsync().ConfigureAwait(false))
                             {
-                                var line = new StringBuilder();
-                                line.Append(runIdLocal.ToString("D")).Append(',')
-                                    .Append(ev.UtcTimestamp.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
-                                    .Append(SanitizeCsvField(ev.EventClass)).Append(',')
-                                    .Append(ev.DurationMs).Append(',')
-                                    .Append(ev.CpuMs).Append(',')
-                                    .Append(SanitizeCsvField(ev.ApplicationName)).Append(',')
-                                    .Append(SanitizeCsvField(ev.UserName)).Append(',')
-                                    .Append(SanitizeCsvField(ev.SessionId)).Append(',')
-                                    .Append(SanitizeCsvField(ev.RequestId)).Append(',')
-                                    .Append(SanitizeCsvField(ev.ActivityID)).Append(',')
-                                    .Append(SanitizeCsvField(ev.DatabaseName)).Append(',')
-                                    .Append(SanitizeCsvField(ev.TextData)).Append('\n');
-                                File.AppendAllText(traceFile, line.ToString());
+                                sw.Write(runIdLocal.ToString("D")); sw.Write(',');
+                                sw.Write(ev.UtcTimestamp.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.EventClass)); sw.Write(',');
+                                sw.Write(ev.DurationMs); sw.Write(',');
+                                sw.Write(ev.CpuMs); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.ApplicationName)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.UserName)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.SessionId)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.RequestId)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.ActivityID)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.DatabaseName)); sw.Write(',');
+                                sw.Write(SanitizeCsvField(ev.TextData)); sw.Write('\n');
                                 Interlocked.Increment(ref traceRowsWritten);
                             }
                         }
