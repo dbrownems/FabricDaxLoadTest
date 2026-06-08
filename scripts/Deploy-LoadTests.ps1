@@ -32,9 +32,28 @@
 .PARAMETER Workspace
     Display name of the target workspace.
 
+.PARAMETER Tag
+    Pin to a specific GitHub Release tag (e.g. `v0.9.0`). Default is
+    the latest published release. Ignored when `-LocalWheel` is set.
+
+.PARAMETER LocalWheel
+    Dev-iteration mode: build the wheel locally (dotnet publish +
+    python -m build), upload it to LoadTests.Lakehouse/Files/, and
+    patch the notebook's WHEEL_URL to that abfss:// path. Default is
+    the GitHub-release path, which requires no local build and ships
+    a stable wheel to all deployed notebooks.
+
+.PARAMETER Recreate
+    Delete the `LoadTests` lakehouse and `LoadTest - Main` notebook
+    in the target workspace before redeploying. The lakehouse delete
+    wipes both Tables/ and Files/ — you lose all prior load-test
+    history. Use when the schema has changed (e.g. v0.8.0
+    (Source, SourceId) rename) and you want a clean slate.
+
 .PARAMETER SkipPublish
     Skip `dotnet publish`; reuse the existing publish output under
     src/LoadGen/bin/Release/net8.0/linux-x64/publish/.
+    Only meaningful with `-LocalWheel`.
 
 .PARAMETER SkipNotebookUpdate
     Leave an existing `LoadTest - Main` notebook in the workspace
@@ -47,11 +66,27 @@
     Save-As copies, never in `LoadTest - Main`).
 
 .EXAMPLE
-    pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Verbose
+    # Standard deploy from the latest GitHub Release:
+    pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest
+
+.EXAMPLE
+    # Pin to a specific release:
+    pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Tag v0.9.0
+
+.EXAMPLE
+    # Wipe + redeploy (lose all prior load-test data):
+    pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -Recreate
+
+.EXAMPLE
+    # Dev iteration: local wheel uploaded to lakehouse:
+    pwsh scripts\Deploy-LoadTests.ps1 -Workspace dbrowne-loadtest -LocalWheel
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Workspace,
+    [string] $Tag,
+    [switch] $LocalWheel,
+    [switch] $Recreate,
     [switch] $SkipPublish,
     [switch] $SkipNotebookUpdate
 )
@@ -156,103 +191,136 @@ $null = Get-Command az -ErrorAction Stop
 $null = Get-Command fab -ErrorAction Stop
 Info "az + fab CLIs found"
 
-if (-not $SkipPublish) {
-    Step "dotnet publish LoadGen (Release, linux-x64, framework-dependent)"
-    # Notebook deployment runs `dotnet LoadGen.dll` on Fabric Spark
-    # nodes — Linux only, .NET 8 runtime already present via sempy.
-    # Framework-dependent (no SC) keeps the zip payload at ~3.5 MB
-    # instead of ~67 MB; UseAppHost=false skips the apphost binary so we
-    # don't need a chmod step after OneLake stages the files (and
-    # cross-platform the same DLLs run unchanged).
-    & dotnet publish (Join-Path $RepoRoot "src\LoadGen\LoadGen.csproj") `
-        -c Release -r linux-x64 `
-        -p:SelfContained=false -p:PublishSingleFile=false -p:UseAppHost=false `
-        --nologo -v minimal | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
-}
-if (-not (Test-Path (Join-Path $PublishDir "LoadGen.dll"))) {
-    throw "Publish output not found: $PublishDir. Re-run without -SkipPublish."
-}
-$published = Get-ChildItem -Recurse -File $PublishDir
-$totalKb = [int](( $published | Measure-Object Length -Sum).Sum / 1024)
-Info "Publish output: $($published.Count) files, $totalKb KiB"
-
-Step "Staging .NET LoadGen binaries into the wheel source tree"
-# As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime wheel
-# (under fdlt_runtime/loadgen/). Pre-populate that folder from the
-# fresh `dotnet publish` output so the next `python -m build` picks
-# them up via [tool.setuptools.package-data]. The folder is gitignored
-# (build output, not source) so a stale copy from a prior deploy is
-# wiped first.
-$LoadgenStage = Join-Path $RepoRoot "src\fdlt_runtime\loadgen"
-if (Test-Path $LoadgenStage) { Remove-Item $LoadgenStage -Recurse -Force }
-New-Item -ItemType Directory -Path $LoadgenStage | Out-Null
-Copy-Item -Path (Join-Path $PublishDir "*") -Destination $LoadgenStage -Recurse
-$staged = Get-ChildItem -Recurse -File $LoadgenStage
-$stagedKb = [int](( $staged | Measure-Object Length -Sum).Sum / 1024)
-Info "Staged $($staged.Count) files, $stagedKb KiB into src/fdlt_runtime/loadgen/"
-
-# Sanity check: the files we depend on at runtime had better be there.
-$requiredStage = @(
-    "LoadGen.dll", "LoadGen.deps.json", "LoadGen.runtimeconfig.json",
-    "QueryRunner.dll", "Microsoft.AnalysisServices.AdomdClient.dll"
-)
-foreach ($f in $requiredStage) {
-    if (-not (Test-Path (Join-Path $LoadgenStage $f))) {
-        throw "Staging missing required file: $f. dotnet publish output may be stale."
+if ($LocalWheel) {
+    if (-not $SkipPublish) {
+        Step "dotnet publish LoadGen (Release, linux-x64, framework-dependent)"
+        # Notebook deployment runs `dotnet LoadGen.dll` on Fabric Spark
+        # nodes — Linux only, .NET 8 runtime already present via sempy.
+        # Framework-dependent (no SC) keeps the zip payload at ~3.5 MB
+        # instead of ~67 MB; UseAppHost=false skips the apphost binary so we
+        # don't need a chmod step after OneLake stages the files (and
+        # cross-platform the same DLLs run unchanged).
+        & dotnet publish (Join-Path $RepoRoot "src\LoadGen\LoadGen.csproj") `
+            -c Release -r linux-x64 `
+            -p:SelfContained=false -p:PublishSingleFile=false -p:UseAppHost=false `
+            --nologo -v minimal | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
     }
-}
-
-# setuptools-scm derives the version from `git describe`, so an
-# explicit tag (or dirty-tree dev marker) drives both the wheel
-# filename and the runtime banner.
-Step "Building fdlt_runtime wheel (with bundled LoadGen binaries)"
-$DistDir = Join-Path $RepoRoot "dist"
-if (Test-Path $DistDir) {
-    # Clear stale wheels so we don't ship two side-by-side.
-    Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" -ErrorAction SilentlyContinue |
-        Remove-Item -Force
-}
-Push-Location $RepoRoot
-try {
-    & python -m build --wheel --no-isolation 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "python -m build failed" }
-} finally { Pop-Location }
-$wheel = Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $wheel) { throw "Wheel build produced no fdlt_runtime-*.whl" }
-$wheelKb = [int]($wheel.Length / 1024)
-Info "Wheel: $($wheel.Name) ($wheelKb KiB)"
-
-# Verify the wheel actually bundled the LoadGen binaries — the
-# package-data glob is easy to silently break and a stale ~50 KiB
-# wheel ships fine but fails at the user's first Run-All.
-$verifyDir = Join-Path $env:TEMP "fdlt-wheel-verify"
-if (Test-Path $verifyDir) { Remove-Item $verifyDir -Recurse -Force }
-Expand-Archive -Path $wheel.FullName -DestinationPath $verifyDir
-$mustExist = @(
-    "fdlt_runtime/loadgen/LoadGen.dll",
-    "fdlt_runtime/loadgen/LoadGen.deps.json",
-    "fdlt_runtime/loadgen/LoadGen.runtimeconfig.json",
-    "fdlt_runtime/loadgen/QueryRunner.dll",
-    "fdlt_runtime/loadgen/Microsoft.AnalysisServices.AdomdClient.dll",
-    "fdlt_runtime/notebook.py"
-)
-foreach ($rel in $mustExist) {
-    $p = Join-Path $verifyDir ($rel -replace '/', '\')
-    if (-not (Test-Path $p)) {
-        throw "Built wheel is missing $rel. Check pyproject.toml package-data + the loadgen/ staging step."
+    if (-not (Test-Path (Join-Path $PublishDir "LoadGen.dll"))) {
+        throw "Publish output not found: $PublishDir. Re-run without -SkipPublish."
     }
+    $published = Get-ChildItem -Recurse -File $PublishDir
+    $totalKb = [int](( $published | Measure-Object Length -Sum).Sum / 1024)
+    Info "Publish output: $($published.Count) files, $totalKb KiB"
+
+    Step "Staging .NET LoadGen binaries into the wheel source tree"
+    # As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime wheel
+    # (under fdlt_runtime/loadgen/). Pre-populate that folder from the
+    # fresh `dotnet publish` output so the next `python -m build` picks
+    # them up via [tool.setuptools.package-data]. The folder is gitignored
+    # (build output, not source) so a stale copy from a prior deploy is
+    # wiped first.
+    $LoadgenStage = Join-Path $RepoRoot "src\fdlt_runtime\loadgen"
+    if (Test-Path $LoadgenStage) { Remove-Item $LoadgenStage -Recurse -Force }
+    New-Item -ItemType Directory -Path $LoadgenStage | Out-Null
+    Copy-Item -Path (Join-Path $PublishDir "*") -Destination $LoadgenStage -Recurse
+    $staged = Get-ChildItem -Recurse -File $LoadgenStage
+    $stagedKb = [int](( $staged | Measure-Object Length -Sum).Sum / 1024)
+    Info "Staged $($staged.Count) files, $stagedKb KiB into src/fdlt_runtime/loadgen/"
+
+    # Sanity check: the files we depend on at runtime had better be there.
+    $requiredStage = @(
+        "LoadGen.dll", "LoadGen.deps.json", "LoadGen.runtimeconfig.json",
+        "QueryRunner.dll", "Microsoft.AnalysisServices.AdomdClient.dll"
+    )
+    foreach ($f in $requiredStage) {
+        if (-not (Test-Path (Join-Path $LoadgenStage $f))) {
+            throw "Staging missing required file: $f. dotnet publish output may be stale."
+        }
+    }
+
+    # setuptools-scm derives the version from `git describe`, so an
+    # explicit tag (or dirty-tree dev marker) drives both the wheel
+    # filename and the runtime banner.
+    Step "Building fdlt_runtime wheel (with bundled LoadGen binaries)"
+    $DistDir = Join-Path $RepoRoot "dist"
+    if (Test-Path $DistDir) {
+        # Clear stale wheels so we don't ship two side-by-side.
+        Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+    }
+    Push-Location $RepoRoot
+    try {
+        & python -m build --wheel --no-isolation 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "python -m build failed" }
+    } finally { Pop-Location }
+    $wheel = Get-ChildItem $DistDir -Filter "fdlt_runtime-*.whl" |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $wheel) { throw "Wheel build produced no fdlt_runtime-*.whl" }
+    $wheelKb = [int]($wheel.Length / 1024)
+    Info "Wheel: $($wheel.Name) ($wheelKb KiB)"
+
+    # Verify the wheel actually bundled the LoadGen binaries — the
+    # package-data glob is easy to silently break and a stale ~50 KiB
+    # wheel ships fine but fails at the user's first Run-All.
+    $verifyDir = Join-Path $env:TEMP "fdlt-wheel-verify"
+    if (Test-Path $verifyDir) { Remove-Item $verifyDir -Recurse -Force }
+    Expand-Archive -Path $wheel.FullName -DestinationPath $verifyDir
+    $mustExist = @(
+        "fdlt_runtime/loadgen/LoadGen.dll",
+        "fdlt_runtime/loadgen/LoadGen.deps.json",
+        "fdlt_runtime/loadgen/LoadGen.runtimeconfig.json",
+        "fdlt_runtime/loadgen/QueryRunner.dll",
+        "fdlt_runtime/loadgen/Microsoft.AnalysisServices.AdomdClient.dll",
+        "fdlt_runtime/notebook.py"
+    )
+    foreach ($rel in $mustExist) {
+        $p = Join-Path $verifyDir ($rel -replace '/', '\')
+        if (-not (Test-Path $p)) {
+            throw "Built wheel is missing $rel. Check pyproject.toml package-data + the loadgen/ staging step."
+        }
+    }
+    Remove-Item $verifyDir -Recurse -Force
+    Info "Wheel content verified (LoadGen + dependencies bundled)"
+} else {
+    # GitHub-release path: resolve the wheel URL up-front so we can bake
+    # it straight into the notebook below. No local dotnet build, no
+    # local wheel build, no lakehouse upload.
+    Step "Resolving wheel from GitHub Releases"
+    if (-not $Tag) {
+        Info "No -Tag specified; querying latest release..."
+        $latest = & gh release view --repo dbrownems/FabricDaxLoadTest --json tagName,assets 2>$null | ConvertFrom-Json
+        if (-not $latest) { throw "Could not read latest release via 'gh release view'. Install gh or pass -Tag." }
+        $Tag = $latest.tagName
+    } else {
+        $latest = & gh release view $Tag --repo dbrownems/FabricDaxLoadTest --json tagName,assets 2>$null | ConvertFrom-Json
+        if (-not $latest) { throw "Release '$Tag' not found in dbrownems/FabricDaxLoadTest." }
+    }
+    # Tag format is v<version>; strip the leading 'v' for the wheel filename.
+    $relVersion = $Tag -replace '^v',''
+    $wheelAsset = $latest.assets | Where-Object { $_.name -like "fdlt_runtime-$relVersion-*.whl" } | Select-Object -First 1
+    if (-not $wheelAsset) {
+        $names = ($latest.assets | ForEach-Object { $_.name }) -join ', '
+        throw "Release $Tag has no fdlt_runtime-$relVersion-*.whl asset. Assets: $names"
+    }
+    $WheelHttpsUrl = "https://github.com/dbrownems/FabricDaxLoadTest/releases/download/$Tag/$($wheelAsset.name)"
+    Info "Release  : $Tag"
+    Info "Wheel    : $($wheelAsset.name)"
+    Info "URL      : $WheelHttpsUrl"
 }
-Remove-Item $verifyDir -Recurse -Force
-Info "Wheel content verified (LoadGen + dependencies bundled)"
 
 Step "Rebuilding notebook (LoadTest-Main.ipynb)"
-# Build with a sentinel WHEEL_URL — we patch it below to the abfss://
-# path of the freshly-uploaded wheel after we know the lakehouse GUID.
+# In LocalWheel mode we'll patch WHEEL_URL to an abfss:// path below,
+# so we emit the REPLACE_ME sentinel from build_notebooks.py.
+# In GitHub-release mode we bake the https:// URL straight in via
+# FDLT_RELEASE_VERSION (build_notebooks.py reads that env var).
 Push-Location $RepoRoot
 try {
-    $env:FDLT_RELEASE_VERSION = ""
+    if ($LocalWheel) {
+        $env:FDLT_RELEASE_VERSION = ""
+    } else {
+        $env:FDLT_RELEASE_VERSION = ($Tag -replace '^v','')
+    }
     & python (Join-Path $RepoRoot "scripts\build_notebooks.py") | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "build_notebooks.py failed" }
 } finally { Pop-Location }
@@ -266,6 +334,39 @@ if (-not $ws) {
 }
 $wsId = $ws.id
 Info "WorkspaceId: $wsId"
+
+# ---- recreate: tear down existing notebook + lakehouse ----------------------
+if ($Recreate) {
+    Step "Recreate: deleting existing 'LoadTest - Main' notebook (if present)"
+    $nbItems = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Notebook"
+    $existingNb = $nbItems.value | Where-Object { $_.displayName -eq "LoadTest - Main" }
+    if ($existingNb) {
+        $r = Invoke-FabricRaw -Method DELETE -Url "$ApiBase/v1/workspaces/$wsId/items/$($existingNb.id)"
+        if ($r.StatusCode -eq 202) {
+            $loc = $r.Headers["Location"]
+            if ($loc -is [array]) { $loc = $loc[0] }
+            $null = Wait-LRO $loc
+        }
+        Info "Deleted notebook $($existingNb.id)"
+    } else {
+        Info "No existing notebook to delete"
+    }
+
+    Step "Recreate: deleting existing 'LoadTests' lakehouse (if present)"
+    $lhItems = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Lakehouse"
+    $existingLh = $lhItems.value | Where-Object { $_.displayName -eq "LoadTests" }
+    if ($existingLh) {
+        $r = Invoke-FabricRaw -Method DELETE -Url "$ApiBase/v1/workspaces/$wsId/items/$($existingLh.id)"
+        if ($r.StatusCode -eq 202) {
+            $loc = $r.Headers["Location"]
+            if ($loc -is [array]) { $loc = $loc[0] }
+            $null = Wait-LRO $loc
+        }
+        Info "Deleted lakehouse $($existingLh.id) — note: displayName may be reserved for ~minutes (ItemDisplayNameNotAvailableYet)"
+    } else {
+        Info "No existing lakehouse to delete"
+    }
+}
 
 # ---- folder -----------------------------------------------------------------
 Step "Get-or-create folder 'LoadTests'"
@@ -298,15 +399,34 @@ if (-not $lh) {
         folderId        = $folderId
         creationPayload = @{ enableSchemas = $true }
     }
-    $r = Invoke-FabricRaw -Method POST -Url "$ApiBase/v1/workspaces/$wsId/items" -Body $body
-    if ($r.StatusCode -eq 202) {
-        $loc = $r.Headers["Location"]
-        if ($loc -is [array]) { $loc = $loc[0] }
-        Info "Create returned 202 LRO; polling..."
-        $lh = Wait-LRO $loc
-    } else {
-        $lh = $r.Body
+    # After a delete, Fabric reserves the displayName for a few minutes
+    # (`ItemDisplayNameNotAvailableYet`). Retry the create with backoff
+    # when we hit that — usually clears within ~1-3 minutes in practice.
+    $lh = $null
+    $maxAttempts = if ($Recreate) { 20 } else { 1 }
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            $r = Invoke-FabricRaw -Method POST -Url "$ApiBase/v1/workspaces/$wsId/items" -Body $body
+            if ($r.StatusCode -eq 202) {
+                $loc = $r.Headers["Location"]
+                if ($loc -is [array]) { $loc = $loc[0] }
+                Info "Create returned 202 LRO; polling..."
+                $lh = Wait-LRO $loc
+            } else {
+                $lh = $r.Body
+            }
+            break
+        } catch {
+            if ($_.Exception.Message -match 'ItemDisplayNameNotAvailableYet' -and $attempt -lt $maxAttempts) {
+                $wait = 30
+                Warn ("Attempt {0}/{1}: displayName still reserved; waiting {2}s..." -f $attempt, $maxAttempts, $wait)
+                Start-Sleep -Seconds $wait
+            } else {
+                throw
+            }
+        }
     }
+    if (-not $lh) { throw "Lakehouse create failed after $maxAttempts attempts" }
     Info "Created schema-enabled lakehouse $($lh.id)"
 } else {
     if ($lh.folderId -ne $folderId) {
@@ -333,35 +453,39 @@ if (-not $lh) {
 $lhId = $lh.id
 
 # ---- upload fdlt_runtime wheel via fab cp -----------------------------------
-Step "Uploading $($wheel.Name) to LoadTests.Lakehouse/Files/"
-$lhWheelDest = "/$Workspace.workspace/LoadTests.lakehouse/Files/$($wheel.Name)"
-& fab cp $wheel.FullName $lhWheelDest -f 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $($wheel.FullName) -> $lhWheelDest" }
-Info "Uploaded $($wheel.Name) ($wheelKb KiB)"
+if ($LocalWheel) {
+    Step "Uploading $($wheel.Name) to LoadTests.Lakehouse/Files/"
+    $lhWheelDest = "/$Workspace.workspace/LoadTests.lakehouse/Files/$($wheel.Name)"
+    & fab cp $wheel.FullName $lhWheelDest -f 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "fab cp failed for $($wheel.FullName) -> $lhWheelDest" }
+    Info "Uploaded $($wheel.Name) ($wheelKb KiB)"
 
-# Build the abfss:// URL the notebook will pull from. Friendly-name
-# paths (`abfss://…/LoadTests.Lakehouse/…`) are disabled on some
-# tenants; GUID paths always work.
-$WheelAbfssUrl = "abfss://$wsId@onelake.dfs.fabric.microsoft.com/$lhId/Files/$($wheel.Name)"
-Info "Wheel ABFSS URL: $WheelAbfssUrl"
+    # Build the abfss:// URL the notebook will pull from. Friendly-name
+    # paths (`abfss://…/LoadTests.Lakehouse/…`) are disabled on some
+    # tenants; GUID paths always work.
+    $WheelAbfssUrl = "abfss://$wsId@onelake.dfs.fabric.microsoft.com/$lhId/Files/$($wheel.Name)"
+    Info "Wheel ABFSS URL: $WheelAbfssUrl"
 
-# Patch the generated notebook's WHEEL_URL to point at the freshly
-# uploaded wheel. build_notebooks.py emits the sentinel
-# `REPLACE_ME_WITH_WHEEL_URL`; we swap it for the abfss:// URL here so
-# every redeploy lines up cell 2 with whatever filename setuptools-scm
-# minted for this build.
-Step "Patching notebook WHEEL_URL"
-$NotebookPath = Join-Path $NotebooksDir "LoadTest-Main.ipynb"
-$nbText = Get-Content $NotebookPath -Raw
-if ($nbText -notmatch 'REPLACE_ME_WITH_WHEEL_URL') {
-    throw "Notebook does not contain the WHEEL_URL sentinel — did build_notebooks.py change?"
+    # Patch the generated notebook's WHEEL_URL to point at the freshly
+    # uploaded wheel. build_notebooks.py emits the sentinel
+    # `REPLACE_ME_WITH_WHEEL_URL`; we swap it for the abfss:// URL here so
+    # every redeploy lines up cell 2 with whatever filename setuptools-scm
+    # minted for this build.
+    Step "Patching notebook WHEEL_URL"
+    $NotebookPath = Join-Path $NotebooksDir "LoadTest-Main.ipynb"
+    $nbText = Get-Content $NotebookPath -Raw
+    if ($nbText -notmatch 'REPLACE_ME_WITH_WHEEL_URL') {
+        throw "Notebook does not contain the WHEEL_URL sentinel — did build_notebooks.py change?"
+    }
+    # Notebook source is JSON, and the cell-source string carries the URL
+    # as a plain literal — straight string replace is safe (the sentinel
+    # appears nowhere else).
+    $nbText = $nbText.Replace('REPLACE_ME_WITH_WHEEL_URL', $WheelAbfssUrl)
+    Set-Content -Path $NotebookPath -Value $nbText -Encoding UTF8 -NoNewline
+    Info "Patched WHEEL_URL into $NotebookPath"
+} else {
+    Info "GitHub-release mode: WHEEL_URL already baked into notebook ($WheelHttpsUrl)"
 }
-# Notebook source is JSON, and the cell-source string carries the URL
-# as a plain literal — straight string replace is safe (the sentinel
-# appears nowhere else).
-$nbText = $nbText.Replace('REPLACE_ME_WITH_WHEEL_URL', $WheelAbfssUrl)
-Set-Content -Path $NotebookPath -Value $nbText -Encoding UTF8 -NoNewline
-Info "Patched WHEEL_URL into $NotebookPath"
 
 # ---- create/update notebook via REST (folderId at create time) --------------
 function Deploy-Notebook {
