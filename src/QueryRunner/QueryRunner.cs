@@ -891,6 +891,25 @@ namespace FabricDaxLoadTest
                     Log($"Log written: {logFilePath}");
                 }
 
+                // Trace drain grace period. The main query loop exits as
+                // soon as the duration token fires, but queries that were
+                // in-flight at that moment have not yet emitted their
+                // QueryEnd / ExecutionMetrics events. The AS engine emits
+                // those events asynchronously after each command completes,
+                // and the rowset reader sees them with a small server-side
+                // delay (typically <1s, but we observed up to ~3s under
+                // load). Without a grace period here, DisposeAsync cancels
+                // the subscription before those late events arrive and we
+                // lose the tail of the trace. 5s is conservative and only
+                // adds to the run when tracing is enabled.
+                if (trace != null && traceFatalError == null && !externalCt.IsCancellationRequested)
+                {
+                    var beforeDrain = trace.EventsSeen;
+                    Log($"Trace drain: waiting 5s for in-flight QueryEnd events to arrive (EventsSeen={beforeDrain})...");
+                    try { Task.Delay(TimeSpan.FromSeconds(5), externalCt).Wait(); } catch { }
+                    Log($"Trace drain: complete (+{trace.EventsSeen - beforeDrain} events during drain, EventsSeen={trace.EventsSeen})");
+                }
+
                 // Drop the trace subscription. DisposeAsync cancels the
                 // reader, issues the Delete on a fresh connection (bounded
                 // 15s), and completes the channel. The writer task then
