@@ -6,6 +6,25 @@ import math
 from pathlib import Path
 
 
+_NICE_BUCKETS_S = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+
+
+def _pick_bucket_size_s(duration_s: float, target_buckets: int = 20) -> float:
+    """Pick a 'nice' bucket size so plots show ~20 buckets across the run.
+
+    Snaps up to the smallest value in {1, 2, 5, 10, 15, 30, 60, 120, 300, 600}
+    that yields <= target_buckets buckets. Examples: 60s run -> 5s buckets
+    (12 buckets), 295s run -> 15s buckets (~20 buckets), 1200s run -> 60s
+    buckets (20 buckets). For a fixed bucket count cap call sites used to
+    use 100 buckets which was too granular for runs longer than ~2 min.
+    """
+    raw = max(1.0, duration_s / max(1, target_buckets))
+    for n in _NICE_BUCKETS_S:
+        if n >= raw:
+            return float(n)
+    return float(_NICE_BUCKETS_S[-1])
+
+
 def plot_run(csv_path: str | Path, *, title: str | None = None,
              trace_csv_path: str | Path | None = None):
     """Plot bucketed latency band + QPS + active-user count from a LoadGen CSV.
@@ -38,7 +57,9 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
 
     t_min, t_max = df.StartTimeMs.min(), df.StartTimeMs.max()
     duration_s = max((t_max - t_min) / 1000, 1)
-    n_buckets = min(100, max(1, len(df)))
+    bucket_size_s = _pick_bucket_size_s(duration_s)
+    n_buckets = max(1, int(math.ceil(duration_s / bucket_size_s)))
+    n_buckets = min(n_buckets, max(1, len(df)))
     df["bucket"] = pd.cut(df.StartTimeMs, bins=n_buckets, labels=False)
 
     ok = df[df.Outcome == "Success"]
@@ -132,9 +153,9 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     test start (T0 derived from the executions CSV's
     ``StartUtc`` − ``StartTimeMs`` alignment), then **distributes the
     event's CpuMs uniformly over its [start, end] interval** so events
-    that span multiple buckets contribute proportionally. Bucket size is
-    1 second, capped at 100 buckets total (so longer runs use wider
-    buckets, e.g. a 600-second run uses 6-second buckets).
+    that span multiple buckets contribute proportionally. Bucket size
+    targets ~20 buckets across the run (snapped to a nice value like
+    1, 5, 15, 30, 60s) — see ``_pick_bucket_size_s``.
 
     Returns ``(centers_s, cpu_per_sec, bucket_width_s)`` or
     ``(None, None, None)`` when no CPU data is available.
@@ -173,8 +194,9 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     tdf["end_s"] = (tdf["UtcTimestamp"] - t0).dt.total_seconds()
     tdf["start_s"] = tdf["end_s"] - tdf["DurationMs"] / 1000.0
 
-    # Bucket sizing: aim for 1s buckets, cap at 100 buckets total.
-    bucket_size_s = max(1.0, math.ceil(duration_s / 100))
+    # Bucket sizing: shared with QPS/latency panels — see _pick_bucket_size_s.
+    # Targets ~20 buckets, snapped to {1, 2, 5, 10, 15, 30, 60, 120, 300, 600}s.
+    bucket_size_s = _pick_bucket_size_s(duration_s)
     n_buckets = max(1, int(math.ceil(duration_s / bucket_size_s)))
     cpu_ms = [0.0] * n_buckets
 
