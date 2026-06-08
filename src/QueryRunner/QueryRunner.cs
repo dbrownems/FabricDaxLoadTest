@@ -601,21 +601,14 @@ namespace FabricDaxLoadTest
                         }
                         finally
                         {
-                            // Flush order matters: StreamWriter buffers chars
-                            // in user space, FileStream buffers bytes before
-                            // the OS write. We must Flush sw FIRST (pushing
-                            // chars -> fs's byte buffer), THEN Flush fs
-                            // (pushing bytes -> OS), then dispose. Disposing
-                            // sw before fs is also valid because StreamWriter
-                            // owns the underlying stream by default and
-                            // Dispose will flush+close fs in the correct
-                            // order — but we do it explicitly here so the
-                            // intent is visible and any I/O failure surfaces
-                            // in the log instead of being swallowed.
-                            try { sw?.Flush(); } catch (Exception ex) { Log($"Trace writer sw.Flush error: {ex.GetType().Name}: {ex.Message}"); }
-                            try { fs?.Flush(); } catch (Exception ex) { Log($"Trace writer fs.Flush error: {ex.GetType().Name}: {ex.Message}"); }
-                            try { sw?.Dispose(); } catch { } // also disposes fs (StreamWriter owns it)
-                            try { fs?.Dispose(); } catch { } // idempotent / safe after sw.Dispose
+                            // StreamWriter.Dispose best-effort flushes its
+                            // char buffer through the underlying FileStream
+                            // and disposes it (StreamWriter owns fs by
+                            // default). Disposing sw is sufficient on every
+                            // exit path; fs?.Dispose is idempotent insurance
+                            // if sw construction failed after fs opened.
+                            try { sw?.Dispose(); } catch { }
+                            try { fs?.Dispose(); } catch { }
                         }
                     });
                 }
