@@ -392,8 +392,6 @@ def _print_run_banner(rr: RunResult, run_dest: str) -> None:
 
 def analyze(outcome: RunOutcome) -> Any:
     """Render the latency/QPS/active-users figure for a finished run."""
-    import matplotlib.pyplot as plt  # type: ignore
-
     from .analyze import plot_run
 
     fig = plot_run(
@@ -401,5 +399,7 @@ def analyze(outcome: RunOutcome) -> Any:
         title=f"Run {outcome.result.run_id} — {outcome.load_test_name}",
         trace_csv_path=outcome.result.trace_csv_path,
     )
-    plt.show()
+    # Don't call plt.show() — returning the Figure auto-displays it via
+    # Jupyter's inline backend. Calling plt.show() AND returning fig would
+    # render the chart twice in the cell output.
     return fig
