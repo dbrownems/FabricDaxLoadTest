@@ -309,7 +309,6 @@ def write_run(
             # VertiPaq SE aggregates per query.
             StructField("VertiPaqQueryCount",   IntegerType(),   True),
             StructField("VertiPaqDurationMs",   LongType(),      True),
-            StructField("VertiPaqCacheHits",    IntegerType(),   True),
             # DirectQuery aggregates per query (DirectLake/DQ models).
             StructField("DirectQueryCount",     IntegerType(),   True),
             StructField("DirectQueryDurationMs", LongType(),     True),
@@ -346,7 +345,6 @@ def write_run(
             SECpuMs=None, FECpuMs=None, ExecutionDelayMs=None,
             PeakMemoryKB=None, QueryResultRows=None,
             VertiPaqQueryCount=None, VertiPaqDurationMs=None,
-            VertiPaqCacheHits=None,
             DirectQueryCount=None, DirectQueryDurationMs=None,
             DirectQueryCpuMs=None,
             Outcome=str(r["Outcome"]),
@@ -490,14 +488,11 @@ def write_run(
             .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
 
-        # 4. VertiPaqSEQueryCacheMatch — just the count (no Duration/CPU).
-        trace_vcm = (trace_df
-            .where((F.col("EventClass") == F.lit("VertiPaqSEQueryCacheMatch")) &
-                   F.col("RequestId").isNotNull())
-            .groupBy("SourceId", "RequestId")
-            .agg(F.count(F.lit(1)).cast("int").alias("VertiPaqCacheHits"))
-            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
-            .drop("RequestId"))
+        # 4. (VertiPaqSEQueryCacheMatch dropped from XMLA in v0.9.4 to
+        #    reduce trace volume — engine silently stops emitting events
+        #    once its rowset buffer fills under high event-rate load.
+        #    The VertiPaqCacheHits column was removed from QueryExecutions
+        #    schema in the same release.)
 
         # 5. DirectQueryEnd aggregates (Direct Lake / DQ models only).
         trace_dq = (trace_df
@@ -521,7 +516,6 @@ def write_run(
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
             "PeakMemoryKB", "QueryResultRows",
             "VertiPaqQueryCount", "VertiPaqDurationMs",
-            "VertiPaqCacheHits",
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
         exec_df = exec_df.drop(*backfill_drop)
@@ -529,7 +523,7 @@ def write_run(
         # thing (don't drop RequestId like we did before).
         for side in (
             trace_qe,
-            trace_em, trace_vpq, trace_vcm, trace_dq,
+            trace_em, trace_vpq, trace_dq,
         ):
             exec_df = exec_df.join(side, on=["SourceId", "QuerySeq"], how="left")
 

@@ -153,26 +153,21 @@
             </Columns>
           </Event>
 
-          <!-- 82: VertiPaqSEQueryBegin -->
-          <Event>
-            <EventID>82</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>13</ColumnID>  <!-- ObjectName -->
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>47</ColumnID>
-            </Columns>
-          </Event>
+          <!-- NOTE: Events 82 (VertiPaqSEQueryBegin), 85
+               (VertiPaqSEQueryCacheMatch), 112 (DAXQueryPlan), and 134
+               (JobGraph) were removed in v0.9.4. With 50+ user load
+               we observed the AS server-side trace buffer overflowing
+               after ~9 seconds (the engine silently stops emitting
+               new events; see .copilot/tracing-notes §). Per query
+               we were emitting ~14 events; ~58% were these four
+               classes which the persist back-fill either ignores
+               (Begin / DAXQueryPlan / JobGraph) or only counts
+               (CacheMatch -> VertiPaqCacheHits, also dropped from
+               schema in the same release). Keeping only the events
+               persist.py actually consumes (QueryBegin/QueryEnd,
+               CommandBegin/CommandEnd, Error, VertiPaqSEQueryEnd,
+               DirectQueryBegin/End, ExecutionMetrics) cuts per-query
+               trace volume to ~5 events. -->
 
           <!-- 83: VertiPaqSEQueryEnd -->
           <Event>
@@ -196,25 +191,6 @@
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
               <ColumnID>47</ColumnID>
-            </Columns>
-          </Event>
-
-          <!-- 85: VertiPaqSEQueryCacheMatch — strict narrow column set;
-               PBI Service rejects most columns on this event. NOTE: no
-               ApplicationName (37) here — client-side filter must
-               admit by RequestID, not ApplicationName. See
-               .copilot/tracing-notes.md §4. -->
-          <Event>
-            <EventID>85</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>   <!-- EventClass -->
-              <ColumnID>1</ColumnID>   <!-- EventSubclass -->
-              <ColumnID>2</ColumnID>   <!-- CurrentTime -->
-              <ColumnID>25</ColumnID>  <!-- ConnectionID -->
-              <ColumnID>28</ColumnID>  <!-- DatabaseName -->
-              <ColumnID>41</ColumnID>  <!-- Spid -->
-              <ColumnID>42</ColumnID>  <!-- TextData -->
-              <ColumnID>47</ColumnID>  <!-- RequestID -->
             </Columns>
           </Event>
 
@@ -268,36 +244,8 @@
             </Columns>
           </Event>
 
-          <!-- 112: DAXQueryPlan — formula engine query plan text -->
-          <Event>
-            <EventID>112</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>47</ColumnID>
-            </Columns>
-          </Event>
-
-          <!-- 134: JobGraph — engine job parallelism graph (JSON in TextData) -->
-          <Event>
-            <EventID>134</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>47</ColumnID>
-            </Columns>
-          </Event>
+          <!-- 112 (DAXQueryPlan) and 134 (JobGraph) removed in v0.9.4 —
+               see note above about per-query trace volume reduction. -->
 
           <!-- 136: ExecutionMetrics — JSON CPU/memory/throttling metrics
                (parsed by correlator). One per query; pairs with QueryEnd

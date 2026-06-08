@@ -224,7 +224,20 @@ public sealed class TraceSubscriber : IAsyncDisposable
         _subscribeCommand.Properties.Add(new AdomdProperty("Catalog", _database));
         _subscribeCommand.CommandText = BuildSubscribeXmla(_traceId!);
 
-        _readerTask = Task.Run(ReaderLoop, ct);
+        // The reader runs on a DEDICATED thread via TaskCreationOptions
+        // .LongRunning, NOT a ThreadPool worker. With 50+ users, each
+        // user driver occupies a TP worker (sync-over-async ADOMD); a
+        // reader on the same pool can be preempted for hundreds of
+        // milliseconds at ramp peak. The XMLA Subscribe rowset has a
+        // fixed-size server-side buffer, and once it fills (because
+        // we couldn't call rdr.Read() fast enough) AS silently stops
+        // emitting new events for the rest of the run. LongRunning
+        // signals the TPL to create a dedicated thread so the reader
+        // ALWAYS gets to drain the cursor regardless of TP saturation.
+        _readerTask = Task.Factory.StartNew(
+            ReaderLoop, ct,
+            TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
 
         // Periodic progress logger so operators can see liveness and
         // catch silent stalls (e.g. AS-side rowset back-pressure that
