@@ -113,6 +113,13 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
                          f"bucket={cpu_bw:g}s")
 
     fig.tight_layout()
+    # Detach the figure from pyplot so the inline backend's post-cell
+    # "auto-flush all open figures" hook doesn't display it. Returning
+    # the Figure then renders it exactly once via Jupyter's
+    # rich-repr display path. Without close(), the figure renders twice:
+    # once by the inline backend's Gcf flush, once by the cell-result repr.
+    import matplotlib.pyplot as _plt
+    _plt.close(fig)
     return fig
 
 

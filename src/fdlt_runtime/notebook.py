@@ -293,9 +293,73 @@ def run(
         else:
             print("  SQL sync   : (skipped — no sqlEndpointId on lakehouse)")
 
+        # Best-effort: copy the LoadGen *.log + *.trace.csv from the
+        # driver's run_local_dir to OneLake Files/run-logs/<run_id>/ so
+        # they survive kernel cycles. Drives post-mortem diagnosis of
+        # issues like trace-stream truncation that aren't reconstructable
+        # from the Delta tables alone.
+        try:
+            _persist_run_logs(rr, boot.lakehouse, write_summary.run_id)
+        except Exception as ex:  # noqa: BLE001 — best-effort
+            print(f"  Log copy   : (warning: {ex})")
+
     return RunOutcome(
         result=rr, write_summary=write_summary,
         load_test_name=resolved_name, cfg=cfg, run_dest=run_dest)
+
+
+def _persist_run_logs(rr: RunResult, lh, run_id: str) -> None:
+    """Copy *.log + *.trace.csv from rr.run_local_dir to OneLake.
+
+    Destination: ``{lakehouse-abfss}/Files/run-logs/{run_id}/``. Uses
+    ``notebookutils.fs.cp`` when available (the standard Fabric notebook
+    path); falls back to the ``/lakehouse/default/Files/...`` mount when
+    it's the configured default lakehouse. Caller wraps in try/except.
+    """
+    import glob
+    import os
+    src_dir = rr.run_local_dir
+    if not src_dir or not os.path.isdir(src_dir):
+        return
+    files = (sorted(glob.glob(os.path.join(src_dir, "*.log"))) +
+             sorted(glob.glob(os.path.join(src_dir, "*.trace.csv"))))
+    if not files:
+        return
+    dest_dir_abfss = f"{lh.abfss}/Files/run-logs/{run_id}"
+
+    # Prefer notebookutils.fs.cp — it knows how to authenticate against
+    # OneLake from the running Spark driver without an explicit token.
+    try:
+        import notebookutils  # type: ignore
+        fs = notebookutils.fs
+    except Exception:
+        fs = None
+
+    copied = 0
+    if fs is not None:
+        try:
+            fs.mkdirs(dest_dir_abfss)
+        except Exception:
+            pass  # mkdirs may not exist or may fail if dir already exists
+        for src in files:
+            name = os.path.basename(src)
+            try:
+                fs.cp(f"file://{src}", f"{dest_dir_abfss}/{name}", True)
+                copied += 1
+            except Exception as ex:  # noqa: BLE001
+                print(f"  Log copy   : (warning copying {name}: {ex})")
+    else:
+        # Fallback: write through the /lakehouse/default mount when the
+        # current default lakehouse matches the destination.
+        mount = f"/lakehouse/default/Files/run-logs/{run_id}"
+        os.makedirs(mount, exist_ok=True)
+        import shutil
+        for src in files:
+            shutil.copy2(src, os.path.join(mount, os.path.basename(src)))
+            copied += 1
+
+    if copied:
+        print(f"  Log copy   : {copied} file(s) -> Files/run-logs/{run_id}/")
 
 
 def _make_on_status():
