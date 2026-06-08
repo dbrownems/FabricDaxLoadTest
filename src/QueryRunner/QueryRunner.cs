@@ -519,6 +519,11 @@ namespace FabricDaxLoadTest
             Task? traceWriterTask = null;
             long traceRowsWritten = 0;
             string? traceWarning = null;
+            // Set by TraceSubscriber.OnFatalError when the trace reader fails
+            // non-recoverably mid-run. We check this after the main load
+            // loop completes so the run exits with a hard error (rather
+            // than a "successful" run with partial trace data).
+            string? traceFatalError = null;
 
             if (config.EnableTracing && !string.IsNullOrEmpty(logDirectory))
             {
@@ -532,12 +537,22 @@ namespace FabricDaxLoadTest
                     File.WriteAllText(traceFilePath,
                         "RunId,UtcTimestamp,EventClass,DurationMs,CpuMs,ApplicationName,UserName,SessionId,RequestId,ActivityId,DatabaseName,TextData\n");
 
+                    var traceCts = linkedCts;
                     trace = new TraceSubscriber(
                         xmlaEndpoint: xmlaEndpoint,
                         token: token,
                         database: dataset,
                         applicationFilter: appFilter,
-                        log: Log);
+                        log: Log,
+                        onFatalError: detail =>
+                        {
+                            // TraceSubscriber has already written this to
+                            // Console.Error and to the structured log; we
+                            // record + cancel so the run aborts cleanly.
+                            traceFatalError = detail;
+                            Log("FATAL TRACE: aborting load test run.");
+                            try { traceCts.Cancel(); } catch { }
+                        });
                     trace.StartAsync(linkedCts.Token).GetAwaiter().GetResult();
                     Log($"Tracing  : {traceFilePath} (filter ApplicationName={appFilter})");
 
@@ -892,6 +907,18 @@ namespace FabricDaxLoadTest
                 if (traceFilePath != null)
                 {
                     Log($"Trace events written: {Interlocked.Read(ref traceRowsWritten)} rows -> {traceFilePath}");
+                }
+
+                // If the trace reader failed mid-run, abort with a hard
+                // error so the load test exits non-zero. The .NET shim's
+                // top-level handler converts this into an "error" envelope
+                // that runner.py surfaces via stderr_tail in the notebook.
+                if (traceFatalError != null)
+                {
+                    SetPhase("Failed");
+                    throw new InvalidOperationException(
+                        "Trace subscription failed mid-run; load test aborted. " +
+                        "Detail: " + traceFatalError);
                 }
 
                 // Resolve final phase: Failed (set above) > Cancelled

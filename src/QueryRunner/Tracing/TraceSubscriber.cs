@@ -57,11 +57,14 @@ public sealed class TraceSubscriber : IAsyncDisposable
     private readonly string? _applicationFilter;
     private readonly Channel<AsTraceEvent> _channel;
     private readonly Action<string> _log;
+    private readonly Action<string>? _onFatalError;
 
     private AdomdConnection? _connection;
     private AdomdCommand? _subscribeCommand;
     private string? _traceId;
     private Task? _readerTask;
+    private Task? _progressTask;
+    private CancellationTokenSource? _progressCts;
     private volatile bool _stopping;
 
     private readonly Dictionary<int, TraceColumn?> _columnIndexMap = new();
@@ -73,6 +76,31 @@ public sealed class TraceSubscriber : IAsyncDisposable
     public long EventsSeen { get; private set; }
     public long EventsDroppedByFilter { get; private set; }
     public long EventsDroppedByBackpressure { get; private set; }
+    public long RowProcessingErrors { get; private set; }
+    public string? FirstRowProcessingError { get; private set; }
+
+    /// <summary>
+    /// Best-effort logging: tries the configured log callback, then falls
+    /// back to <c>Console.Error.WriteLine</c> if it throws (e.g. the host
+    /// log queue has been shut down). The fallback is what the notebook
+    /// kernel surfaces via the LoadGen subprocess stderr.
+    /// </summary>
+    private void LogSafe(string msg)
+    {
+        try { _log(msg); return; } catch { }
+        try { Console.Error.WriteLine("[TraceSubscriber] " + msg); } catch { }
+    }
+
+    /// <summary>
+    /// Logs an unrecoverable error. ALWAYS writes to <c>Console.Error</c>
+    /// (so the notebook user sees it via stderr_tail) AND attempts the
+    /// regular log callback. Use only for fatal conditions.
+    /// </summary>
+    private void LogFatal(string msg)
+    {
+        try { Console.Error.WriteLine("[TraceSubscriber FATAL] " + msg); } catch { }
+        try { _log("FATAL: " + msg); } catch { }
+    }
 
     /// <summary>
     /// Fires for every event that survives the application filter, BEFORE
@@ -86,12 +114,20 @@ public sealed class TraceSubscriber : IAsyncDisposable
     /// driver sets ApplicationName = "FabricDaxLoadTest/&lt;RunId&gt;" on
     /// its query connections; the trace is unfiltered server-side and
     /// this is the only way to isolate the run's events.</param>
+    /// <param name="onFatalError">Invoked from the reader loop when the
+    /// trace subscription fails non-recoverably (subscribe/read exception,
+    /// not a clean stream-end during shutdown). The host should treat this
+    /// as run-fatal and cancel the load test. The argument is a
+    /// human-readable error string that has already been written to
+    /// <c>Console.Error</c> so the notebook user sees it even if the host
+    /// log subsystem is unavailable.</param>
     public TraceSubscriber(
         string xmlaEndpoint,
         string? token,
         string database,
         string? applicationFilter = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Action<string>? onFatalError = null)
     {
         if (string.IsNullOrWhiteSpace(xmlaEndpoint))
             throw new ArgumentException("XMLA endpoint is required.", nameof(xmlaEndpoint));
@@ -106,6 +142,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
         _database = database;
         _applicationFilter = string.IsNullOrWhiteSpace(applicationFilter) ? null : applicationFilter;
         _log = log ?? (_ => { });
+        _onFatalError = onFatalError;
         _channel = Channel.CreateBounded<AsTraceEvent>(new BoundedChannelOptions(10_000)
         {
             // Wait would back-pressure the row pump and let ADOMD time out;
@@ -129,13 +166,13 @@ public sealed class TraceSubscriber : IAsyncDisposable
         // rowset.").
         try
         {
-            _log($"Opening AdomdConnection to {_xmlaEndpoint} (catalog={_database})...");
+            LogSafe($"Opening AdomdConnection to {_xmlaEndpoint} (catalog={_database})...");
             _connection = new AdomdConnection { ConnectionString = BuildConnectionString() };
             _connection.Open();
-            _log("Connection opened.");
+            LogSafe("Connection opened.");
 
             _traceId = "FDLT-" + Guid.NewGuid().ToString("N").Substring(0, 12);
-            _log($"Trace id: {_traceId}");
+            LogSafe($"Trace id: {_traceId}");
 
             // Pre-emptively delete any existing trace with this id (left
             // over from a crashed run). Server returns "does not exist"
@@ -153,7 +190,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _log("Pre-delete returned: " + Flatten(ex));
+                LogSafe("Pre-delete returned: " + Flatten(ex));
             }
 
             // Load the XMLA template from the embedded resource and
@@ -162,7 +199,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
             try
             {
                 CreateTraceWithAutoRetry(_traceId);
-                _log("Trace created.");
+                LogSafe("Trace created.");
             }
             catch (Exception ex)
             {
@@ -174,7 +211,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
         {
             LastError = Flatten(ex);
             Connected = false;
-            _log("StartAsync FAILED: " + LastError);
+            LogSafe("StartAsync FAILED: " + LastError);
             try { _connection?.Close(); } catch { }
             throw new InvalidOperationException(
                 "Trace subscription failed and the load test cannot continue: " + LastError, ex);
@@ -189,21 +226,48 @@ public sealed class TraceSubscriber : IAsyncDisposable
 
         _readerTask = Task.Run(ReaderLoop, ct);
 
+        // Periodic progress logger so operators can see liveness and
+        // catch silent stalls (e.g. AS-side rowset back-pressure that
+        // halts emission) without waiting for the run to finish.
+        _progressCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _progressTask = Task.Run(() => ProgressLoop(_progressCts.Token));
+
         Connected = true;
         ConnectedAtUtc = DateTime.UtcNow;
-        _log("Trace subscription running (reader on background thread).");
+        LogSafe("Trace subscription running (reader on background thread).");
         await Task.CompletedTask;
+    }
+
+    private async Task ProgressLoop(CancellationToken ct)
+    {
+        try
+        {
+            while (!_stopping && !ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+                if (_stopping || ct.IsCancellationRequested) return;
+                LogSafe($"Trace progress: EventsSeen={EventsSeen} " +
+                        $"DroppedByBackpressure={EventsDroppedByBackpressure} " +
+                        $"DroppedByFilter={EventsDroppedByFilter} " +
+                        $"RowProcessingErrors={RowProcessingErrors}");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogSafe("Progress loop error: " + ex.Message);
+        }
     }
 
     private void ReaderLoop()
     {
         try
         {
-            _log("Subscribe ExecuteReader: opening (will block until first event)...");
+            LogSafe("Subscribe ExecuteReader: opening (will block until first event)...");
             using var rdr = _subscribeCommand!.ExecuteReader();
             var colNames = new string[rdr.FieldCount];
             for (int i = 0; i < rdr.FieldCount; i++) colNames[i] = rdr.GetName(i);
-            _log($"Subscribe reader opened ({rdr.FieldCount} columns: {string.Join(", ", colNames)}).");
+            LogSafe($"Subscribe reader opened ({rdr.FieldCount} columns: {string.Join(", ", colNames)}).");
             for (int i = 0; i < rdr.FieldCount; i++)
                 _columnIndexMap[i] = MapColumnName(rdr.GetName(i));
 
@@ -212,7 +276,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
                 ProcessRow(rdr);
             }
 
-            _log("Subscribe reader: stream ended.");
+            LogSafe("Subscribe reader: stream ended.");
             _channel.Writer.TryComplete();
         }
         catch (Exception) when (_stopping)
@@ -232,10 +296,16 @@ public sealed class TraceSubscriber : IAsyncDisposable
                           "RequestProperties. Drop the offending <ColumnID> " +
                           "from FilteredTrace.xmla.)";
             }
-            _log("Subscribe reader FAILED: " + detail);
+            // Fatal: ALWAYS write to Console.Error so the notebook user sees
+            // it via stderr_tail even if the structured log queue is gone.
+            LogFatal("Subscribe reader FAILED: " + detail);
             LastError = detail;
             Connected = false;
             _channel.Writer.TryComplete(ex);
+            try { _onFatalError?.Invoke(detail); } catch (Exception cbEx)
+            {
+                LogFatal("OnFatalError callback threw: " + cbEx.Message);
+            }
         }
     }
 
@@ -330,9 +400,26 @@ public sealed class TraceSubscriber : IAsyncDisposable
 
             try { OnRawEvent?.Invoke(ev); } catch { /* never let observer crash trace */ }
         }
-        catch
+        catch (Exception ex)
         {
-            // Never let row-handler exceptions kill the subscription.
+            // Per-row failure: count, log first occurrence with full detail,
+            // log subsequent ones with abbreviated detail (every 100th) so
+            // a malformed-column flood doesn't drown the log. We do NOT
+            // abort the whole run on row-level errors — only reader-loop
+            // exceptions trigger fatal abort. Reader-level exceptions
+            // (ExecuteReader / Read throwing) bubble up naturally to the
+            // ReaderLoop catch and trigger _onFatalError.
+            RowProcessingErrors++;
+            if (FirstRowProcessingError == null)
+            {
+                FirstRowProcessingError = $"{ex.GetType().Name}: {ex.Message}";
+                LogSafe($"ProcessRow error #1 (will count further occurrences): {FirstRowProcessingError}");
+            }
+            else if (RowProcessingErrors % 100 == 0)
+            {
+                LogSafe($"ProcessRow errors: {RowProcessingErrors} so far " +
+                        $"(latest: {ex.GetType().Name}: {ex.Message})");
+            }
         }
     }
 
@@ -429,7 +516,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
                     // give up rather than retry the same payload.
                     throw;
                 }
-                _log($"Server rejected ColumnID={columnId} on EventID={eventId}; dropping and retrying (attempt {attempt + 1}/{maxAttempts})");
+                LogSafe($"Server rejected ColumnID={columnId} on EventID={eventId}; dropping and retrying (attempt {attempt + 1}/{maxAttempts})");
 
                 // Best-effort: AS may have left a half-created trace behind.
                 try { TryDeleteTrace(traceId); } catch { }
@@ -553,13 +640,19 @@ public sealed class TraceSubscriber : IAsyncDisposable
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         _stopping = true;
+        try { _progressCts?.Cancel(); } catch { }
         try { _subscribeCommand?.Cancel(); } catch { }
-        try { _log($"DisposeAsync: stopping=true, command.Cancel issued at {sw.Elapsed.TotalMilliseconds:F0}ms"); } catch { }
+        LogSafe($"DisposeAsync: stopping=true, command.Cancel issued at {sw.Elapsed.TotalMilliseconds:F0}ms");
 
         if (_readerTask != null)
         {
             try { await Task.WhenAny(_readerTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false); } catch { }
-            try { _log($"DisposeAsync: reader task wait complete at {sw.Elapsed.TotalSeconds:F1}s (status={_readerTask.Status})"); } catch { }
+            LogSafe($"DisposeAsync: reader task wait complete at {sw.Elapsed.TotalSeconds:F1}s (status={_readerTask.Status})");
+        }
+
+        if (_progressTask != null)
+        {
+            try { await Task.WhenAny(_progressTask, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false); } catch { }
         }
 
         // Issue Delete on a fresh connection — the subscribe connection
@@ -583,14 +676,22 @@ public sealed class TraceSubscriber : IAsyncDisposable
             });
             var deleteStart = sw.Elapsed;
             var winner = await Task.WhenAny(deleteTask, Task.Delay(TimeSpan.FromSeconds(15))).ConfigureAwait(false);
-            try { _log($"DisposeAsync: cleanup Delete {(winner == deleteTask ? "completed" : "TIMED OUT")} after {(sw.Elapsed - deleteStart).TotalSeconds:F1}s"); } catch { }
+            LogSafe($"DisposeAsync: cleanup Delete {(winner == deleteTask ? "completed" : "TIMED OUT")} after {(sw.Elapsed - deleteStart).TotalSeconds:F1}s");
         }
 
         try { _subscribeCommand?.Dispose(); } catch { }
         try { _connection?.Close(); } catch { }
         try { _connection?.Dispose(); } catch { }
+        try { _progressCts?.Dispose(); } catch { }
 
         _channel.Writer.TryComplete();
-        try { _log($"DisposeAsync: complete in {sw.Elapsed.TotalSeconds:F1}s"); } catch { }
+        // Final counters — always emit so we know the truth even if no
+        // periodic progress line landed before shutdown.
+        LogSafe($"Trace final stats: EventsSeen={EventsSeen} " +
+                $"DroppedByBackpressure={EventsDroppedByBackpressure} " +
+                $"DroppedByFilter={EventsDroppedByFilter} " +
+                $"RowProcessingErrors={RowProcessingErrors}" +
+                (FirstRowProcessingError != null ? $" FirstRowError=[{FirstRowProcessingError}]" : ""));
+        LogSafe($"DisposeAsync: complete in {sw.Elapsed.TotalSeconds:F1}s");
     }
 }
