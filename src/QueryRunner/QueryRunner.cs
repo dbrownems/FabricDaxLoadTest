@@ -564,20 +564,18 @@ namespace FabricDaxLoadTest
                         // Buffered writer: keep one file handle open for the
                         // life of the run instead of doing open/write/close
                         // per row (File.AppendAllText). Buffer is sized for
-                        // ~500 trace events (~256 KB at ~500 B/event avg);
-                        // StreamWriter flushes on its own when full and is
-                        // also explicitly flushed in finally so partial
-                        // buffers reach disk on every exit path (normal
-                        // completion, exception, cancellation).
+                        // ~500 trace events (~256 KB at ~500 B/event avg).
+                        // `using` guarantees Dispose on every exit path
+                        // (normal completion, exception, cancellation), and
+                        // StreamWriter.Dispose flushes through to the
+                        // underlying FileStream and disposes it.
                         const int bufBytes = 256 * 1024;
-                        FileStream? fs = null;
-                        StreamWriter? sw = null;
                         try
                         {
-                            fs = new FileStream(
+                            using var fs = new FileStream(
                                 traceFile, FileMode.Append, FileAccess.Write,
                                 FileShare.Read, bufferSize: bufBytes);
-                            sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
+                            using var sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
                             await foreach (var ev in traceCapture.Events.ReadAllAsync().ConfigureAwait(false))
                             {
                                 sw.Write(runIdLocal.ToString("D")); sw.Write(',');
@@ -598,17 +596,6 @@ namespace FabricDaxLoadTest
                         catch (Exception ex)
                         {
                             Log($"Trace writer error: {ex.GetType().Name}: {ex.Message}");
-                        }
-                        finally
-                        {
-                            // StreamWriter.Dispose best-effort flushes its
-                            // char buffer through the underlying FileStream
-                            // and disposes it (StreamWriter owns fs by
-                            // default). Disposing sw is sufficient on every
-                            // exit path; fs?.Dispose is idempotent insurance
-                            // if sw construction failed after fs opened.
-                            try { sw?.Dispose(); } catch { }
-                            try { fs?.Dispose(); } catch { }
                         }
                     });
                 }
