@@ -295,10 +295,12 @@ The notebook MERGEs Run metadata into three small dimensions and bulk-loads the 
 | `LoadTests` | one row per Load Test (`LoadTestId` = Fabric NotebookId) | Identity + provenance: `Name`, `Description`, `WorkspaceId`/`WorkspaceName` (the *notebook's* workspace), `TargetWorkspace`/`TargetDataset`. |
 | `LoadTestRuns` | one row per Run (`RunId`) | Run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) + config snapshot (`UserCount`, `DurationSec`, …) + target (`TargetWorkspace`, `TargetDataset`, `XmlaEndpoint`). |
 | `LoadTestQueries` | one row per `(LoadTestId, RunId, QueryHash)` | The Scenario (DAX queries) snapshot for this Run, hashed for change-detection. |
-| `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. Future Trace Capture rows (`Source="TraceCapture"`) land in the same table. |
+| `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. `SessionId` (AS engine session) and `RequestId` (AS engine request) back-filled from the QueryEnd trace. `LogicalSessionId` is `{LoadTestId}:{UserIndex}` for load-test rows; for future trace-capture rows it's derived post-capture by gap-windowing on `(UserEmail, StartUtc)`. Future Trace Capture rows (`Source="TraceCapture"`) land in the same table. |
 | `TraceEvents` | one row per AS trace event, keyed `(Source, SourceId, …)` | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Same `(Source, SourceId)` scheme as `QueryExecutions`. Best-effort — empty when tracing fails or is disabled. |
 
-All tables include `OwnerType` / `OwnerId` / `OwnerKey` columns so future trace facts (capture mode, monitor mode) can graft into the same star.
+All fact tables share the `(Source, SourceId)` natural key so future
+data origins (Trace Capture in Phase 4) graft into the same star
+without schema changes.
 
 ---
 

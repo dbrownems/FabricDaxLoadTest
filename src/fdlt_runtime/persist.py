@@ -273,12 +273,25 @@ def write_run(
             StructField("Source",               StringType(),    False),
             StructField("SourceId",             StringType(),    False),
             StructField("LoadTestId",           StringType(),    True),
-            StructField("UserIndex",            IntegerType(),   False),
+            # UserIndex / QueryIndex / Iteration / QuerySeq are non-null for
+            # LoadTestRun rows but NULL for TraceCapture rows (no
+            # driver-assigned indices). Schema is nullable=true to support
+            # both sources; load-test row builder still always populates them.
+            StructField("UserIndex",            IntegerType(),   True),
             StructField("UserEmail",            StringType(),    True),
-            StructField("QueryIndex",           IntegerType(),   False),
+            StructField("QueryIndex",           IntegerType(),   True),
             StructField("QueryHash",            StringType(),    True),
-            StructField("Iteration",            IntegerType(),   False),
+            StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
+            # Session identity. SessionId/RequestId are back-filled from
+            # the QueryEnd trace row via (SourceId, QuerySeq) → ActivityId.
+            # LogicalSessionId is a {LoadTestId}:{UserIndex} pseudo-id for
+            # load tests (one logical session per virtual user) and is
+            # computed by a window function over (UserEmail, StartUtc) at
+            # end-of-capture for TraceCapture rows.
+            StructField("SessionId",            StringType(),    True),
+            StructField("RequestId",            StringType(),    True),
+            StructField("LogicalSessionId",     StringType(),    True),
             StructField("StartUtc",             TimestampType(), False),
             StructField("EndUtc",               TimestampType(), True),
             StructField("StartTimeMs",          DoubleType(),    True),
@@ -317,6 +330,13 @@ def write_run(
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
+            # SessionId / RequestId back-filled from QueryEnd trace below.
+            # LogicalSessionId is deterministic for load tests: one logical
+            # session per (LoadTest, virtual user).
+            SessionId=None,
+            RequestId=None,
+            LogicalSessionId=(f"{load_test_id}:{int(r['UserIndex'])}"
+                              if load_test_id is not None else None),
             StartUtc=r["StartUtc"].to_pydatetime(),
             EndUtc=r["EndUtc"].to_pydatetime() if pd.notna(r["EndUtc"]) else None,
             StartTimeMs=float(r["StartTimeMs"]) if pd.notna(r["StartTimeMs"]) else None,
@@ -409,7 +429,8 @@ def write_run(
             StringType as _StrT,
         )
 
-        # 1. QueryEnd → (SourceId, QuerySeq, RequestId, EngineCpuMs, EngineDurationMs)
+        # 1. QueryEnd → (SourceId, QuerySeq, RequestId, SessionId,
+        #    EngineCpuMs, EngineDurationMs)
         #    QuerySeq is the last 4 hex bytes of ActivityId, decoded big-endian.
         trace_qe = (trace_df
             .where((F.col("EventClass") == F.lit("QueryEnd")) &
@@ -425,6 +446,7 @@ def write_run(
                 F.col("SourceId"),
                 F.col("QuerySeq"),
                 F.col("RequestId"),
+                F.col("SessionId"),
                 F.col("CpuMs").alias("EngineCpuMs"),
                 F.col("DurationMs").alias("EngineDurationMs"))
             .dropDuplicates(["SourceId", "QuerySeq"]))
@@ -491,7 +513,10 @@ def write_run(
 
         # Drop the placeholder NULL columns and LEFT JOIN each aggregate
         # back onto exec_df by (SourceId, QuerySeq).
+        # SessionId/RequestId are placeholders too (Row builder set them to
+        # None) — back-filled from QueryEnd along with EngineCpuMs etc.
         backfill_drop = [
+            "SessionId", "RequestId",
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
             "PeakMemoryKB", "QueryResultRows",
@@ -500,8 +525,10 @@ def write_run(
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
         exec_df = exec_df.drop(*backfill_drop)
+        # trace_qe already carries SessionId + RequestId — join the whole
+        # thing (don't drop RequestId like we did before).
         for side in (
-            trace_qe.drop("RequestId"),
+            trace_qe,
             trace_em, trace_vpq, trace_vcm, trace_dq,
         ):
             exec_df = exec_df.join(side, on=["SourceId", "QuerySeq"], how="left")
