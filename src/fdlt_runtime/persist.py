@@ -306,6 +306,20 @@ def write_run(
             StructField("ExecutionDelayMs",     LongType(),      True),
             StructField("PeakMemoryKB",         LongType(),      True),
             StructField("QueryResultRows",      LongType(),      True),
+            # Raw ExecutionMetrics JSON passthrough so we don't lose any
+            # fields AS emits in regimes we haven't tested (e.g. capacity
+            # throttling, which we expect adds a throttle-delay field but
+            # whose exact name we'll only know once we observe a throttled
+            # run). Promote new fields to typed columns once their names
+            # and semantics are confirmed. WALL-CLOCK BUDGET (ms):
+            #   ClientDurationMs                                  total client wait
+            #   = EngineDurationMs                                + network/serdes
+            #     = EngineCpuMs                                   serialized CPU work (FE+SE)
+            #       + (engine wall - engine CPU - exec delay      DQ wait + parallel SE wait + throttle
+            #          - DirectQueryDurationMs)                   ^ residual is "unaccounted"
+            #     + ExecutionDelayMs                              queueing for an engine worker slot
+            #     + (throttle fields, TBD)                        capacity-router throttling, if any
+            StructField("ExecutionMetricsJson", StringType(),    True),
             # VertiPaq SE aggregates per query.
             StructField("VertiPaqQueryCount",   IntegerType(),   True),
             StructField("VertiPaqDurationMs",   LongType(),      True),
@@ -344,6 +358,7 @@ def write_run(
             EngineDurationMs=None, EngineCpuMs=None,
             SECpuMs=None, FECpuMs=None, ExecutionDelayMs=None,
             PeakMemoryKB=None, QueryResultRows=None,
+            ExecutionMetricsJson=None,
             VertiPaqQueryCount=None, VertiPaqDurationMs=None,
             DirectQueryCount=None, DirectQueryDurationMs=None,
             DirectQueryCpuMs=None,
@@ -472,7 +487,10 @@ def write_run(
                 F.col("em.queryProcessingCpuTimeMs").alias("FECpuMs"),
                 F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
                 F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
-                F.col("em.queryResultRows").alias("QueryResultRows"))
+                F.col("em.queryResultRows").alias("QueryResultRows"),
+                # Raw JSON passthrough — keeps fields we haven't parsed (e.g.
+                # future throttling-related fields). One JSON blob per query.
+                F.col("TextData").alias("ExecutionMetricsJson"))
             .dropDuplicates(["SourceId", "RequestId"])
             .join(qe_map, on=["SourceId", "RequestId"], how="inner")
             .drop("RequestId"))
@@ -514,7 +532,7 @@ def write_run(
             "SessionId", "RequestId",
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
-            "PeakMemoryKB", "QueryResultRows",
+            "PeakMemoryKB", "QueryResultRows", "ExecutionMetricsJson",
             "VertiPaqQueryCount", "VertiPaqDurationMs",
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
