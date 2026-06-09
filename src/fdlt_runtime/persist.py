@@ -320,7 +320,15 @@ def write_run(
             #     + ExecutionDelayMs                              queueing for an engine worker slot
             #     + (throttle fields, TBD)                        capacity-router throttling, if any
             StructField("ExecutionMetricsJson", StringType(),    True),
-            # VertiPaq SE aggregates per query.
+            # VertiPaq SE aggregates per query. NOTE (v0.9.12+): the
+            # LoadTest QueryRunner trace no longer subscribes to event 83
+            # (VertiPaqSEQueryEnd) — it was the highest-volume event class
+            # and the SE CPU it gave us is already covered by
+            # ExecutionMetrics.vertipaqJobCpuTimeMs (-> SECpuMs). These
+            # columns are kept in the schema so external TraceCapture
+            # flows that DO capture event 83 can still populate them via
+            # the same back-fill code below; for LoadTest runs they will
+            # always be NULL.
             StructField("VertiPaqQueryCount",   IntegerType(),   True),
             StructField("VertiPaqDurationMs",   LongType(),      True),
             # DirectQuery aggregates per query (DirectLake/DQ models).

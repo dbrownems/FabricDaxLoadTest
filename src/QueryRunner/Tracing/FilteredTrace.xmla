@@ -155,44 +155,22 @@
 
           <!-- NOTE: Events 82 (VertiPaqSEQueryBegin), 85
                (VertiPaqSEQueryCacheMatch), 112 (DAXQueryPlan), and 134
-               (JobGraph) were removed in v0.9.4. With 50+ user load
-               we observed the AS server-side trace buffer overflowing
-               after ~9 seconds (the engine silently stops emitting
-               new events; see .copilot/tracing-notes §). Per query
-               we were emitting ~14 events; ~58% were these four
-               classes which the persist back-fill either ignores
-               (Begin / DAXQueryPlan / JobGraph) or only counts
-               (CacheMatch -> VertiPaqCacheHits, also dropped from
-               schema in the same release). Keeping only the events
-               persist.py actually consumes (QueryBegin/QueryEnd,
-               CommandBegin/CommandEnd, Error, VertiPaqSEQueryEnd,
-               DirectQueryBegin/End, ExecutionMetrics) cuts per-query
-               trace volume to ~5 events. -->
-
-          <!-- 83: VertiPaqSEQueryEnd -->
-          <Event>
-            <EventID>83</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>
-              <ColumnID>6</ColumnID>
-              <ColumnID>10</ColumnID>  <!-- IntegerData (rows scanned) -->
-              <ColumnID>13</ColumnID>
-              <ColumnID>24</ColumnID>
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>47</ColumnID>
-            </Columns>
-          </Event>
+               (JobGraph) were removed in v0.9.4. Event 83
+               (VertiPaqSEQueryEnd) was additionally removed in v0.9.12
+               — it's the highest-volume event class by far (~3-4x the
+               next), and ExecutionMetrics.vertipaqJobCpuTimeMs already
+               gives us SE CPU at the query level. We lose the per-SE-
+               query count and per-SE-query wall time (which are kept
+               in the QueryExecutions schema but populated only by
+               external TraceCapture flows; back-fill from this trace
+               leaves them NULL). With 50+ user load we observed the
+               AS server-side trace buffer overflowing after ~9 seconds
+               (the engine silently stops emitting new events; see
+               .copilot/tracing-notes §). Per query we were emitting
+               ~14 events; trimming to QueryBegin/QueryEnd,
+               CommandBegin/CommandEnd, Error, DirectQueryBegin/End,
+               and ExecutionMetrics cuts per-query trace volume to ~3
+               events (was ~5 in v0.9.4-v0.9.11). -->
 
           <!-- 98: DirectQueryBegin -->
           <Event>
