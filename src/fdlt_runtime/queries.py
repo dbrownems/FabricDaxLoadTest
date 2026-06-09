@@ -53,19 +53,20 @@ def normalize_queries(raw_json: str) -> list[str]:
     """
     obj = json.loads(raw_json.lstrip("\ufeff"))
     if isinstance(obj, dict) and isinstance(obj.get("events"), list):
+        events = obj["events"]
         out: list[str] = []
-        for ev in obj["events"]:
+        query_named_events = 0
+        for ev in events:
             if not isinstance(ev, dict):
                 continue
+            if ev.get("name") in ("Execute DAX Query", "Query"):
+                query_named_events += 1
             # Power BI Desktop Performance Analyzer: DAX lives in
             # metrics.QueryText on "Execute DAX Query" events.
             q = None
             metrics = ev.get("metrics")
             if isinstance(metrics, dict):
-                if ev.get("name") == "Execute DAX Query":
-                    q = metrics.get("QueryText") or metrics.get("queryText")
-                if not q:
-                    q = metrics.get("QueryText") or metrics.get("queryText")
+                q = metrics.get("QueryText") or metrics.get("queryText")
             if not q:
                 q = ev.get("query") or ev.get("QueryText") or ev.get("queryText")
             if not q:
@@ -74,6 +75,16 @@ def normalize_queries(raw_json: str) -> list[str]:
                     q = qd.get("Query")
             if isinstance(q, str) and q.strip():
                 out.append(q)
+        if not out:
+            raise ValueError(
+                "Performance Analyzer export contains no DAX query text "
+                f"({len(events)} events, {query_named_events} Query/Execute DAX Query "
+                "events, but none had metrics.QueryText). Re-record the trace from "
+                "Power BI Desktop (View > Performance Analyzer > Start recording > "
+                "Refresh visuals > Export), or in the Fabric/Service portal click "
+                "'Refresh visuals' after starting the recording. Some browser/portal "
+                "modes capture only timings and omit the DAX text."
+            )
         return out
     if isinstance(obj, list):
         out2: list[str] = []
@@ -84,6 +95,12 @@ def normalize_queries(raw_json: str) -> list[str]:
                 v = q.get("query") or q.get("Query")
                 if isinstance(v, str):
                     out2.append(v)
+        if not out2:
+            raise ValueError(
+                f"Queries JSON array is empty or contains no recognizable query "
+                f"strings ({len(obj)} entries). Expected list of DAX strings or "
+                "objects with a 'query'/'Query' field."
+            )
         return out2
     raise ValueError("Unrecognized queries.json shape (expected list or {events: [...]})")
 
