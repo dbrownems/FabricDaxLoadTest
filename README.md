@@ -2,25 +2,24 @@
 
 A load testing tool for Microsoft Fabric and Power BI semantic models. Simulates concurrent users executing DAX queries against the **XMLA endpoint** using ADOMD.NET, then lands per-query telemetry in Delta tables for analysis in Power BI.
 
-Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dotnet build` required for end users. A deploy script (or a few manual portal steps) drops a `LoadTest - Main` notebook + `LoadTests` lakehouse into your workspace; you edit cell 1 of that notebook and **Run All**.
+Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dotnet build` required for end users. Import a single `.ipynb`, edit cell 1, and **Run All**. An optional deploy script and lakehouse-backed Delta tables are available when you want cross-run history.
 
 ## Quick start
 
 The minimal end-to-end flow, assuming you already have a Power BI semantic model you want to load-test:
 
 1. **Capture a workload** with [**Performance Analyzer**](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) — available **in both the Fabric portal and Power BI Desktop** (so no Windows device or local `.pbix` is required). Open the report → *View → Performance Analyzer → Start recording → interact with the report (apply slicers, switch pages, refresh visuals) → Export*. This produces a `.json` file describing the exact DAX queries the report fired.
-2. **Deploy** (see [Setup](#setup) for prereqs):
-   ```pwsh
-   pwsh ./scripts/Deploy-LoadTests.ps1 -Workspace "<your-workspace>"
-   ```
-3. **Run.** In the workspace, open `LoadTests/LoadTest - Main`:
+2. **Import the notebook.** Download [`LoadTest-Main.ipynb`](https://github.com/dbrownems/FabricDaxLoadTest/releases/latest) from the latest GitHub release, then in your Fabric workspace: **+ New item → Import notebook → From this computer**.
+3. **Run.** Open the imported `LoadTest - Main` notebook:
    - Upload the Performance Analyzer `.json` onto the notebook's **Resources** panel (left sidebar).
-   - Optionally edit cell 1 (`CONCURRENT_USERS`, `DURATION_SECONDS`, etc. — defaults are 25 users for 60 s).
+   - In cell 1, set `TARGET_DATASET` to the semantic model you want to hit (or leave `None` if the workspace has exactly one model). Defaults are 25 users for 60 s — see [`docs/loadgen-main.md`](docs/loadgen-main.md) to tune the load shape.
    - **Run All**.
 
-That's it — the four Delta tables in your lakehouse are now ready for cross-Run analysis. Cell 4 plots latency / QPS / users for this Run.
+Cell 4 plots latency / QPS / users / engine CPU for this Run, read straight from the per-run CSV on the Spark driver — **no lakehouse required**.
 
-> **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`. Redeploys upload a fresh `fdlt_runtime` wheel and rebake cell 2's `WHEEL_URL`, so your `LoadTest - Main` always points at the just-deployed wheel; user edits to cell 1 (the parameters cell) are preserved on Save-As copies.
+> **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 5 Delta tables (`LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
+
+> **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`.
 
 ## Concepts
 
