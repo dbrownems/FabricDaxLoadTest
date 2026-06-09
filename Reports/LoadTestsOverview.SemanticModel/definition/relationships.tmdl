@@ -1,28 +1,28 @@
-/// LoadTestRuns -> LoadTests (each run belongs to one load test definition).
+// LoadTestRuns -> LoadTests (each run belongs to one load test definition).
 relationship 43518cec-d04c-4335-814b-350845b96482
 	fromColumn: LoadTestRuns.LoadTestId
 	toColumn: LoadTests.LoadTestId
 
-/// QueryExecutions -> LoadTestRuns. SourceId carries the RunId for
-/// LoadTestRun-sourced executions (Source = "LoadTestRun"). For other
-/// scenario sources the relationship will simply yield no match, which
-/// is the desired behaviour.
+// QueryExecutions -> LoadTestRuns. SourceId carries the RunId for
+// LoadTestRun-sourced executions (Source = "LoadTestRun"). For other
+// scenario sources the relationship will simply yield no match, which
+// is the desired behaviour.
 relationship 9a32e622-d70d-4017-b73d-9fe71990b2cf
 	fromColumn: QueryExecutions.SourceId
 	toColumn: LoadTestRuns.RunId
 
-/// TraceEvents -> LoadTestRuns. Same SourceId convention.
+// TraceEvents -> LoadTestRuns. Same SourceId convention.
 relationship 9b227fc6-5bd4-4b8d-bd7b-7da9b91a55a0
 	fromColumn: TraceEvents.SourceId
 	toColumn: LoadTestRuns.RunId
 
-/// LoadTestQueries -> LoadTestRuns (per-run snapshot of queries).
+// LoadTestQueries -> LoadTestRuns (per-run snapshot of queries).
 relationship fe02fe63-ee8a-4998-8d5a-22028b8cb631
 	fromColumn: LoadTestQueries.RunId
 	toColumn: LoadTestRuns.RunId
 
-/// QueryExecutions -> LoadTestQueries via composite key RunId|QueryHash.
-/// RunQueryKey is a calculated column on both sides.
+// QueryExecutions -> LoadTestQueries via composite key RunId|QueryHash.
+// RunQueryKey is a calculated column on both sides.
 relationship 6ec32400-62bc-443e-8b48-13ee7f087c36
 	fromColumn: QueryExecutions.RunQueryKey
 	toColumn: LoadTestQueries.RunQueryKey
