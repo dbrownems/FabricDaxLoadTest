@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "LoadTestsOverview"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "aa95aefd-e48d-49ab-ae6f-d6b1e9c94074"
+  }
+}

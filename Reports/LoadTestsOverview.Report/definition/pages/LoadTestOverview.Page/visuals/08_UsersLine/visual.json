@@ -1,0 +1,72 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.7.0/schema.json",
+  "name": "1ba2e9bc6cd242a58aa6",
+  "position": {
+    "x": 24,
+    "y": 408,
+    "z": 5,
+    "height": 152,
+    "width": 608,
+    "tabOrder": 5
+  },
+  "visual": {
+    "visualType": "lineChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "StartSecond"
+                }
+              },
+              "queryRef": "QueryExecutions.StartSecond",
+              "nativeQueryRef": "StartSecond",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "Active Users (max)"
+                }
+              },
+              "queryRef": "QueryExecutions.Active Users (max)",
+              "nativeQueryRef": "Active Users (max)"
+            }
+          ]
+        }
+      }
+    },
+    "objects": {
+      "title": [
+        {
+          "properties": {
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Active users'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.7.0/schema.json",
+  "name": "86592f5d252038d6e852",
+  "position": {
+    "x": 648,
+    "y": 164,
+    "z": 4,
+    "height": 232,
+    "width": 608,
+    "tabOrder": 4
+  },
+  "visual": {
+    "visualType": "columnChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "StartSecond"
+                }
+              },
+              "queryRef": "QueryExecutions.StartSecond",
+              "nativeQueryRef": "StartSecond",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "Successful Executions"
+                }
+              },
+              "queryRef": "QueryExecutions.Successful Executions",
+              "nativeQueryRef": "Successful Executions"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "Failed Executions"
+                }
+              },
+              "queryRef": "QueryExecutions.Failed Executions",
+              "nativeQueryRef": "Failed Executions"
+            }
+          ]
+        }
+      }
+    },
+    "objects": {
+      "title": [
+        {
+          "properties": {
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Queries per second'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}
