@@ -988,60 +988,99 @@ namespace FabricDaxLoadTest
         private static void LogWriterLoop(BlockingCollection<TelemetryRecord> queue,
             string logFilePath, CancellationToken ct)
         {
-            var batch = new List<TelemetryRecord>();
-
-            while (!queue.IsCompleted)
+            // Buffered streaming writer: same pattern as the trace writer
+            // — keep one file handle open for the life of the run instead
+            // of opening/appending/closing per batch (the old
+            // File.AppendAllText path). FileShare.Read so external tools
+            // (and blobfuse-mounted readers) can tail the file mid-run.
+            // 256 KB buffer ≈ a few thousand executions rows.
+            const int bufBytes = 256 * 1024;
+            StreamWriter? sw = null;
+            try
             {
-                batch.Clear();
-
-                // Block up to 10 seconds for the first item
                 try
                 {
-                    if (queue.TryTake(out var first, TimeSpan.FromSeconds(10)))
-                        batch.Add(first);
-                    else
-                        continue;
-                }
-                catch (InvalidOperationException) { break; } // CompleteAdding was called
-
-                // Drain any remaining items without blocking
-                while (queue.TryTake(out var item))
-                    batch.Add(item);
-
-                if (batch.Count == 0) continue;
-
-                // Open, append, close — blobfuse doesn't support file sharing
-                var sb = new StringBuilder();
-                foreach (var r in batch)
-                {
-                    var err = SanitizeCsvField(r.ErrorMessage);
-                    var email = SanitizeCsvField(r.UserEmail);
-                    sb.Append(r.RunId.ToString("D")).Append(',')
-                      .Append(r.UserIndex).Append(',')
-                      .Append(email).Append(',')
-                      .Append(r.QueryIndex).Append(',')
-                      .Append(r.Iteration).Append(',')
-                      .Append(r.QuerySeq).Append(',')
-                      .Append(r.StartUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
-                      .Append(r.EndUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")).Append(',')
-                      .Append(r.StartTimeMs.ToString("F0")).Append(',')
-                      .Append(r.DurationMs.ToString("F1")).Append(',')
-                      .Append(r.Outcome).Append(',')
-                      .Append(r.RowCount).Append(',')
-                      .Append(r.ResponseBytes).Append(',')
-                      .Append(err).Append(',')
-                      .Append(r.ActiveUsersAtStart)
-                      .Append('\n');
-                }
-
-                try
-                {
-                    File.AppendAllText(logFilePath, sb.ToString());
+                    var fs = new FileStream(
+                        logFilePath, FileMode.Append, FileAccess.Write,
+                        FileShare.Read, bufferSize: bufBytes);
+                    sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
                 }
                 catch (Exception ex)
                 {
-                    Log($"[LogWriter] Error writing: {ex.Message}");
+                    // Can't open the file — drain the queue so producers
+                    // don't block, then exit. Surface once via the main log.
+                    try { Console.Error.WriteLine($"[LogWriter] Cannot open {logFilePath}: {ex.Message}"); } catch { }
+                    while (!queue.IsCompleted)
+                    {
+                        try { queue.TryTake(out _, TimeSpan.FromSeconds(1)); }
+                        catch (InvalidOperationException) { break; }
+                    }
+                    return;
                 }
+
+                var batch = new List<TelemetryRecord>();
+                while (!queue.IsCompleted)
+                {
+                    batch.Clear();
+
+                    // Block up to 10 seconds for the first item
+                    try
+                    {
+                        if (queue.TryTake(out var first, TimeSpan.FromSeconds(10)))
+                            batch.Add(first);
+                        else
+                        {
+                            // Idle period — flush whatever's buffered so
+                            // tailing tools see progress.
+                            try { sw.Flush(); } catch { }
+                            continue;
+                        }
+                    }
+                    catch (InvalidOperationException) { break; } // CompleteAdding was called
+
+                    // Drain any remaining items without blocking
+                    while (queue.TryTake(out var item))
+                        batch.Add(item);
+
+                    if (batch.Count == 0) continue;
+
+                    try
+                    {
+                        foreach (var r in batch)
+                        {
+                            var err = SanitizeCsvField(r.ErrorMessage);
+                            var email = SanitizeCsvField(r.UserEmail);
+                            sw.Write(r.RunId.ToString("D")); sw.Write(',');
+                            sw.Write(r.UserIndex); sw.Write(',');
+                            sw.Write(email); sw.Write(',');
+                            sw.Write(r.QueryIndex); sw.Write(',');
+                            sw.Write(r.Iteration); sw.Write(',');
+                            sw.Write(r.QuerySeq); sw.Write(',');
+                            sw.Write(r.StartUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")); sw.Write(',');
+                            sw.Write(r.EndUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")); sw.Write(',');
+                            sw.Write(r.StartTimeMs.ToString("F0")); sw.Write(',');
+                            sw.Write(r.DurationMs.ToString("F1")); sw.Write(',');
+                            sw.Write(r.Outcome); sw.Write(',');
+                            sw.Write(r.RowCount); sw.Write(',');
+                            sw.Write(r.ResponseBytes); sw.Write(',');
+                            sw.Write(err); sw.Write(',');
+                            sw.Write(r.ActiveUsersAtStart);
+                            sw.Write('\n');
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        try { Console.Error.WriteLine($"[LogWriter] Error writing: {ex.Message}"); } catch { }
+                    }
+                }
+            }
+            finally
+            {
+                // Dispose flushes the buffer through StreamWriter to the
+                // underlying FileStream and closes the handle. Best-effort
+                // — Dispose should never throw, and if it does we'd rather
+                // crash than swallow a corruption signal silently.
+                sw?.Dispose();
             }
         }
 
