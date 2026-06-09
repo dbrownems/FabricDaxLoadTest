@@ -122,6 +122,25 @@ namespace FabricDaxLoadTest
         /// at least one full sample interval has elapsed.
         /// </summary>
         public double RollingQps { get; init; }
+
+        /// <summary>
+        /// Number of successful queries currently executing (incremented
+        /// before <c>ExecuteCommand</c>, decremented in finally). Includes
+        /// queries blocked on a connection but not those waiting on a
+        /// per-user iteration semaphore.
+        /// </summary>
+        public int InFlight { get; init; }
+
+        /// <summary>
+        /// Latency percentiles in milliseconds over the last ~5 seconds of
+        /// successful queries. 0 when the window is empty.
+        /// </summary>
+        public double LatencyMsP50 { get; init; }
+        public double LatencyMsP95 { get; init; }
+        public double LatencyMsP99 { get; init; }
+
+        /// <summary>Sample count behind the percentile numbers (last ~5s).</summary>
+        public int LatencySamples { get; init; }
     }
 
     /// <summary>

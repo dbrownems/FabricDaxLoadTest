@@ -168,8 +168,15 @@ namespace FabricDaxLoadTest
         private long _totalQueries;
         private long _totalErrors;
         private int _activeUsers;
+        private int _inFlightQueries;
         private int _totalConnections;
         private int _distinctUsers;
+
+        // Ring of (timestampTicks, durationMs) for successful queries within
+        // the last LATENCY_WINDOW_SECONDS. Single-thread (snapshot loop)
+        // trims the head; producers (user threads) only enqueue. Lock-free.
+        private const int LATENCY_WINDOW_SECONDS = 5;
+        private readonly ConcurrentQueue<(long Ticks, double DurationMs)> _recentDurations = new();
 
         // All results (kept for BuildStats at the end)
         private readonly ConcurrentBag<QueryResult> _allResults = new();
@@ -190,10 +197,12 @@ namespace FabricDaxLoadTest
             _totalQueries = 0;
             _totalErrors = 0;
             _activeUsers = 0;
+            _inFlightQueries = 0;
             _totalConnections = 0;
             _distinctUsers = 0;
             ResetWindow();
             while (_allResults.TryTake(out _)) { }
+            while (_recentDurations.TryDequeue(out _)) { }
         }
 
         private void ResetWindow()
@@ -217,6 +226,10 @@ namespace FabricDaxLoadTest
 
         public int ActiveUsers => Volatile.Read(ref _activeUsers);
 
+        public int InFlight => Volatile.Read(ref _inFlightQueries);
+        public void IncrementInFlight() => Interlocked.Increment(ref _inFlightQueries);
+        public void DecrementInFlight() => Interlocked.Decrement(ref _inFlightQueries);
+
         public void RecordQuery(QueryResult result)
         {
             _allResults.Add(result);
@@ -235,6 +248,10 @@ namespace FabricDaxLoadTest
                 _windowActiveUsers.TryAdd(result.UserIndex, 0);
                 _windowActiveQueries.TryAdd(result.QueryIndex, 0);
 
+                // Push successful duration into the rolling-percentile ring.
+                // Bounded implicitly by the snapshot-loop trimming to ~5s.
+                _recentDurations.Enqueue((DateTime.UtcNow.Ticks, result.DurationMs));
+
                 // Lock-free min
                 long curMin;
                 do { curMin = Volatile.Read(ref _windowMinTicks); }
@@ -245,6 +262,36 @@ namespace FabricDaxLoadTest
                 do { curMax = Volatile.Read(ref _windowMaxTicks); }
                 while (ticks > curMax && Interlocked.CompareExchange(ref _windowMaxTicks, ticks, curMax) != curMax);
             }
+        }
+
+        /// <summary>
+        /// Drain entries older than <see cref="LATENCY_WINDOW_SECONDS"/> from
+        /// the rolling-latency ring and return p50/p95/p99 over what remains.
+        /// Called once per second from the snapshot loop. Returns
+        /// (0,0,0,0) when the window is empty.
+        /// </summary>
+        public (double P50, double P95, double P99, int Count) ComputeLatencyPercentiles()
+        {
+            long cutoff = DateTime.UtcNow.Ticks - (LATENCY_WINDOW_SECONDS * TimeSpan.TicksPerSecond);
+            while (_recentDurations.TryPeek(out var head) && head.Ticks < cutoff)
+            {
+                _recentDurations.TryDequeue(out _);
+            }
+            var snapshot = _recentDurations.ToArray();
+            if (snapshot.Length == 0) return (0, 0, 0, 0);
+            var arr = new double[snapshot.Length];
+            for (int i = 0; i < snapshot.Length; i++) arr[i] = snapshot[i].DurationMs;
+            Array.Sort(arr);
+            double Pct(double p)
+            {
+                // Nearest-rank percentile; matches what humans expect from
+                // "p95 over the last few seconds" in a load-test dashboard.
+                int idx = (int)Math.Ceiling(p / 100.0 * arr.Length) - 1;
+                if (idx < 0) idx = 0;
+                if (idx >= arr.Length) idx = arr.Length - 1;
+                return arr[idx];
+            }
+            return (Pct(50), Pct(95), Pct(99), arr.Length);
         }
 
         public List<QueryResult> AllResults => _allResults.ToList();
@@ -749,6 +796,8 @@ namespace FabricDaxLoadTest
                     lastSuccessful = successful;
                     lastSampleAt.Restart();
 
+                    var (p50, p95, p99, latCount) = status.ComputeLatencyPercentiles();
+
                     snapshotBox.Set(new LoadTestProgressSnapshot
                     {
                         UtcNow = DateTime.UtcNow,
@@ -759,6 +808,11 @@ namespace FabricDaxLoadTest
                         Successful = successful,
                         Failed = errors,
                         RollingQps = qps,
+                        InFlight = status.InFlight,
+                        LatencyMsP50 = p50,
+                        LatencyMsP95 = p95,
+                        LatencyMsP99 = p99,
+                        LatencySamples = latCount,
                     });
                 }
             });
@@ -977,6 +1031,7 @@ namespace FabricDaxLoadTest
                     Successful = status.TotalQueries - status.TotalErrors,
                     Failed = status.TotalErrors,
                     RollingQps = 0,
+                    InFlight = 0,
                 });
 
                 try { _logger.Dispose(); } catch { }
@@ -1274,6 +1329,7 @@ namespace FabricDaxLoadTest
                 QuerySeq = seq,
                 StartTimeMs = Math.Round(testStart.Elapsed.TotalMilliseconds),
                 ActiveUsersAtStart = QueryRunnerStatus.Instance.ActiveUsers };
+            QueryRunnerStatus.Instance.IncrementInFlight();
             try
             {
                 using var cmd = conn.CreateCommand();
@@ -1312,6 +1368,10 @@ namespace FabricDaxLoadTest
             catch (Exception ex)
             {
                 result.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+            }
+            finally
+            {
+                QueryRunnerStatus.Instance.DecrementInFlight();
             }
             return result;
         }

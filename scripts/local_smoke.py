@@ -17,6 +17,23 @@ REPO = Path(__file__).resolve().parent.parent
 PUBLISH = REPO / "src" / "LoadGen" / "bin" / "Release" / "net8.0" / "win-x64" / "publish"
 LOADGEN_DLL = PUBLISH / "LoadGen.dll"
 
+# Make the dashboard from fdlt_runtime importable when running from a checkout
+# without an editable install. PUBLISH/Python doesn't ship the runtime package.
+sys.path.insert(0, str(REPO / "src"))
+try:
+    from fdlt_runtime.runner import LiveDashboard, _DriverCpuSampler, render_progress  # noqa: E402
+except Exception:
+    LiveDashboard = None  # type: ignore
+    _DriverCpuSampler = None  # type: ignore
+    def render_progress(env_obj):  # type: ignore
+        return (
+            f"[{env_obj.get('phase','?'):<10}] "
+            f"elapsed={env_obj.get('elapsed',0):6.1f}s  "
+            f"users={env_obj.get('activeUsers',0)}/{env_obj.get('targetUsers',0)}  "
+            f"ok={env_obj.get('successful',0)}  err={env_obj.get('failed',0)}  "
+            f"qps={env_obj.get('qps',0):.1f}"
+        )
+
 
 def get_token() -> str:
     out = subprocess.check_output(
@@ -115,44 +132,57 @@ def main() -> int:
     result_envelope = None
     error_envelope  = None
     n_progress = 0
-    last_status = ""
 
+    dash = LiveDashboard() if LiveDashboard is not None else None
+    cpu_sampler = _DriverCpuSampler() if _DriverCpuSampler is not None else None
+
+    def _ctx(d):
+        # nullcontext-equivalent that works when dash is None.
+        class _N:
+            def __enter__(self): return None
+            def __exit__(self, *a): return False
+        return d if d is not None else _N()
+
+    last_status = ""
     try:
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                env_obj = json.loads(line)
-            except json.JSONDecodeError:
-                print(f"(non-JSON stdout) {line}")
-                continue
-            kind = env_obj.get("type")
-            if kind == "started":
-                print(f"[started] {json.dumps(env_obj)[:200]}")
-            elif kind == "progress":
-                n_progress += 1
-                status = (
-                    f"[{env_obj.get('phase','?'):<10}] "
-                    f"elapsed={env_obj.get('elapsed',0):6.1f}s  "
-                    f"users={env_obj.get('activeUsers',0)}/{env_obj.get('targetUsers',0)}  "
-                    f"ok={env_obj.get('successful',0)}  err={env_obj.get('failed',0)}  "
-                    f"qps={env_obj.get('qps',0):.1f}"
-                )
-                # Overwrite previous line for live feel.
-                sys.stdout.write("\r" + status.ljust(len(last_status)))
-                sys.stdout.flush()
-                last_status = status
-            elif kind == "result":
-                result_envelope = env_obj
-                print()
-                print(f"[result ] resultFile={env_obj.get('resultFile')}")
-            elif kind == "error":
-                error_envelope = env_obj
-                print()
-                print(f"[error  ] code={env_obj.get('code')} type={env_obj.get('exceptionType')}")
-            else:
-                print(f"[?{kind}] {json.dumps(env_obj)[:200]}")
+        with _ctx(dash) as _:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    env_obj = json.loads(line)
+                except json.JSONDecodeError:
+                    print(f"(non-JSON stdout) {line}")
+                    continue
+                kind = env_obj.get("type")
+                if kind == "started":
+                    if dash is None:
+                        print(f"[started] {json.dumps(env_obj)[:200]}")
+                elif kind == "progress":
+                    n_progress += 1
+                    if cpu_sampler is not None:
+                        cpu_sampler.decorate(env_obj)
+                    if dash is not None:
+                        dash.update(env_obj)
+                    else:
+                        status = render_progress(env_obj)
+                        sys.stdout.write("\r" + status.ljust(len(last_status)))
+                        sys.stdout.flush()
+                        last_status = status
+                elif kind == "result":
+                    result_envelope = env_obj
+                    if dash is None:
+                        print()
+                        print(f"[result ] resultFile={env_obj.get('resultFile')}")
+                elif kind == "error":
+                    error_envelope = env_obj
+                    if dash is None:
+                        print()
+                        print(f"[error  ] code={env_obj.get('code')} type={env_obj.get('exceptionType')}")
+                else:
+                    if dash is None:
+                        print(f"[?{kind}] {json.dumps(env_obj)[:200]}")
     except KeyboardInterrupt:
         print("\nSIGINT — forwarding to child")
         try: proc.send_signal(signal.SIGINT)

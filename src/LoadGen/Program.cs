@@ -474,6 +474,11 @@ class Program
             ["successful"] = s.Successful,
             ["failed"] = s.Failed,
             ["qps"] = Math.Round(s.RollingQps, 2),
+            ["inFlight"] = s.InFlight,
+            ["latencyMsP50"] = Math.Round(s.LatencyMsP50, 1),
+            ["latencyMsP95"] = Math.Round(s.LatencyMsP95, 1),
+            ["latencyMsP99"] = Math.Round(s.LatencyMsP99, 1),
+            ["latencySamples"] = s.LatencySamples,
         });
     }
 
