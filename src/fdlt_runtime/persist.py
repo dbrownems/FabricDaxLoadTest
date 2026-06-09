@@ -588,10 +588,31 @@ def write_run(
     except Exception:
         pass
 
+    # Wrap each write so the Spark UI shows a meaningful job description
+    # instead of "$anonfun$recordDeltaOperationInternal$1 at
+    # SynapseLoggingShim.scala:111". setJobDescription / setLocalProperty
+    # are thread-local in PySpark — perfect for our ThreadPoolExecutor
+    # where each write runs on its own worker thread.
+    sc = spark.sparkContext
+    run_short = (run_id or "")[:8] or "norun"
+    def _named(name: str, fn):
+        def _run():
+            try:
+                sc.setJobDescription(f"FDLT {name} [{run_short}]")
+                sc.setLocalProperty("callSite.short", f"fdlt:{name}")
+                sc.setLocalProperty("callSite.long",
+                                    f"FabricDaxLoadTest write {name} for run {run_id}")
+                return fn()
+            finally:
+                sc.setJobDescription(None)
+                sc.setLocalProperty("callSite.short", None)
+                sc.setLocalProperty("callSite.long", None)
+        return _run
+
     errors = []
     with ThreadPoolExecutor(max_workers=len(write_tasks),
                             thread_name_prefix="fdlt-delta") as ex:
-        futures = {ex.submit(fn): name for name, fn in write_tasks}
+        futures = {ex.submit(_named(name, fn)): name for name, fn in write_tasks}
         for fut in as_completed(futures):
             name = futures[fut]
             try:
