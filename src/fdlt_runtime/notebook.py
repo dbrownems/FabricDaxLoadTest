@@ -42,7 +42,7 @@ class BootstrapResult:
     workspace_name: str
     notebook_name: str
     token: str
-    lakehouse: LakehouseInfo
+    lakehouse: Optional[LakehouseInfo]
     dotnet: str
     loadgen_dll: str
     runtime_version: str
@@ -61,20 +61,21 @@ class RunOutcome:
 
 def bootstrap(
     *,
-    lakehouse_name: str,
+    lakehouse_name: Optional[str] = None,
     lakehouse_workspace: Optional[str] = None,
     lakehouse_schema: Optional[str] = None,
 ) -> BootstrapResult:
     """Resolve env (workspace / lakehouse / dotnet) for a load test.
 
-    `lakehouse_name` is required — the destination lakehouse display
-    name (cell-1 `LAKEHOUSE_NAME`). The lakehouse is searched in
-    `lakehouse_workspace` (a workspace display name or GUID). If
-    `lakehouse_workspace` is None, the current notebook's workspace is
-    used (the common case). The discovered `(workspace_id,
-    workspace_name, lakehouse_id, lakehouse_name)` tuple is exposed via
-    `BootstrapResult.lakehouse` and is the single source of truth for
-    every downstream OneLake/abfss path the notebook produces.
+    `lakehouse_name` is **optional**. When supplied, the lakehouse is
+    located in `lakehouse_workspace` (display name or GUID; defaults
+    to the notebook's workspace) and used as the destination for the
+    5 Delta tables written after each run. **When omitted, persistence
+    is skipped entirely** — the load test still runs, plots still
+    render (they read the local LoadGen CSV directly, no Spark
+    needed), but no Delta tables are created and no SQL-endpoint sync
+    is attempted. This is the cheapest quickstart for a one-off "is
+    my model fast enough?" test.
 
     Locates `LoadGen.dll` inside the installed `fdlt_runtime` wheel
     via `importlib.resources` — pip-installing the wheel is the
@@ -92,17 +93,19 @@ def bootstrap(
 
     token = notebookutils.credentials.getToken("pbi")
 
-    # Resolve the lakehouse's workspace. None ⇒ same workspace as the notebook.
-    if lakehouse_workspace is None:
-        lh_ws_id, lh_ws_name = ws_id, ws_name
-    else:
-        lh_ws_id, lh_ws_name = resolve_workspace(lakehouse_workspace, token)
+    lh: Optional[LakehouseInfo] = None
+    if lakehouse_name:
+        # Resolve the lakehouse's workspace. None => same as notebook.
+        if lakehouse_workspace is None:
+            lh_ws_id, lh_ws_name = ws_id, ws_name
+        else:
+            lh_ws_id, lh_ws_name = resolve_workspace(lakehouse_workspace, token)
+        lh = discover_lakehouse(
+            workspace_id=lh_ws_id, lakehouse_name=lakehouse_name,
+            token=token, workspace_name=lh_ws_name,
+            schema_override=lakehouse_schema,
+            list_tables=lambda p: notebookutils.fs.ls(p))
 
-    lh = discover_lakehouse(
-        workspace_id=lh_ws_id, lakehouse_name=lakehouse_name,
-        token=token, workspace_name=lh_ws_name,
-        schema_override=lakehouse_schema,
-        list_tables=lambda p: notebookutils.fs.ls(p))
     dotnet = find_dotnet()
     loadgen_dll = os.fspath(files("fdlt_runtime").joinpath("loadgen", "LoadGen.dll"))
     if not os.path.exists(loadgen_dll):
@@ -114,11 +117,14 @@ def bootstrap(
             "from https://github.com/dbrownems/FabricDaxLoadTest/releases.")
 
     print(f"Workspace : {ws_name} ({ws_id})")
-    if lh.workspace_id != ws_id:
-        print(f"Lakehouse-WS: {lh.workspace_name} ({lh.workspace_id})  "
-              "(BYO — different from notebook workspace)")
-    print(f"Lakehouse : {lh.lakehouse_name} ({lh.lakehouse_id})  "
-          f"schema={lh.schema or '(flat / no schema)'}")
+    if lh is None:
+        print("Lakehouse : (none — persistence disabled, plots will read local CSV)")
+    else:
+        if lh.workspace_id != ws_id:
+            print(f"Lakehouse-WS: {lh.workspace_name} ({lh.workspace_id})  "
+                  "(BYO — different from notebook workspace)")
+        print(f"Lakehouse : {lh.lakehouse_name} ({lh.lakehouse_id})  "
+              f"schema={lh.schema or '(flat / no schema)'}")
     print(f"LoadGen   : {loadgen_dll}  ({os.path.getsize(loadgen_dll):,} bytes)")
     print(f"Runtime   : fdlt_runtime {__version__}")
     print(f"dotnet    : {dotnet}")
@@ -259,7 +265,7 @@ def run(
     _print_run_banner(rr, run_dest)
 
     write_summary: Optional[WriteSummary] = None
-    if rr.run_id:
+    if rr.run_id and boot.lakehouse is not None:
         if spark is None:
             from pyspark.sql import SparkSession  # type: ignore
             spark = SparkSession.builder.getOrCreate()
@@ -332,6 +338,13 @@ def run(
                 )
             except Exception as ex:  # noqa: BLE001 — best-effort
                 print(f"  Log copy   : (warning: {ex})")
+    elif rr.run_id:
+        # No lakehouse configured — persistence and log copy are skipped
+        # by design. Forensic artifacts still live at run_dest on the
+        # Spark driver's local disk for the lifetime of the session.
+        print("\n=== Lakehouse write skipped (no lakehouse configured) ===")
+        print(f"  Run artifacts : {run_dest}  (driver-local, lost on session end)")
+        print("  Plots         : will read directly from local CSV — no Spark/Delta needed")
 
     return RunOutcome(
         result=rr, write_summary=write_summary,
