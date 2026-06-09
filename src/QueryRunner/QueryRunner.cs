@@ -310,7 +310,7 @@ namespace FabricDaxLoadTest
         // Per-run query sequence counter. Reset to 0 in RunLoadTestCore at
         // run start. Combined with runId, encodes a deterministic Guid we
         // send as ADOMD ActivityID so persist.py can JOIN executions to
-        // QueryEnd trace events for engine CPU back-fill. See
+        // ExecutionMetrics trace events for engine CPU back-fill. See
         // MakeActivityId for the encoding.
         private static int _querySeq;
 
@@ -905,7 +905,7 @@ namespace FabricDaxLoadTest
                 // Trace drain grace period. The main query loop exits as
                 // soon as the duration token fires, but queries that were
                 // in-flight at that moment have not yet emitted their
-                // QueryEnd / ExecutionMetrics events. The AS engine emits
+                // ExecutionMetrics events. The AS engine emits
                 // those events asynchronously after each command completes,
                 // and the rowset reader sees them with a small server-side
                 // delay (typically <1s, but we observed up to ~3s under
@@ -916,7 +916,7 @@ namespace FabricDaxLoadTest
                 if (trace != null && traceFatalError == null && !externalCt.IsCancellationRequested)
                 {
                     var beforeDrain = trace.EventsSeen;
-                    Log($"Trace drain: waiting 5s for in-flight QueryEnd events to arrive (EventsSeen={beforeDrain})...");
+                    Log($"Trace drain: waiting 5s for in-flight ExecutionMetrics events to arrive (EventsSeen={beforeDrain})...");
                     try { Task.Delay(TimeSpan.FromSeconds(5), externalCt).Wait(); } catch { }
                     Log($"Trace drain: complete (+{trace.EventsSeen - beforeDrain} events during drain, EventsSeen={trace.EventsSeen})");
                 }
@@ -1224,7 +1224,7 @@ namespace FabricDaxLoadTest
             Stopwatch testStart, Guid runId)
         {
             // Per-attempt monotonic seq → deterministic ActivityID Guid that
-            // pairs this execution with its QueryEnd trace row in persist.py.
+            // pairs this execution with its ExecutionMetrics trace row in persist.py.
             // Increment BEFORE we set the AS property so a retry on a fresh
             // connection (post-reconnect) gets its own Guid.
             int seq = Interlocked.Increment(ref _querySeq);
@@ -1241,7 +1241,7 @@ namespace FabricDaxLoadTest
                 cmd.CommandText = query;
                 cmd.CommandTimeout = 0;
                 // Stamp the command with our deterministic ActivityID Guid
-                // so the QueryEnd/ExecutionMetrics trace rows carry it in
+                // so the ExecutionMetrics trace row carries it in
                 // column 46. PBI Service whitelists the TYPED Guid
                 // property on AdomdCommand (cmd.ActivityID = …) but
                 // REJECTS the equivalent XMLA-bag entry

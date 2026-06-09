@@ -33,7 +33,7 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
     figure where the top panel shows the per-bucket min/max latency band
     + mean line, the middle stacks success vs error QPS, and the bottom
     plots active users over time. When ``trace_csv_path`` is supplied
-    and contains ``QueryEnd`` events with CPU data, an additional
+    and contains ``ExecutionMetrics`` events with CPU data, an additional
     bottom panel plots **CPU-seconds per second** (i.e. effective
     parallel CPU consumption) — the most useful single metric for
     capacity-utilization assessment, since Fabric Capacity CU is just a
@@ -148,14 +148,16 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     """Bucket engine-side CPU into seconds-of-CPU-per-second-of-wallclock.
 
     Reads the trace CSV (best-effort; returns empty if missing/empty),
-    filters to ``QueryEnd`` events with positive ``CpuMs`` and
-    ``DurationMs``, computes each event's wallclock interval relative to
-    test start (T0 derived from the executions CSV's
-    ``StartUtc`` − ``StartTimeMs`` alignment), then **distributes the
-    event's CpuMs uniformly over its [start, end] interval** so events
-    that span multiple buckets contribute proportionally. Bucket size
-    targets ~20 buckets across the run (snapped to a nice value like
-    1, 5, 15, 30, 60s) — see ``_pick_bucket_size_s``.
+    filters to ``ExecutionMetrics`` events and parses ``totalCpuTimeMs``
+    and ``durationMs`` from the JSON ``TextData`` payload (v0.10.2+;
+    previously read ``QueryEnd`` rows' ``CpuMs`` and ``DurationMs``
+    columns directly). Computes each event's wallclock interval relative
+    to test start (T0 derived from the executions CSV's ``StartUtc`` −
+    ``StartTimeMs`` alignment), then **distributes CpuMs uniformly over
+    its [start, end] interval** so events that span multiple buckets
+    contribute proportionally. Bucket size targets ~20 buckets across
+    the run (snapped to a nice value like 1, 5, 15, 30, 60s) — see
+    ``_pick_bucket_size_s``.
 
     Returns ``(centers_s, cpu_per_sec, bucket_width_s)`` or
     ``(None, None, None)`` when no CPU data is available.
@@ -166,6 +168,7 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     if not os.path.exists(trace_csv_path):
         return None, None, None
 
+    import json
     import pandas as pd
     try:
         tdf = pd.read_csv(trace_csv_path)
@@ -173,9 +176,26 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
         return None, None, None
     if tdf.empty:
         return None, None, None
-    tdf = tdf[(tdf.get("EventClass") == "QueryEnd") &
-              (tdf.get("CpuMs", 0) > 0) &
-              (tdf.get("DurationMs", 0) > 0)].copy()
+    tdf = tdf[(tdf.get("EventClass") == "ExecutionMetrics") &
+              tdf.get("TextData").notna()].copy()
+    if tdf.empty:
+        return None, None, None
+
+    def _parse_em(s):
+        try:
+            j = json.loads(s)
+            cpu = j.get("totalCpuTimeMs")
+            dur = j.get("durationMs")
+            if cpu is None or dur is None:
+                return (None, None)
+            return (float(cpu), float(dur))
+        except (ValueError, TypeError):
+            return (None, None)
+
+    parsed = tdf["TextData"].map(_parse_em)
+    tdf["CpuMs"] = parsed.map(lambda p: p[0])
+    tdf["DurationMs"] = parsed.map(lambda p: p[1])
+    tdf = tdf[(tdf["CpuMs"] > 0) & (tdf["DurationMs"] > 0)]
     if tdf.empty:
         return None, None, None
 

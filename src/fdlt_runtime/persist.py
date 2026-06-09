@@ -284,7 +284,8 @@ def write_run(
             StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
             # Session identity. SessionId/RequestId are back-filled from
-            # the QueryEnd trace row via (SourceId, QuerySeq) → ActivityId.
+            # the ExecutionMetrics trace row via (SourceId, QuerySeq) →
+            # ActivityId (v0.10.2+; was QueryEnd before).
             # LogicalSessionId is a {LoadTestId}:{UserIndex} pseudo-id for
             # load tests (one logical session per virtual user) and is
             # computed by a window function over (UserEmail, StartUtc) at
@@ -296,8 +297,8 @@ def write_run(
             StructField("EndUtc",               TimestampType(), True),
             StructField("StartTimeMs",          DoubleType(),    True),
             StructField("ClientDurationMs",     DoubleType(),    True),
-            # QueryEnd-event totals (engine-wall + total CPU as the
-            # server billed it; ≈ ExecutionMetrics.totalCpuTimeMs).
+            # Engine totals from ExecutionMetrics (v0.10.2+):
+            # totalCpuTimeMs → EngineCpuMs, durationMs → EngineDurationMs.
             StructField("EngineDurationMs",     LongType(),      True),
             StructField("EngineCpuMs",          LongType(),      True),
             # ExecutionMetrics breakdown — back-filled via RequestId map.
@@ -351,7 +352,8 @@ def write_run(
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
-            # SessionId / RequestId back-filled from QueryEnd trace below.
+            # SessionId / RequestId back-filled from ExecutionMetrics
+            # trace below (v0.10.2+).
             # LogicalSessionId is deterministic for load tests: one logical
             # session per (LoadTest, virtual user).
             SessionId=None,
@@ -436,13 +438,16 @@ def write_run(
             trace_events_written = len(trace_rows)
 
     # Engine-side back-fill: JOIN executions to several trace events on
-    # (SourceId, RequestId). The QueryEnd trace row carries both ActivityId
-    # (which decodes back to QuerySeq) and RequestId (the per-XMLA-request
-    # id every engine event is also tagged with). We build a
-    # (SourceId, QuerySeq) → RequestId mapping from QueryEnd, then aggregate
-    # each downstream event class by RequestId and JOIN onto exec_df.
-    # All JOINs are LEFT so a missing event class (e.g. no DQ on import
-    # models) just leaves its columns NULL.
+    # (SourceId, RequestId). From v0.10.2 onwards QueryBegin (event 9)
+    # and QueryEnd (event 10) are no longer subscribed — every field we
+    # used to pull from QueryEnd (EngineCpuMs, EngineDurationMs,
+    # SessionId, ActivityID → QuerySeq) is now sourced from
+    # ExecutionMetrics, which subscribes both ColumnID 39 (SessionID)
+    # and 46 (ActivityID) and carries durationMs / totalCpuTimeMs in
+    # its JSON payload. We build a (SourceId, QuerySeq) row from the EM
+    # event, then LEFT JOIN downstream event-class aggregates (DQ) on
+    # (SourceId, RequestId). LEFT JOINs so a missing event class
+    # (e.g. no DQ on import models) just leaves its columns NULL.
     if exec_df is not None and trace_df is not None:
         from pyspark.sql import functions as F
         from pyspark.sql.types import (
@@ -450,35 +455,17 @@ def write_run(
             StringType as _StrT,
         )
 
-        # 1. QueryEnd → (SourceId, QuerySeq, RequestId, SessionId,
-        #    EngineCpuMs, EngineDurationMs)
-        #    QuerySeq is the last 4 hex bytes of ActivityId, decoded big-endian.
-        trace_qe = (trace_df
-            .where((F.col("EventClass") == F.lit("QueryEnd")) &
-                   F.col("ActivityId").isNotNull())
-            .withColumn(
-                "QuerySeq",
-                F.conv(
-                    F.substring(
-                        F.regexp_replace(F.col("ActivityId"), "-", ""),
-                        25, 8),
-                    16, 10).cast("int"))
-            .select(
-                F.col("SourceId"),
-                F.col("QuerySeq"),
-                F.col("RequestId"),
-                F.col("SessionId"),
-                F.col("CpuMs").alias("EngineCpuMs"),
-                F.col("DurationMs").alias("EngineDurationMs"))
-            .dropDuplicates(["SourceId", "QuerySeq"]))
-
-        # The (SourceId, RequestId) → QuerySeq map for joining the rest.
-        qe_map = trace_qe.select("SourceId", "RequestId", "QuerySeq")
-
-        # 2. ExecutionMetrics — JSON in TextData. Parse once, project fields.
+        # 1. ExecutionMetrics is now the sole back-fill source for
+        #    (SourceId, QuerySeq, RequestId, SessionId, EngineCpuMs,
+        #    EngineDurationMs) plus the parsed EM JSON fields.
+        #    QuerySeq is the last 4 hex bytes of ActivityId, decoded
+        #    big-endian. EM JSON keys: totalCpuTimeMs (≈ what QueryEnd's
+        #    CpuTime column reported) and durationMs.
         em_schema = _ST([
             _SF("vertipaqJobCpuTimeMs",            _LT(), True),
             _SF("queryProcessingCpuTimeMs",        _LT(), True),
+            _SF("totalCpuTimeMs",                  _LT(), True),
+            _SF("durationMs",                      _LT(), True),
             _SF("executionDelayMs",                _LT(), True),
             _SF("approximatePeakMemConsumptionKB", _LT(), True),
             _SF("queryResultRows",                 _LT(), True),
@@ -486,24 +473,37 @@ def write_run(
         trace_em = (trace_df
             .where((F.col("EventClass") == F.lit("ExecutionMetrics")) &
                    F.col("RequestId").isNotNull() &
+                   F.col("ActivityId").isNotNull() &
                    F.col("TextData").isNotNull())
+            .withColumn(
+                "QuerySeq",
+                F.conv(
+                    F.substring(
+                        F.regexp_replace(F.col("ActivityId"), "-", ""),
+                        25, 8),
+                    16, 10).cast("int"))
             .withColumn("em", F.from_json(F.col("TextData"), em_schema))
             .select(
                 F.col("SourceId"),
+                F.col("QuerySeq"),
                 F.col("RequestId"),
+                F.col("SessionId"),
+                F.col("em.totalCpuTimeMs").alias("EngineCpuMs"),
+                F.col("em.durationMs").alias("EngineDurationMs"),
                 F.col("em.vertipaqJobCpuTimeMs").alias("SECpuMs"),
                 F.col("em.queryProcessingCpuTimeMs").alias("FECpuMs"),
                 F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
                 F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
                 F.col("em.queryResultRows").alias("QueryResultRows"),
-                # Raw JSON passthrough — keeps fields we haven't parsed (e.g.
-                # future throttling-related fields). One JSON blob per query.
+                # Raw JSON passthrough — keeps fields we haven't parsed
+                # (e.g. future throttling-related fields).
                 F.col("TextData").alias("ExecutionMetricsJson"))
-            .dropDuplicates(["SourceId", "RequestId"])
-            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
-            .drop("RequestId"))
+            .dropDuplicates(["SourceId", "QuerySeq"]))
 
-        # 3. VertiPaqSEQueryEnd aggregates — count + sum(duration) per query.
+        # (SourceId, RequestId) → QuerySeq map for joining DQ aggregates.
+        qe_map = trace_em.select("SourceId", "RequestId", "QuerySeq")
+
+        # 2. VertiPaqSEQueryEnd aggregates — count + sum(duration) per query.
         trace_vpq = (trace_df
             .where((F.col("EventClass") == F.lit("VertiPaqSEQueryEnd")) &
                    F.col("RequestId").isNotNull())
@@ -534,8 +534,8 @@ def write_run(
 
         # Drop the placeholder NULL columns and LEFT JOIN each aggregate
         # back onto exec_df by (SourceId, QuerySeq).
-        # SessionId/RequestId are placeholders too (Row builder set them to
-        # None) — back-filled from QueryEnd along with EngineCpuMs etc.
+        # SessionId/RequestId/Engine*/SE*/FE*/EM JSON fields all come
+        # from the ExecutionMetrics row (trace_em) since v0.10.2.
         backfill_drop = [
             "SessionId", "RequestId",
             "EngineCpuMs", "EngineDurationMs",
@@ -545,12 +545,7 @@ def write_run(
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
         exec_df = exec_df.drop(*backfill_drop)
-        # trace_qe already carries SessionId + RequestId — join the whole
-        # thing (don't drop RequestId like we did before).
-        for side in (
-            trace_qe,
-            trace_em, trace_vpq, trace_dq,
-        ):
+        for side in (trace_em, trace_vpq, trace_dq):
             exec_df = exec_df.join(side, on=["SourceId", "QuerySeq"], how="left")
 
         # Reassert column order so the final DataFrame matches exec_schema.

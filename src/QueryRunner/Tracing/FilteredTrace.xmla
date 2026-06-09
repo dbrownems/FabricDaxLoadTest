@@ -42,54 +42,6 @@
         -->
         <Events>
 
-          <!-- 9: QueryBegin — start of DAX/MDX query -->
-          <Event>
-            <EventID>9</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>   <!-- EventClass -->
-              <ColumnID>1</ColumnID>   <!-- EventSubclass -->
-              <ColumnID>2</ColumnID>   <!-- CurrentTime -->
-              <ColumnID>3</ColumnID>   <!-- StartTime -->
-              <ColumnID>25</ColumnID>  <!-- ConnectionID -->
-              <ColumnID>28</ColumnID>  <!-- DatabaseName -->
-              <ColumnID>32</ColumnID>  <!-- NTUserName -->
-              <ColumnID>33</ColumnID>  <!-- NTDomainName -->
-              <ColumnID>36</ColumnID>  <!-- ClientProcessID -->
-              <ColumnID>37</ColumnID>  <!-- ApplicationName -->
-              <ColumnID>39</ColumnID>  <!-- SessionID -->
-              <ColumnID>41</ColumnID>  <!-- Spid -->
-              <ColumnID>42</ColumnID>  <!-- TextData (DAX text) -->
-              <ColumnID>47</ColumnID>  <!-- RequestID -->
-              <ColumnID>55</ColumnID>  <!-- Identity -->
-            </Columns>
-          </Event>
-
-          <!-- 10: QueryEnd — end of DAX/MDX query (Duration, CPU) -->
-          <Event>
-            <EventID>10</EventID>
-            <Columns>
-              <ColumnID>0</ColumnID>
-              <ColumnID>1</ColumnID>
-              <ColumnID>2</ColumnID>
-              <ColumnID>3</ColumnID>
-              <ColumnID>5</ColumnID>   <!-- Duration -->
-              <ColumnID>6</ColumnID>   <!-- CpuTime -->
-              <ColumnID>24</ColumnID>  <!-- Error -->
-              <ColumnID>25</ColumnID>
-              <ColumnID>28</ColumnID>
-              <ColumnID>32</ColumnID>
-              <ColumnID>33</ColumnID>
-              <ColumnID>36</ColumnID>
-              <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>
-              <ColumnID>41</ColumnID>
-              <ColumnID>42</ColumnID>
-              <ColumnID>46</ColumnID>  <!-- ActivityID — client-stamped {runIdPrefix|seq} Guid -->
-              <ColumnID>47</ColumnID>
-              <ColumnID>55</ColumnID>
-            </Columns>
-          </Event>
-
           <!-- 15: CommandBegin — XMLA command start -->
           <Event>
             <EventID>15</EventID>
@@ -156,21 +108,20 @@
           <!-- NOTE: Events 82 (VertiPaqSEQueryBegin), 85
                (VertiPaqSEQueryCacheMatch), 112 (DAXQueryPlan), and 134
                (JobGraph) were removed in v0.9.4. Event 83
-               (VertiPaqSEQueryEnd) was additionally removed in v0.9.12
-               — it's the highest-volume event class by far (~3-4x the
-               next), and ExecutionMetrics.vertipaqJobCpuTimeMs already
-               gives us SE CPU at the query level. We lose the per-SE-
-               query count and per-SE-query wall time (which are kept
-               in the QueryExecutions schema but populated only by
-               external TraceCapture flows; back-fill from this trace
-               leaves them NULL). With 50+ user load we observed the
-               AS server-side trace buffer overflowing after ~9 seconds
-               (the engine silently stops emitting new events; see
-               .copilot/tracing-notes §). Per query we were emitting
-               ~14 events; trimming to QueryBegin/QueryEnd,
-               CommandBegin/CommandEnd, Error, DirectQueryBegin/End,
-               and ExecutionMetrics cuts per-query trace volume to ~3
-               events (was ~5 in v0.9.4-v0.9.11). -->
+               (VertiPaqSEQueryEnd) removed in v0.9.12. Events 9
+               (QueryBegin) and 10 (QueryEnd) removed in v0.10.2: 9 was
+               never consumed; 10's three pieces of data
+               (Duration → EngineDurationMs, CpuTime → EngineCpuMs,
+               ActivityID → QuerySeq) are now sourced from
+               ExecutionMetrics (totalCpuTimeMs / durationMs in the
+               JSON, ActivityID on the trace row itself).
+               With 200-user load we observed the AS server-side trace
+               buffer overflowing after ~3.5 minutes (the engine
+               silently stops emitting new events, losing ~25% of
+               late-run queries; see .copilot/tracing-notes §).
+               Trace volume per query was ~14 events pre-v0.9.4,
+               ~5 events in v0.9.4-v0.9.11, ~3 events in v0.9.12, and
+               ~1 event from v0.10.2 onwards. -->
 
           <!-- 98: DirectQueryBegin -->
           <Event>
@@ -226,8 +177,13 @@
                see note above about per-query trace volume reduction. -->
 
           <!-- 136: ExecutionMetrics — JSON CPU/memory/throttling metrics
-               (parsed by correlator). One per query; pairs with QueryEnd
-               by RequestID. -->
+               (parsed by correlator). One per query — the *only* event
+               class persist.py / analyze.py consume now that QueryBegin
+               (event 9) and QueryEnd (event 10) are dropped (v0.10.2).
+               ExecutionMetrics carries totalCpuTimeMs + durationMs in
+               its JSON which replace QueryEnd.CpuTime + Duration, and
+               ColumnID 46 (ActivityID) lets us derive QuerySeq the
+               same way. -->
           <Event>
             <EventID>136</EventID>
             <Columns>
@@ -235,9 +191,10 @@
               <ColumnID>2</ColumnID>
               <ColumnID>28</ColumnID>
               <ColumnID>37</ColumnID>
+              <ColumnID>39</ColumnID>  <!-- SessionID — back-filled to QueryExecutions -->
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>46</ColumnID>  <!-- ActivityID — pairs with QueryEnd -->
+              <ColumnID>46</ColumnID>  <!-- ActivityID — replaces QueryEnd's role -->
               <ColumnID>47</ColumnID>
             </Columns>
           </Event>
