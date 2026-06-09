@@ -183,7 +183,9 @@
                ExecutionMetrics carries totalCpuTimeMs + durationMs in
                its JSON which replace QueryEnd.CpuTime + Duration, and
                ColumnID 46 (ActivityID) lets us derive QuerySeq the
-               same way. -->
+               same way. NOTE: SessionID (ColumnID 39) is NOT
+               populated by AS on event 136 — only session-scoped
+               events (Command*, Audit*) carry it. -->
           <Event>
             <EventID>136</EventID>
             <Columns>
@@ -191,7 +193,6 @@
               <ColumnID>2</ColumnID>
               <ColumnID>28</ColumnID>
               <ColumnID>37</ColumnID>
-              <ColumnID>39</ColumnID>  <!-- SessionID — back-filled to QueryExecutions -->
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
               <ColumnID>46</ColumnID>  <!-- ActivityID — replaces QueryEnd's role -->

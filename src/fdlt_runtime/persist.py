@@ -283,14 +283,14 @@ def write_run(
             StructField("QueryHash",            StringType(),    True),
             StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
-            # Session identity. SessionId/RequestId are back-filled from
-            # the ExecutionMetrics trace row via (SourceId, QuerySeq) →
-            # ActivityId (v0.10.2+; was QueryEnd before).
-            # LogicalSessionId is a {LoadTestId}:{UserIndex} pseudo-id for
-            # load tests (one logical session per virtual user) and is
-            # computed by a window function over (UserEmail, StartUtc) at
-            # end-of-capture for TraceCapture rows.
-            StructField("SessionId",            StringType(),    True),
+            # Session identity. RequestId is back-filled from the
+            # ExecutionMetrics trace row via (SourceId, QuerySeq) →
+            # ActivityId (v0.10.2+). The AS-server SessionID is not
+            # populated on event 136 so it's not tracked here — use
+            # LogicalSessionId instead, which is a {LoadTestId}:{UserIndex}
+            # pseudo-id (one logical session per virtual user) for load
+            # tests, and is computed by a window function over
+            # (UserEmail, StartUtc) at end-of-capture for TraceCapture rows.
             StructField("RequestId",            StringType(),    True),
             StructField("LogicalSessionId",     StringType(),    True),
             StructField("StartUtc",             TimestampType(), False),
@@ -352,11 +352,9 @@ def write_run(
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
-            # SessionId / RequestId back-filled from ExecutionMetrics
-            # trace below (v0.10.2+).
-            # LogicalSessionId is deterministic for load tests: one logical
-            # session per (LoadTest, virtual user).
-            SessionId=None,
+            # RequestId back-filled from ExecutionMetrics trace below
+            # (v0.10.2+). LogicalSessionId is deterministic for load tests:
+            # one logical session per (LoadTest, virtual user).
             RequestId=None,
             LogicalSessionId=(f"{load_test_id}:{int(r['UserIndex'])}"
                               if load_test_id is not None else None),
@@ -441,11 +439,10 @@ def write_run(
     # (SourceId, RequestId). From v0.10.2 onwards QueryBegin (event 9)
     # and QueryEnd (event 10) are no longer subscribed — every field we
     # used to pull from QueryEnd (EngineCpuMs, EngineDurationMs,
-    # SessionId, ActivityID → QuerySeq) is now sourced from
-    # ExecutionMetrics, which subscribes both ColumnID 39 (SessionID)
-    # and 46 (ActivityID) and carries durationMs / totalCpuTimeMs in
-    # its JSON payload. We build a (SourceId, QuerySeq) row from the EM
-    # event, then LEFT JOIN downstream event-class aggregates (DQ) on
+    # ActivityID → QuerySeq) is now sourced from ExecutionMetrics, which
+    # carries ColumnID 46 (ActivityID) and durationMs / totalCpuTimeMs
+    # in its JSON payload. We build a (SourceId, QuerySeq) row from the
+    # EM event, then LEFT JOIN downstream event-class aggregates (DQ) on
     # (SourceId, RequestId). LEFT JOINs so a missing event class
     # (e.g. no DQ on import models) just leaves its columns NULL.
     if exec_df is not None and trace_df is not None:
@@ -456,7 +453,7 @@ def write_run(
         )
 
         # 1. ExecutionMetrics is now the sole back-fill source for
-        #    (SourceId, QuerySeq, RequestId, SessionId, EngineCpuMs,
+        #    (SourceId, QuerySeq, RequestId, EngineCpuMs,
         #    EngineDurationMs) plus the parsed EM JSON fields.
         #    QuerySeq is the last 4 hex bytes of ActivityId, decoded
         #    big-endian. EM JSON keys: totalCpuTimeMs (≈ what QueryEnd's
@@ -487,7 +484,6 @@ def write_run(
                 F.col("SourceId"),
                 F.col("QuerySeq"),
                 F.col("RequestId"),
-                F.col("SessionId"),
                 F.col("em.totalCpuTimeMs").alias("EngineCpuMs"),
                 F.col("em.durationMs").alias("EngineDurationMs"),
                 F.col("em.vertipaqJobCpuTimeMs").alias("SECpuMs"),
@@ -534,10 +530,10 @@ def write_run(
 
         # Drop the placeholder NULL columns and LEFT JOIN each aggregate
         # back onto exec_df by (SourceId, QuerySeq).
-        # SessionId/RequestId/Engine*/SE*/FE*/EM JSON fields all come
-        # from the ExecutionMetrics row (trace_em) since v0.10.2.
+        # RequestId/Engine*/SE*/FE*/EM JSON fields all come from the
+        # ExecutionMetrics row (trace_em) since v0.10.2.
         backfill_drop = [
-            "SessionId", "RequestId",
+            "RequestId",
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
             "PeakMemoryKB", "QueryResultRows", "ExecutionMetricsJson",
