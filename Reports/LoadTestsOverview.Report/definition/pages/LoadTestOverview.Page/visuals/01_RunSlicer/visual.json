@@ -27,53 +27,11 @@
                 }
               },
               "queryRef": "LoadTestRuns.RunName",
-              "nativeQueryRef": "RunName",
-              "active": true
+              "nativeQueryRef": "RunName"
             }
           ]
         }
       }
-    },
-    "objects": {
-      "general": [
-        {
-          "properties": {
-            "orientation": {
-              "expr": {
-                "Literal": {
-                  "Value": "1D"
-                }
-              }
-            }
-          }
-        }
-      ],
-      "data": [
-        {
-          "properties": {
-            "mode": {
-              "expr": {
-                "Literal": {
-                  "Value": "'Dropdown'"
-                }
-              }
-            }
-          }
-        }
-      ],
-      "header": [
-        {
-          "properties": {
-            "text": {
-              "expr": {
-                "Literal": {
-                  "Value": "'Pick a run'"
-                }
-              }
-            }
-          }
-        }
-      ]
     },
     "drillFilterOtherVisuals": true
   }

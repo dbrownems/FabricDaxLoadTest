@@ -27,8 +27,7 @@
                 }
               },
               "queryRef": "QueryExecutions.StartSecond",
-              "nativeQueryRef": "StartSecond",
-              "active": true
+              "nativeQueryRef": "StartSecond"
             }
           ]
         },
@@ -51,21 +50,6 @@
           ]
         }
       }
-    },
-    "objects": {
-      "title": [
-        {
-          "properties": {
-            "text": {
-              "expr": {
-                "Literal": {
-                  "Value": "'Active users'"
-                }
-              }
-            }
-          }
-        }
-      ]
     },
     "drillFilterOtherVisuals": true
   }

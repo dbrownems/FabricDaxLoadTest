@@ -3,7 +3,6 @@ relationship 43518cec-d04c-4335-814b-350845b96482
 	toColumn: LoadTests.LoadTestId
 
 relationship 9a32e622-d70d-4017-b73d-9fe71990b2cf
-	isActive: false
 	fromColumn: QueryExecutions.SourceId
 	toColumn: LoadTestRuns.RunId
 
@@ -16,5 +15,6 @@ relationship fe02fe63-ee8a-4998-8d5a-22028b8cb631
 	toColumn: LoadTestRuns.RunId
 
 relationship 6ec32400-62bc-443e-8b48-13ee7f087c36
+	isActive: false
 	fromColumn: QueryExecutions.RunQueryKey
 	toColumn: LoadTestQueries.RunQueryKey
