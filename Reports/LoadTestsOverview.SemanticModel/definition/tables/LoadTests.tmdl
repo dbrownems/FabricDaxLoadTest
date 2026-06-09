@@ -1,0 +1,166 @@
+table LoadTests
+	lineageTag: 10127eed-5773-4dc7-9843-f690a4c6a5c3
+
+	column LoadTestId
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: 61faff6a-7a25-43f2-853c-b0c2e703dccf
+		summarizeBy: none
+		sourceColumn: LoadTestId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Name
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: 29a743ac-292e-4997-ae35-33c257180c5e
+		summarizeBy: none
+		sourceColumn: Name
+
+		annotation SummarizationSetBy = Automatic
+
+	column Description
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: ce2d58cc-c3f9-455b-a143-5d98f5d0c7f3
+		summarizeBy: none
+		sourceColumn: Description
+
+		annotation SummarizationSetBy = Automatic
+
+	column WorkspaceId
+		dataType: string
+		isHidden
+		isAvailableInMdx: false
+		sourceProviderType: varchar(8000)
+		lineageTag: 60e342a8-a9d6-441a-a376-ae80cc481365
+		summarizeBy: none
+		sourceColumn: WorkspaceId
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column WorkspaceName
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: 92417381-bf7c-4f41-835a-5818641e8050
+		summarizeBy: none
+		sourceColumn: WorkspaceName
+
+		annotation SummarizationSetBy = Automatic
+
+	column NotebookId
+		dataType: string
+		isHidden
+		isAvailableInMdx: false
+		sourceProviderType: varchar(8000)
+		lineageTag: 78a7a4d1-68eb-4fab-9f3f-6771646be766
+		summarizeBy: none
+		sourceColumn: NotebookId
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column NotebookName
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: 885d4239-844e-4575-80c2-b317dd40fdf4
+		summarizeBy: none
+		sourceColumn: NotebookName
+
+		annotation SummarizationSetBy = Automatic
+
+	column TargetWorkspace
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: 2590fc12-5da6-4635-ad69-65bd9919d5b7
+		summarizeBy: none
+		sourceColumn: TargetWorkspace
+
+		annotation SummarizationSetBy = Automatic
+
+	column TargetDataset
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: e9aedbc0-4164-4c76-b494-3d96f04cb612
+		summarizeBy: none
+		sourceColumn: TargetDataset
+
+		annotation SummarizationSetBy = Automatic
+
+	column SourceType
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: a0e42eb0-5f9a-415f-b443-7f0edb259b2e
+		summarizeBy: none
+		sourceColumn: SourceType
+
+		annotation SummarizationSetBy = Automatic
+
+	column QueryCount
+		dataType: int64
+		formatString: 0
+		sourceProviderType: int
+		lineageTag: bb6c0d87-48d7-4344-93d1-aebe104c3136
+		summarizeBy: sum
+		sourceColumn: QueryCount
+
+		annotation SummarizationSetBy = Automatic
+
+	column ScenarioHash
+		dataType: string
+		isHidden
+		isAvailableInMdx: false
+		sourceProviderType: varchar(8000)
+		lineageTag: 3521b292-085b-429a-9771-616f848ba483
+		summarizeBy: none
+		sourceColumn: ScenarioHash
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column LastRunAtUtc
+		dataType: dateTime
+		formatString: General Date
+		sourceProviderType: datetime2
+		lineageTag: 160a5e3e-1579-4cfe-a6f9-ebcdc1d5c027
+		summarizeBy: none
+		sourceColumn: LastRunAtUtc
+
+		annotation SummarizationSetBy = Automatic
+
+	column LastRunId
+		dataType: string
+		isHidden
+		isAvailableInMdx: false
+		sourceProviderType: varchar(8000)
+		lineageTag: 88dbf21b-8f23-48c7-b0b8-d895387d7ad8
+		summarizeBy: none
+		sourceColumn: LastRunId
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column Status
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: bc27bb9a-a4c0-4fd1-a3bf-7c140cb4ca2e
+		summarizeBy: none
+		sourceColumn: Status
+
+		annotation SummarizationSetBy = Automatic
+
+	partition LoadTests = m
+		mode: directQuery
+		source =
+				let
+				    Source = Sql.Database(ServerName, DatabaseName),
+				    Data = Source{[Schema=SchemaName, Item="LoadTests"]}[Data]
+				in
+				    Data
+
+	annotation PBI_ResultType = Table
