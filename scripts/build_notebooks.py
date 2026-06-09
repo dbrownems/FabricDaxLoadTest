@@ -99,241 +99,111 @@ def build_run():
     md(nb, r"""
     # FabricDaxLoadTest — LoadTest Main
 
-    **This is your Load Test.** Edit cell 1 and run it. Each Run-All mints a
-    fresh `RunId`, so re-running is purely additive — every Run is preserved
-    in the four Delta tables for cross-Run comparison.
+    **This is your Load Test.** Edit cell 1 and run it. Each Run-All mints
+    a fresh `RunId` so re-running is purely additive.
 
-    > 🆕 **Multiple Load Tests in one workspace?** Most workspaces only need
-    > one Load Test, and this is it. If you need *additional* Load Tests
-    > (e.g. a baseline vs. a what-if scenario, or one per model under test),
-    > **File → Save As** (or right-click → **Duplicate**) and rename the
-    > copy to `LoadTest - <descriptive name>` — keep it in the same
-    > `LoadTests` folder so it can find the lakehouse.
-    >
-    > **What about upgrades?** Change the `WHEEL_URL` in cell 2 to a newer
-    > release (e.g. bump `v0.5.0` → `v0.6.0`) and Run All — that's the entire
-    > upgrade story. The .NET LoadGen binaries ship inside the
-    > `fdlt_runtime` wheel, so there is nothing else to refresh.
-    > `scripts/Deploy-LoadTests.ps1` will *not* overwrite this notebook
-    > (or any saved `LoadTest - …` copy) if it already exists, so cell-1
-    > edits are preserved across redeploys.
+    ## Quickstart (4 steps, no lakehouse required)
+
+    1. **Drop a queries `.json` onto the Resources panel** (left sidebar).
+       Power BI Desktop *Performance Analyzer* exports work verbatim.
+    2. **Edit cell 1**: set `TARGET_DATASET` (or leave `None` if there's
+       only one semantic model in the workspace).
+    3. **Run All.** Cell 3 prints a live status line; cell 4 plots
+       latency / QPS / users / engine CPU.
+    4. *(Optional)* set `LAKEHOUSE_NAME` in cell 1 to persist results to
+       Delta tables for cross-run analysis.
+
+    ### What's the lakehouse for?
+
+    Charts in cell 4 read the LoadGen CSV directly from the Spark driver's
+    local `/tmp/` — they need **no Spark and no lakehouse**. Setting
+    `LAKEHOUSE_NAME` (cell 1) opts in to writing 5 Delta tables —
+    `LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `QueryExecutions`,
+    `TraceEvents` — keyed so multiple runs land side-by-side and can be
+    queried as a Direct Lake source for dashboards. Without it, the
+    forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the
+    driver and disappear at session end.
+
+    > **Detailed parameter reference.** Cell 1 ships with one-line comments;
+    > the full explanation of every knob (semantics, defaults, examples) is
+    > in [`docs/loadgen-main.md`](../docs/loadgen-main.md).
+
+    > **Multiple Load Tests in one workspace?** **File → Save As** /
+    > **Duplicate** and rename the copy to `LoadTest - <name>`.
+    > `Deploy-LoadTests.ps1` only updates the original `LoadTest - Main`,
+    > so cell-1 edits on saved copies survive redeploys.
+
+    > **Upgrades.** Change `WHEEL_URL` in cell 2 to a newer release
+    > (e.g. `v0.9.0` → `v0.10.0`) and Run All. The .NET LoadGen binaries
+    > ship inside the `fdlt_runtime` wheel, so there is nothing else to
+    > refresh.
 
     ---
 
-    Drives concurrent DAX queries against a Power BI / Fabric semantic model via
-    the **XMLA endpoint** by launching `LoadGen.dll` as an out-of-process
-    subprocess (run on the Spark driver's bundled .NET 8 runtime).
-
-    The notebook discovers the destination lakehouse via the
-    `LAKEHOUSE_WORKSPACE_NAME` / `LAKEHOUSE_NAME` parameters in cell 1
-    (defaults: current workspace, `LoadTests`). The lakehouse holds:
-
-    - `Tables[/dbo]/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}` —
-      five Delta tables written at end-of-run. The `dbo/` prefix is added
-      automatically when the lakehouse is schema-enabled; flat lakehouses
-      write directly under `Tables/`. Override with `LAKEHOUSE_SCHEMA` in
-      cell 1.
-
-    Per-run forensic artifacts (raw executions CSV, trace CSV, result.json,
-    `*.log`) stay on the Spark driver's local `/tmp/fdlt-<RunId>/`. Cell 3
-    prints the path; everything analytics needs is in the Delta tables.
-
-    > Note: pre-v0.5.0 deployments staged a `Files/loadgen-bin.zip` here too,
-    > and pre-v0.6.0 mirrored per-run CSVs to `Files/runs/`. Both are
-    > obsolete and safe to delete.
-
-    ## How to use
-
-    1. **Set up the Scenario.** Cell 1 ships with a tiny `QUERIES_INLINE`
-       fallback (3 model-agnostic warm-up queries) — *only* useful for smoke
-       testing the pipeline. For a real test you have two options:
-
-       - **Drop a `.json` onto the notebook's *Resources* panel** (left
-         sidebar). If exactly one `.json` is attached, cell 3 picks it up
-         automatically; otherwise set `QUERIES_FILE = "name.json"` in cell 1.
-         Accepted shapes: Power BI Desktop *Performance Analyzer* export,
-         `[{"query": "EVALUATE …"}, …]`, or `["EVALUATE …", …]`.
-       - **Edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive.
-         Fine for one-off tests; doesn't scale to large Scenarios.
-
-       Optional: drop a `users.json` onto Resources too and set
-       `USERS_FILE = "users.json"` in cell 1 to drive RLS / impersonation
-       via `EffectiveUserName=` / `CustomData=` / `Roles=` connection-string
-       properties. See [docs/impersonation.md](../docs/impersonation.md)
-       for the full schema.
-
-    2. Edit cell **1** to point at the target workspace + dataset and tweak
-       load parameters. `LOAD_TEST_NAME` defaults to the notebook name with
-       any `LoadTest -` prefix stripped (so `LoadTest - Main` → `Main`); set
-       it explicitly if you want a different label in the `LoadTests` dim.
-    3. **Run All**. Cell **3** prints a live status line every second and
-       then writes the Run into the four Delta tables; press **Interrupt
-       Kernel** (■) to cancel — the subprocess receives SIGINT and drains
-       cleanly. Each Run-All mints a fresh `RunId`, so prior Runs are
-       preserved untouched and re-running is purely additive.
-    4. Cell **4** plots latency / QPS / users for the Run that just
-       completed, straight from the per-run CSV.
-
-    > Re-deploy / upgrade the wheel by re-running
-    > `scripts/Deploy-LoadTests.ps1` from a clone of the repo, or by editing
-    > `WHEEL_URL` in cell 2 to a newer GitHub release. This notebook
-    > and any saved `LoadTest - …` copies are **not** touched by the deploy.
+    Drives concurrent DAX queries against a Power BI / Fabric semantic
+    model via the **XMLA endpoint** by launching `LoadGen.dll` as an
+    out-of-process subprocess on the Spark driver's bundled .NET 8
+    runtime. Per-run forensic artifacts (executions CSV, trace CSV,
+    result.json, `*.log`) stay under `/tmp/fdlt-<RunId>/`.
     """)
 
     # 1. Configuration
     code(nb, rf"""
 # ── 1. Configuration ──────────────────────────────────────────────────────────
-# Every knob the load test reads lives here. Cell 2 bootstraps the runtime
-# without touching any of these; cell 3 consumes them.
-
-# ── Lakehouse (where the 4 Delta tables are written) ─────────────────────────
-LAKEHOUSE_WORKSPACE_NAME = None  # workspace hosting the destination lakehouse
-                                 #   None  → current workspace (default;
-                                 #            common case — `Deploy-LoadTests.ps1`
-                                 #            puts the lakehouse alongside this
-                                 #            notebook)
-                                 #   "name"/GUID → BYO-lakehouse: point at any
-                                 #            lakehouse you have Build access to,
-                                 #            in any workspace in your home tenant
-                                 #            (cross-tenant guest workspaces are
-                                 #            not supported — getToken("pbi") is
-                                 #            home-tenant scoped)
-LAKEHOUSE_NAME   = "LoadTests"  # display name of the destination lakehouse
-                                #   created by scripts/Deploy-LoadTests.ps1
-                                #   override for BYO-lakehouse scenarios
-LAKEHOUSE_SCHEMA = None         # destination schema for the 4 Delta tables
-                                #   None        → auto-detect via Fabric API
-                                #                 (schema-enabled → "dbo",
-                                #                  flat lakehouse → "")
-                                #   "dbo"/other → force Tables/<name>/
-
-# ── Target semantic model ────────────────────────────────────────────────────
-TARGET_WORKSPACE = None  # workspace hosting the model under test
-                         #   None         → use the workspace this notebook lives in
-                         #   "Name"/GUID  → cross-workspace test (XMLA endpoint)
-TARGET_DATASET   = None  # semantic model display name
-                         #   None         → auto-pick the *only* semantic model in
-                         #                  TARGET_WORKSPACE; error if 0 or >1
-                         #   "Name"       → exact display-name match
-TARGET_REPLICA   = ""    # XMLA replica hint (no replica unless set)
-                         #   ""           → primary replica (default)
-                         #   "readonly"   → route to a scale-out read replica
-
-# ── Load test identity + shape ───────────────────────────────────────────────
-LOAD_TEST_NAME        = None             # short label — PK into LoadTests table
-                                         #   None → derived from notebook name
-                                         #          ("LoadTest - Foo" → "Foo")
-LOAD_TEST_DESCRIPTION = ""               # optional free-text notes for the run
-
-DURATION_SECONDS             = 60     # how long virtual users execute queries
-CONCURRENT_USERS             = 25     # max concurrency at steady state
-USER_RAMP_TIME_SEC           = 15     # linear ramp from 0 → CONCURRENT_USERS
-CONCURRENT_QUERIES_PER_USER  = 1      # in-flight queries per user. Each user
-                                      #   has this many ADOMD connections and
-                                      #   rolls through the iteration's queries:
-                                      #   when one finishes, the next pending
-                                      #   query is dispatched on the freed
-                                      #   connection (Power BI Desktop-style;
-                                      #   not batched all-finish-then-fire).
-                                      #   1 = strictly serial.
-PAUSE_BETWEEN_ITERATIONS_MS  = 1000   # think-time between iterations per user
-PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside an iteration
-SKIP_RESULTS                 = False  # True → drain rows without parsing
-                                      #   useful for stress-testing the engine
-                                      #   when result-set parsing would dominate
-ENABLE_TRACING               = True   # subscribe to dataset XMLA trace and
-                                      #   capture engine events (QueryEnd,
-                                      #   ExecutionMetrics, VertiPaq SE) into
-                                      #   the TraceEvents Delta table.
-                                      #   Requires Build/Read on the dataset.
-                                      #   Set False to skip tracing entirely.
-
-# ── Log folder (where LoadGen writes CSV / trace / *.log) ────────────────────
-# Controls the destination of the LoadGen subprocess's raw artifacts
-# (executions CSV, engine trace CSV, *.log). The Delta tables are
-# always written to the lakehouse regardless of this setting — this
-# only affects the raw forensic files.
+# All knobs the load test reads live here. For most runs you only need to
+# touch a few — see the "essential" section below. Full reference for every
+# parameter (semantics, defaults, examples) is in:
 #
-#   None
-#     /tmp/fdlt-run-<id>/ on the Spark driver. Fast (local SSD) but
-#     discarded when the kernel cycles. After the run, *.log and
-#     *.trace.csv are copied to
-#     {{LAKEHOUSE}}/Files/run-logs/<RunId>/ so they survive.
-#   "/lakehouse/default/Files/<folder>" (or any other local path)
-#     LoadGen writes directly there — files are visible in OneLake
-#     LIVE as the run progresses. No post-run copy. Use this when you
-#     want to tail logs in real time, or when the run might be killed
-#     before completion.
-#   "abfss://..."
-#     LoadGen still writes to /tmp (the .NET process can't target
-#     OneLake directly), but the post-run copy lands under
-#     <LOG_FOLDER>/<RunId>/ instead of the default Files/run-logs/.
-#     Use this to redirect to a different lakehouse / folder for
-#     long-term retention or shared review.
-LOG_FOLDER = None
-
-# ── Load Test Scenario (queries) ─────────────────────────────────────────────
-# QUERIES_FILE — name of a .json in this notebook's *Resources* panel
-# (left sidebar). Cell 3 resolves it in this order:
+#     docs/loadgen-main.md
+#     https://github.com/dbrownems/FabricDaxLoadTest/blob/main/docs/loadgen-main.md
 #
-#   1. None  → if exactly one `*.json` is in Resources, use that file.
-#   2. "name.json" → load `builtin/name.json` from Resources.
-#   3. "abfss://…" → cross-lakehouse / cross-workspace escape hatch.
-#   4. Nothing matches → fall back to `QUERIES_INLINE` below.
-#
-# Accepted JSON shapes (see README → "Load Test Scenario formats"):
-#   • Power BI Desktop *Performance Analyzer* export (with `events[]`)
-#   • [{{"query": "EVALUATE …"}}, …]
-#   • ["EVALUATE …", …]
-QUERIES_FILE = None       # auto-pick single .json in Resources
+# ─────────────── Essential parameters (typical run) ───────────────────────────
 
-# Fallback used only when no resource file is attached. The default is a
-# tiny model-agnostic warm-up scenario useful only for smoke-testing the
-# pipeline — replace with real DAX, or attach a Performance Analyzer
-# export to the Resources panel, before drawing any conclusions.
+# Target semantic model (None → only model in current workspace)
+TARGET_DATASET   = None
+TARGET_WORKSPACE = None
+
+# Load shape
+DURATION_SECONDS   = 60
+CONCURRENT_USERS   = 25
+USER_RAMP_TIME_SEC = 15
+
+# Optional: persist the run to Delta tables for cross-run analysis.
+# Leave None for the simplest case — charts read the local CSV.
+LAKEHOUSE_NAME = None
+
+# Scenario (queries to drive). Leave QUERIES_FILE = None to auto-pick the
+# single .json attached to the notebook's *Resources* panel (e.g. a
+# Power BI Performance Analyzer export). QUERIES_INLINE is the fallback.
+QUERIES_FILE   = None
 QUERIES_INLINE = [
     "EVALUATE ROW(\"ping\", 1)",
     "EVALUATE INFO.TABLES()",
     "EVALUATE INFO.MEASURES()",
 ]
 
-# ── Virtual users (optional impersonation list) ──────────────────────────────
-# USERS_FILE — name of a .json in this notebook's Resources panel
-# describing virtual-user identities for AS `EffectiveUserName=` /
-# `CustomData=` / `Roles=` impersonation. Resolution order:
-#
-#   1. None       → use `USERS_INLINE` below (or a single anonymous user).
-#   2. "name.json" → load `builtin/name.json` from Resources.
-#   3. "abfss://…" → cross-lakehouse escape hatch.
-#
-# Auto-discovery does NOT pick up a stray .json for users — single-.json
-# Resources always go to QUERIES_FILE. Users must be named explicitly.
-#
-# Three entry shapes (see docs/impersonation.md for full semantics):
-#   • "alice@contoso.com"                              → EffectiveUserName
-#   • {{"effectiveUserName":"a","customData":"…","roles":["R1"]}}
-#   • {{"customData":"USA"}}                            → CUSTOMDATA() only
-USERS_FILE   = None
-USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
+# ─────────────── Advanced parameters (see docs/loadgen-main.md) ───────────────
 
-# ── Runtime wheel (advanced — only change to upgrade) ────────────────────────
-# WHEEL_URL points at the fdlt_runtime wheel that cell 2 pip-installs.
-# To upgrade: bump the version in the URL (e.g. v0.4.0 → v0.5.0) and Run-All.
-# The .NET LoadGen binaries ship inside the wheel — there's nothing else
-# to refresh.
-#
-# Forms supported:
-#   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/vX.Y.Z/fdlt_runtime-X.Y.Z-py3-none-any.whl
-#       (default — direct from GitHub; needs outbound internet from Spark)
-#   - https://github.com/dbrownems/FabricDaxLoadTest/releases/download/v*.*.*/fdlt_runtime-*.*.*-py3-none-any.whl
-#       (wildcard — `*.*.*` is resolved at run time to the latest GitHub
-#        release tag. Use this to opt INTO auto-upgrade on every Run-All;
-#        skip it to stay pinned to a specific version. Resolution is a
-#        single unauthenticated GET against the public releases API.)
-#   - abfss://<wsid>@onelake.dfs.fabric.microsoft.com/<lhid>/Files/<file>.whl
-#       (offline-friendly — set by scripts/Deploy-LoadTests.ps1)
-#   - /lakehouse/default/Files/<file>.whl
-#       (already-attached lakehouse, manual upload)
+TARGET_REPLICA               = ""        # "readonly" → scale-out read replica
+LAKEHOUSE_WORKSPACE_NAME     = None      # for BYO-lakehouse in another workspace
+LAKEHOUSE_SCHEMA             = None      # None → auto-detect (schema-enabled → "dbo")
+
+LOAD_TEST_NAME               = None      # None → derived from notebook name
+LOAD_TEST_DESCRIPTION        = ""        # free-text notes for this run
+
+CONCURRENT_QUERIES_PER_USER  = 1         # in-flight queries per user (1 = serial)
+PAUSE_BETWEEN_ITERATIONS_MS  = 1000      # think-time between iterations
+PAUSE_BETWEEN_QUERIES_MS     = 0         # think-time between queries in an iteration
+
+ENABLE_TRACING               = True      # capture engine events to TraceEvents
+SKIP_RESULTS                 = False     # True → drain rows without parsing
+
+USERS_FILE                   = None      # RLS / impersonation list
+USERS_INLINE                 = []        # see docs/impersonation.md
+
+LOG_FOLDER                   = None      # None → /tmp on driver; "abfss://…" or local path supported
+
+# Runtime wheel — to upgrade, bump the version (e.g. v0.9.0 → v0.10.0) and Run-All.
 WHEEL_URL = "{WHEEL_URL_DEFAULT}"
 """)
 

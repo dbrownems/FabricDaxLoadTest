@@ -8,7 +8,7 @@ Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dot
 
 The minimal end-to-end flow, assuming you already have a Power BI semantic model you want to load-test:
 
-1. **Capture a workload.** In Power BI Desktop connected to your model: *View → Performance Analyzer → Start recording → interact with the report (apply slicers, switch pages, refresh visuals) → Export*. This produces a `.json` file describing the exact DAX queries the report fired.
+1. **Capture a workload** with [**Performance Analyzer**](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) — available **in both the Fabric portal and Power BI Desktop** (so no Windows device or local `.pbix` is required). Open the report → *View → Performance Analyzer → Start recording → interact with the report (apply slicers, switch pages, refresh visuals) → Export*. This produces a `.json` file describing the exact DAX queries the report fired.
 2. **Deploy** (see [Setup](#setup) for prereqs):
    ```pwsh
    pwsh ./scripts/Deploy-LoadTests.ps1 -Workspace "<your-workspace>"
@@ -130,21 +130,23 @@ The deployed `LoadTest - Main` notebook is meant to be **edited and run directly
 2. **Set up the Scenario.** Two options:
    - **Drop a queries `.json` onto the notebook's *Resources* panel** (left sidebar). If exactly one `.json` is attached, the notebook picks it up automatically. Power BI Desktop's *Performance Analyzer* exports work verbatim; plain DAX-string lists also work — see [Scenario formats](#scenario-formats).
    - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The notebook ships with a 3-query model-agnostic warm-up Scenario that's only useful for smoke-testing the pipeline.
-3. **Edit cell 1.** Every knob lives in cell 1 with an inline comment. The defaults are sensible — you typically only need to override a few:
+3. **Edit cell 1.** Cell 1 ships with one-line comments — full reference in [`docs/loadgen-main.md`](docs/loadgen-main.md). The defaults are sensible; you typically only need to override a few:
 
    ```python
-   LOAD_TEST_NAME   = None            # None → derived from notebook name
-                                      #   "LoadTest - Foo" → "Foo"
-   TARGET_WORKSPACE = None            # None → current workspace
    TARGET_DATASET   = None            # None → the only model in TARGET_WORKSPACE
                                       #   (error if 0 or >1; specify by name otherwise)
+   TARGET_WORKSPACE = None            # None → current workspace
 
    DURATION_SECONDS   = 60
    CONCURRENT_USERS   = 25
    USER_RAMP_TIME_SEC = 15
+
+   LAKEHOUSE_NAME     = None          # None → no persistence; charts read local CSV.
+                                      #   Set to a lakehouse name to write 5 Delta
+                                      #   tables for cross-run analysis.
    ```
 
-   See cell 1 in the notebook for the full list (load-shape knobs, RLS users, BYO lakehouse, schema override, etc.).
+   See [`docs/loadgen-main.md`](docs/loadgen-main.md) for every other parameter (load-shape advanced knobs, RLS users, BYO lakehouse, schema override, log folder, runtime wheel, etc.).
 4. **Run All.** Cell 3 prints a live status line every second while LoadGen runs; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly. When the run completes, cell 3 writes the Run into the four Delta tables. Every Run-All mints a fresh `RunId`, so prior Runs are preserved untouched. Re-executing **only cell 3** (after a completed run) is also safe — it deletes and rewrites just that one `RunId`'s fact rows.
 5. **Cell 4** plots latency / QPS / users for the Run that just completed, straight from the per-run CSV.
 
@@ -178,7 +180,7 @@ Per-Run Scenarios travel with the notebook in Resources, so every Load Test is r
 
 The notebook accepts any of these shapes for `queries.json`:
 
-- **Power BI Desktop Performance Analyzer export** (canonical):
+- **[Performance Analyzer](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) export** (canonical) — available in both the Fabric portal and Power BI Desktop:
 
   ```json
   { "version": "1.1.0",
@@ -189,7 +191,7 @@ The notebook accepts any of these shapes for `queries.json`:
   }
   ```
 
-  In Power BI Desktop, *View → Performance Analyzer → Start recording → interact with report → Export*. Drop the file straight onto Resources.
+  Open the report → *View → Performance Analyzer → Start recording → interact with report → Export*. Drop the file straight onto Resources.
 
 - **Object array** (one entry per query):
 
