@@ -47,3 +47,7 @@ __pycache__/
 
 # Local diagnostic probes (not part of the shipped product)
 tools/xmla-impersonation-probe/
+
+# Per-developer environment for live testing (workspace, tenant, upn, etc.)
+.devenv.json
+
