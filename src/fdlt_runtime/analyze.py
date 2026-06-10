@@ -140,11 +140,11 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
             # *preceding* engine work for each query (engine work follows
             # the throttle wait).
             ax4r = ax4.twinx()
-            ax4r.plot(cpu_x, thr_y, color="crimson",
-                      linewidth=2.0, marker="o", markersize=3,
+            ax4r.plot(cpu_x, thr_y, color="darkorange",
+                      linewidth=3.0, marker="o", markersize=4,
                       label="Throttle (s / s, queued)")
-            ax4r.set_ylabel("Throttle s/s", color="crimson")
-            ax4r.tick_params(axis="y", labelcolor="crimson")
+            ax4r.set_ylabel("Throttle s/s", color="darkorange")
+            ax4r.tick_params(axis="y", labelcolor="darkorange")
             ax4r.set_ylim(bottom=0)
             thr_peak = max(thr_y)
             thr_total = sum(thr_y) * cpu_bw
