@@ -76,8 +76,8 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
               .merge(users, on="bucket", how="left").fillna(0))
     agg["time_s"] = (agg.t - t_min) / 1000
 
-    # Optional CPU-seconds-per-second series from the engine trace.
-    cpu_x, cpu_y, cpu_bw = _cpu_per_second(trace_csv_path, df, duration_s)
+    # Optional CPU-seconds-per-second + throttle-seconds-per-second from trace.
+    cpu_x, cpu_y, thr_y, cpu_bw = _cpu_per_second(trace_csv_path, df, duration_s)
     have_cpu = cpu_x is not None and len(cpu_x) > 0
 
     n_panels = 4 if have_cpu else 3
@@ -129,9 +129,34 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
         ax4.set_ylim(bottom=0)
         peak = max(cpu_y) if len(cpu_y) else 0
         avg = (sum(cpu_y) * cpu_bw) / duration_s if duration_s > 0 else 0
-        ax4.legend(loc="upper left",
-                   title=f"peak={peak:.1f}  avg={avg:.1f}  "
-                         f"bucket={cpu_bw:g}s")
+        legend_title = (f"peak={peak:.1f}  avg={avg:.1f}  "
+                        f"bucket={cpu_bw:g}s")
+        if thr_y is not None and any(v > 0 for v in thr_y):
+            # Throttle queued-seconds-per-second on a secondary y-axis.
+            # Same units as CPU s/s (both are time-per-time), but
+            # semantically distinct (CPU consumed vs queued behind
+            # capacity throttling), so a secondary axis avoids implying
+            # they sum. Throttle window is allocated to the seconds
+            # *preceding* engine work for each query (engine work follows
+            # the throttle wait).
+            ax4r = ax4.twinx()
+            ax4r.plot(cpu_x, thr_y, color="crimson",
+                      linewidth=2.0, marker="o", markersize=3,
+                      label="Throttle (s / s, queued)")
+            ax4r.set_ylabel("Throttle s/s", color="crimson")
+            ax4r.tick_params(axis="y", labelcolor="crimson")
+            ax4r.set_ylim(bottom=0)
+            thr_peak = max(thr_y)
+            thr_total = sum(thr_y) * cpu_bw
+            legend_title += (f"\nthrottle peak={thr_peak:.1f}  "
+                             f"total={thr_total:.0f}s")
+            # Combine both legends into one box on the bar axis.
+            h1, l1 = ax4.get_legend_handles_labels()
+            h2, l2 = ax4r.get_legend_handles_labels()
+            ax4.legend(h1 + h2, l1 + l2, loc="upper left",
+                       title=legend_title)
+        else:
+            ax4.legend(loc="upper left", title=legend_title)
 
     fig.tight_layout()
     # Detach the figure from pyplot so the inline backend's post-cell
@@ -159,45 +184,55 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     the run (snapped to a nice value like 1, 5, 15, 30, 60s) — see
     ``_pick_bucket_size_s``.
 
-    Returns ``(centers_s, cpu_per_sec, bucket_width_s)`` or
-    ``(None, None, None)`` when no CPU data is available.
+    Also computes a parallel **throttle-seconds-per-second** series from
+    ``capacityThrottlingMs`` in the same EM JSON payload. Throttle
+    precedes engine work, so the throttle window is allocated to
+    ``[engine_start - throttleMs/1000, engine_start)`` and bucketed the
+    same way as CPU. ``throttle_per_sec`` is None when no throttling
+    was observed.
+
+    Returns ``(centers_s, cpu_per_sec, throttle_per_sec, bucket_width_s)``
+    or ``(None, None, None, None)`` when no CPU data is available.
     """
     if not trace_csv_path:
-        return None, None, None
+        return None, None, None, None
     import os
     if not os.path.exists(trace_csv_path):
-        return None, None, None
+        return None, None, None, None
 
     import json
     import pandas as pd
     try:
         tdf = pd.read_csv(trace_csv_path)
     except pd.errors.EmptyDataError:
-        return None, None, None
+        return None, None, None, None
     if tdf.empty:
-        return None, None, None
+        return None, None, None, None
     tdf = tdf[(tdf.get("EventClass") == "ExecutionMetrics") &
               tdf.get("TextData").notna()].copy()
     if tdf.empty:
-        return None, None, None
+        return None, None, None, None
 
     def _parse_em(s):
         try:
             j = json.loads(s)
             cpu = j.get("totalCpuTimeMs")
             dur = j.get("durationMs")
+            thr = j.get("capacityThrottlingMs")
             if cpu is None or dur is None:
-                return (None, None)
-            return (float(cpu), float(dur))
+                return (None, None, None)
+            return (float(cpu), float(dur),
+                    float(thr) if thr is not None else 0.0)
         except (ValueError, TypeError):
-            return (None, None)
+            return (None, None, None)
 
     parsed = tdf["TextData"].map(_parse_em)
     tdf["CpuMs"] = parsed.map(lambda p: p[0])
     tdf["DurationMs"] = parsed.map(lambda p: p[1])
+    tdf["ThrottleMs"] = parsed.map(lambda p: p[2])
     tdf = tdf[(tdf["CpuMs"] > 0) & (tdf["DurationMs"] > 0)]
     if tdf.empty:
-        return None, None, None
+        return None, None, None, None
 
     # Align trace UtcTimestamps with the executions test-start.
     # T0 (UTC) = StartUtc[i] - StartTimeMs[i]/1000  (any i; pick i=0 row's
@@ -205,7 +240,7 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     exe = df.copy()
     exe["StartUtc"] = pd.to_datetime(exe["StartUtc"], utc=True)
     if exe.empty:
-        return None, None, None
+        return None, None, None, None
     earliest = exe["StartTimeMs"].idxmin()
     t0 = (exe["StartUtc"].iloc[earliest]
           - pd.to_timedelta(exe["StartTimeMs"].iloc[earliest], unit="ms"))
@@ -219,26 +254,43 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     bucket_size_s = _pick_bucket_size_s(duration_s)
     n_buckets = max(1, int(math.ceil(duration_s / bucket_size_s)))
     cpu_ms = [0.0] * n_buckets
+    throttle_ms = [0.0] * n_buckets
+    saw_throttle = False
 
-    for _, ev in tdf.iterrows():
-        s, e, c = float(ev["start_s"]), float(ev["end_s"]), float(ev["CpuMs"])
+    def _spread(s, e, total_ms, sink):
+        """Spread total_ms uniformly over [s, e) into the bucket sink."""
         if e <= 0 or s >= duration_s or e <= s:
-            # Event entirely before T0 (clock skew) or zero-length.
-            continue
+            return
         s = max(s, 0.0)
         e = min(e, duration_s)
         span = e - s
         if span <= 0:
-            continue
-        cpu_per_s = c / span  # ms-of-CPU per second-of-wallclock for this event
+            return
+        per_s = total_ms / span
         b0 = int(s // bucket_size_s)
         b1 = int(min(n_buckets - 1, e // bucket_size_s))
         for b in range(b0, b1 + 1):
             bucket_lo = b * bucket_size_s
             bucket_hi = bucket_lo + bucket_size_s
             overlap = max(0.0, min(e, bucket_hi) - max(s, bucket_lo))
-            cpu_ms[b] += cpu_per_s * overlap
+            sink[b] += per_s * overlap
+
+    for _, ev in tdf.iterrows():
+        s, e, c = float(ev["start_s"]), float(ev["end_s"]), float(ev["CpuMs"])
+        thr = float(ev["ThrottleMs"]) if ev["ThrottleMs"] else 0.0
+        # Engine CPU spans [start_s, end_s).
+        _spread(s, e, c, cpu_ms)
+        # Throttle precedes engine work: window is
+        # [engine_start - throttleMs/1000, engine_start).
+        if thr > 0:
+            saw_throttle = True
+            t_end = s
+            t_start = s - thr / 1000.0
+            _spread(t_start, t_end, thr, throttle_ms)
 
     centers = [(b + 0.5) * bucket_size_s for b in range(n_buckets)]
     cpu_per_sec = [(ms / 1000.0) / bucket_size_s for ms in cpu_ms]
-    return centers, cpu_per_sec, bucket_size_s
+    throttle_per_sec = (
+        [(ms / 1000.0) / bucket_size_s for ms in throttle_ms]
+        if saw_throttle else None)
+    return centers, cpu_per_sec, throttle_per_sec, bucket_size_s

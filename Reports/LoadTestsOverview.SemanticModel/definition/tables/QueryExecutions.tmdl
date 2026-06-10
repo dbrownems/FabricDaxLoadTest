@@ -67,6 +67,20 @@ table QueryExecutions
 		formatString: #,0
 		lineageTag: 016ca1de-f0fc-49e4-b5f9-9e26cbe226a1
 
+	/// Total capacity-router throttling time, in seconds. Sum of ExecutionMetrics.capacityThrottlingMs across executions. >0 indicates the capacity SKU was throttling.
+	measure 'Throttling (s)' = DIVIDE(SUM(QueryExecutions[CapacityThrottlingMs]), 1000)
+		formatString: 0.00
+		lineageTag: 8a4c1d72-1a3e-4e7b-a2cb-7f4e6b9c1d22
+
+	measure 'Throttled Executions' = CALCULATE([Total Executions], QueryExecutions[CapacityThrottlingMs] > 0)
+		formatString: #,0
+		lineageTag: c14a92d5-2d8b-4f1a-9b0a-6d3a8e4f1c33
+
+	/// Fraction of executions that were capacity-router throttled.
+	measure '% Throttled' = DIVIDE([Throttled Executions], [Total Executions])
+		formatString: 0.0%
+		lineageTag: 9b1e7c38-3f4d-45a2-bb71-1f2a9d0e7c44
+
 
 	column Source
 		dataType: string
@@ -316,6 +330,20 @@ table QueryExecutions
 		lineageTag: ed666e26-9354-4513-86eb-c5d45e1d9051
 		summarizeBy: sum
 		sourceColumn: ExecutionDelayMs
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column CapacityThrottlingMs
+		dataType: int64
+		isHidden
+		isAvailableInMdx: false
+		formatString: 0
+		sourceProviderType: bigint
+		lineageTag: 5d6e3a14-7c1c-4a72-9b7a-9e1c4b8c2d11
+		summarizeBy: sum
+		sourceColumn: CapacityThrottlingMs
 
 		changedProperty = IsHidden
 

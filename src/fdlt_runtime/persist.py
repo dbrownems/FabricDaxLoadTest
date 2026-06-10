@@ -305,6 +305,7 @@ def write_run(
             StructField("SECpuMs",              LongType(),      True),
             StructField("FECpuMs",              LongType(),      True),
             StructField("ExecutionDelayMs",     LongType(),      True),
+            StructField("CapacityThrottlingMs", LongType(),      True),
             StructField("PeakMemoryKB",         LongType(),      True),
             StructField("QueryResultRows",      LongType(),      True),
             # Raw ExecutionMetrics JSON passthrough so we don't lose any
@@ -365,6 +366,7 @@ def write_run(
             # All trace-derived columns are back-filled below.
             EngineDurationMs=None, EngineCpuMs=None,
             SECpuMs=None, FECpuMs=None, ExecutionDelayMs=None,
+            CapacityThrottlingMs=None,
             PeakMemoryKB=None, QueryResultRows=None,
             ExecutionMetricsJson=None,
             VertiPaqQueryCount=None, VertiPaqDurationMs=None,
@@ -464,6 +466,7 @@ def write_run(
             _SF("totalCpuTimeMs",                  _LT(), True),
             _SF("durationMs",                      _LT(), True),
             _SF("executionDelayMs",                _LT(), True),
+            _SF("capacityThrottlingMs",            _LT(), True),
             _SF("approximatePeakMemConsumptionKB", _LT(), True),
             _SF("queryResultRows",                 _LT(), True),
         ])
@@ -489,6 +492,7 @@ def write_run(
                 F.col("em.vertipaqJobCpuTimeMs").alias("SECpuMs"),
                 F.col("em.queryProcessingCpuTimeMs").alias("FECpuMs"),
                 F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
+                F.col("em.capacityThrottlingMs").alias("CapacityThrottlingMs"),
                 F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
                 F.col("em.queryResultRows").alias("QueryResultRows"),
                 # Raw JSON passthrough — keeps fields we haven't parsed
@@ -536,6 +540,7 @@ def write_run(
             "RequestId",
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
+            "CapacityThrottlingMs",
             "PeakMemoryKB", "QueryResultRows", "ExecutionMetricsJson",
             "VertiPaqQueryCount", "VertiPaqDurationMs",
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
