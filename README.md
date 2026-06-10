@@ -17,7 +17,7 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
 
 Cell 4 plots latency / QPS / users / engine CPU for this Run, read straight from the per-run CSV on the Spark driver — **no lakehouse required**.
 
-> **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 5 Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
+> **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 6 Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
 
 > **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`.
 
@@ -42,7 +42,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows).
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows). `QueryVisuals` is populated from the Performance Analyzer JSON (Visual Container Lifecycle → Execute DAX Query pairing) so dashboards can break down latency/CPU by visual title and type.
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.

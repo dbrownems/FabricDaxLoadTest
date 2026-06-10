@@ -1,6 +1,6 @@
 """Delta-table writer for FabricDaxLoadTest runs.
 
-Pulled from notebook cell 5b. Writes 5 tables:
+Pulled from notebook cell 5b. Writes 6 tables:
 
   LoadTests        — 1 row per logical test (MERGE on LoadTestId)
   LoadTestRuns     — 1 row per run (MERGE on RunId)
@@ -8,6 +8,11 @@ Pulled from notebook cell 5b. Writes 5 tables:
                      QueryShapeHash + QueryText. Insert-only (existing
                      rows preserved so FirstSeenAtUtc stays stable).
                      QueryExecutions.QueryHash → Queries.QueryHash (M:1).
+  QueryVisuals     — global (QueryHash, VisualId) dim populated from the
+                     Power BI Performance Analyzer "Visual Container
+                     Lifecycle" event preceding each "Execute DAX Query".
+                     MERGE on (QueryHash, VisualId) so visual title/type
+                     are kept fresh across runs. M:1 to Queries.
   QueryExecutions  — per-attempt facts. Generic across sources;
                      keyed (Source, SourceId, ...). For LoadTest runs:
                      Source="LoadTestRun", SourceId=<RunId>.
@@ -101,6 +106,7 @@ def write_run(
     target_replica: str,
     xmla: str,
     queries,
+    query_visuals: Optional[list] = None,
     user_count: int,
     duration_sec: int,
     ramp_sec: int,
@@ -304,6 +310,42 @@ def write_run(
     ) for i in range(len(queries))]
     queries_dim_df = (spark.createDataFrame(queries_dim_rows).dropDuplicates(["QueryHash"])
                       if queries_dim_rows else None)
+
+    # QueryVisuals -----------------------------------------------------------
+    # Per-(QueryHash, VisualId) dim populated from the Power BI Performance
+    # Analyzer JSON: each "Execute DAX Query" event is preceded by a
+    # "Visual Container Lifecycle" event carrying the visualId/Title/Type
+    # that issued the query. Joins QueryExecutions -> QueryVisuals via
+    # QueryHash so report-side dashboards can break duration/CPU down
+    # by visual type without re-parsing the JSON.
+    qv_rows = []
+    if query_visuals:
+        seen: set[tuple[str, str]] = set()
+        for i, v in enumerate(query_visuals):
+            if not v:
+                continue
+            vid = v.get("visualId")
+            if not vid:
+                continue
+            qh = query_hashes[i]
+            key = (qh, vid)
+            if key in seen:
+                continue
+            seen.add(key)
+            qv_rows.append(Row(
+                QueryHash=qh,
+                VisualId=str(vid),
+                VisualTitle=str(v.get("visualTitle") or ""),
+                VisualType=str(v.get("visualType") or ""),
+            ))
+    qv_schema = StructType([
+        StructField("QueryHash",   StringType(), False),
+        StructField("VisualId",    StringType(), False),
+        StructField("VisualTitle", StringType(), True),
+        StructField("VisualType",  StringType(), True),
+    ])
+    query_visuals_df = (spark.createDataFrame(qv_rows, schema=qv_schema)
+                        if qv_rows else None)
 
     # QueryExecutions --------------------------------------------------------
     if len(df) > 0:
@@ -608,6 +650,11 @@ def write_run(
         write_tasks.append(
             ("Queries",
              lambda: _insert_new(queries_dim_df, "Queries", ["QueryHash"])))
+    if query_visuals_df is not None:
+        write_tasks.append(
+            ("QueryVisuals",
+             lambda: _upsert(query_visuals_df, "QueryVisuals",
+                             ["QueryHash", "VisualId"])))
     if exec_df is not None:
         write_tasks.append(
             ("QueryExecutions",

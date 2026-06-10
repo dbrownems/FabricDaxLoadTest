@@ -13,3 +13,8 @@ relationship 9b227fc6-5bd4-4b8d-bd7b-7da9b91a55a0
 relationship 7c1e9d4a-2020-4b6f-8a3c-5d7e1f9b2c01
 	fromColumn: QueryExecutions.QueryHash
 	toColumn: Queries.QueryHash
+
+relationship 8d2fae5b-3030-4c7f-9b4d-6e8f2a0c3d01
+	fromColumn: QueryVisuals.QueryHash
+	toColumn: Queries.QueryHash
+

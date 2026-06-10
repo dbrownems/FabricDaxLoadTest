@@ -37,32 +37,79 @@ def _read_text(path: str, read_abfss: ReadAbfss | None) -> str:
 def normalize_queries(raw_json: str) -> list[str]:
     """Parse a queries JSON blob into a flat list of DAX strings.
 
+    Thin wrapper around :func:`normalize_queries_with_visuals` that drops
+    the per-query visual metadata. See that function for the recognised
+    shapes and Performance-Analyzer caching warning.
+    """
+    queries, _visuals = normalize_queries_with_visuals(raw_json)
+    return queries
+
+
+def normalize_queries_with_visuals(
+    raw_json: str,
+) -> tuple[list[str], list[dict[str, str] | None]]:
+    """Parse a queries JSON blob into ``(queries, visuals)``.
+
+    ``queries`` is a flat list of DAX strings. ``visuals`` is a parallel
+    list (same length, same order) of per-query visual metadata dicts
+    with keys ``visualId``, ``visualTitle``, ``visualType``, or ``None``
+    when the source has no visual binding (inline arrays etc.).
+
     Accepted shapes:
 
       * Power BI Desktop *Performance Analyzer* export
         (``{"version": ..., "events": [...]}``). DAX text is pulled from
         ``event.metrics.QueryText`` for events whose ``name`` is
-        ``"Execute DAX Query"`` (the actual DSE-issued DAX). Older /
-        alternative shapes (``event.query`` or ``event.Query.Query``)
-        are also accepted.
+        ``"Execute DAX Query"`` (the actual DSE-issued DAX). Each
+        ``"Execute DAX Query"`` is attributed to the most recent
+        ``"Visual Container Lifecycle"`` event observed before it (the
+        canonical ordering Power BI Desktop emits). Lifecycle events
+        with no following ``"Execute DAX Query"`` indicate the visual
+        served from cache; we emit a stderr warning explaining how to
+        re-capture without caching. Older / alternative event shapes
+        (``event.query`` or ``event.Query.Query``) are also accepted
+        but carry no visual metadata.
       * Object array: ``[{"query": "..."}, ...]`` or
         ``[{"Query": "..."}, ...]``
       * String array: ``["EVALUATE ...", ...]``
 
     Tolerates a leading UTF-8 BOM (Power BI Desktop writes one).
     """
+    import sys
+
     obj = json.loads(raw_json.lstrip("\ufeff"))
     if isinstance(obj, dict) and isinstance(obj.get("events"), list):
         events = obj["events"]
-        out: list[str] = []
+        queries: list[str] = []
+        visuals: list[dict[str, str] | None] = []
         query_named_events = 0
+        pending_visual: dict[str, str] | None = None
+        cached_visuals: list[dict[str, str]] = []
         for ev in events:
             if not isinstance(ev, dict):
                 continue
-            if ev.get("name") in ("Execute DAX Query", "Query"):
+            name = ev.get("name")
+            if name == "Visual Container Lifecycle":
+                # If a previous lifecycle was never paired with an
+                # Execute DAX Query, the visual served from cache.
+                if pending_visual is not None:
+                    cached_visuals.append(pending_visual)
+                m = ev.get("metrics") or {}
+                if isinstance(m, dict):
+                    vid = m.get("visualId") or m.get("VisualId")
+                    if isinstance(vid, str) and vid:
+                        pending_visual = {
+                            "visualId": vid,
+                            "visualTitle": str(m.get("visualTitle")
+                                              or m.get("VisualTitle") or ""),
+                            "visualType":  str(m.get("visualType")
+                                              or m.get("VisualType")  or ""),
+                        }
+                    else:
+                        pending_visual = None
+                continue
+            if name in ("Execute DAX Query", "Query"):
                 query_named_events += 1
-            # Power BI Desktop Performance Analyzer: DAX lives in
-            # metrics.QueryText on "Execute DAX Query" events.
             q = None
             metrics = ev.get("metrics")
             if isinstance(metrics, dict):
@@ -74,8 +121,33 @@ def normalize_queries(raw_json: str) -> list[str]:
                 if isinstance(qd, dict):
                     q = qd.get("Query")
             if isinstance(q, str) and q.strip():
-                out.append(q)
-        if not out:
+                queries.append(q)
+                visuals.append(pending_visual)
+                pending_visual = None
+        if pending_visual is not None:
+            cached_visuals.append(pending_visual)
+        if cached_visuals:
+            titles = ", ".join(
+                f"{v.get('visualTitle') or '(untitled)'} [{v.get('visualType') or '?'}]"
+                for v in cached_visuals[:5])
+            extra = "" if len(cached_visuals) <= 5 else f" (+{len(cached_visuals)-5} more)"
+            print(
+                f"\u26a0  {len(cached_visuals)} Visual Container Lifecycle event(s) "
+                "had no following 'Execute DAX Query' — those visuals likely "
+                f"served from cache: {titles}{extra}.\n"
+                "   To capture DAX for every visual, in Power BI Desktop:\n"
+                "     1. Home > Transform data > Data source settings > "
+                "Clear permissions, OR restart Desktop to drop the visual cache.\n"
+                "     2. View > Performance Analyzer > Start recording.\n"
+                "     3. Performance Analyzer pane > 'Refresh visuals' "
+                "(NOT page-level refresh — page refresh re-uses cached results).\n"
+                "     4. Stop recording > Export.\n"
+                "   In the Fabric/Power BI service, hard-reload the report tab "
+                "(Ctrl+F5) before clicking Refresh visuals so the browser-side "
+                "visual cache is dropped too.",
+                file=sys.stderr,
+            )
+        if not queries:
             raise ValueError(
                 "Performance Analyzer export contains no DAX query text "
                 f"({len(events)} events, {query_named_events} Query/Execute DAX Query "
@@ -85,7 +157,7 @@ def normalize_queries(raw_json: str) -> list[str]:
                 "'Refresh visuals' after starting the recording. Some browser/portal "
                 "modes capture only timings and omit the DAX text."
             )
-        return out
+        return queries, visuals
     if isinstance(obj, list):
         out2: list[str] = []
         for q in obj:
@@ -101,7 +173,7 @@ def normalize_queries(raw_json: str) -> list[str]:
                 f"strings ({len(obj)} entries). Expected list of DAX strings or "
                 "objects with a 'query'/'Query' field."
             )
-        return out2
+        return out2, [None] * len(out2)
     raise ValueError("Unrecognized queries.json shape (expected list or {events: [...]})")
 
 
@@ -178,16 +250,22 @@ def load_queries(
     queries_inline: Iterable[str],
     *,
     read_abfss: ReadAbfss | None = None,
-) -> tuple[list[str], str]:
+) -> tuple[list[str], list[dict[str, str] | None], str]:
     """Resolve and load the Load Test Scenario query list.
 
-    Returns ``(queries, source_label)``. ``source_label`` is a short
-    human-readable description suitable for printing in the notebook.
+    Returns ``(queries, visuals, source_label)``. ``visuals`` is a
+    parallel list (same length, same order as ``queries``) of per-query
+    visual metadata dicts (``visualId``/``visualTitle``/``visualType``)
+    or ``None`` when the source has no visual binding.
+    ``source_label`` is a short human-readable description suitable for
+    printing in the notebook.
     """
     p, src = _resolve_resource(queries_file, allow_auto_discover=True)
     if p is not None:
-        return normalize_queries(_read_text(p, read_abfss)), src
-    return [str(q) for q in queries_inline], "(QUERIES_INLINE fallback)"
+        queries, visuals = normalize_queries_with_visuals(_read_text(p, read_abfss))
+        return queries, visuals, src
+    qs = [str(q) for q in queries_inline]
+    return qs, [None] * len(qs), "(QUERIES_INLINE fallback)"
 
 
 def load_users(

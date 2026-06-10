@@ -1,0 +1,50 @@
+table QueryVisuals
+	lineageTag: e5f9d3f2-1011-4a5e-9b3a-3a1c5e7f8d01
+
+	column QueryHash
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: e5f9d3f2-1011-4a5e-9b3a-3a1c5e7f8d02
+		summarizeBy: none
+		sourceColumn: QueryHash
+
+		annotation SummarizationSetBy = Automatic
+
+	column VisualId
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: e5f9d3f2-1011-4a5e-9b3a-3a1c5e7f8d03
+		summarizeBy: none
+		sourceColumn: VisualId
+
+		annotation SummarizationSetBy = Automatic
+
+	column VisualTitle
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: e5f9d3f2-1011-4a5e-9b3a-3a1c5e7f8d04
+		summarizeBy: none
+		sourceColumn: VisualTitle
+
+		annotation SummarizationSetBy = Automatic
+
+	column VisualType
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: e5f9d3f2-1011-4a5e-9b3a-3a1c5e7f8d05
+		summarizeBy: none
+		sourceColumn: VisualType
+
+		annotation SummarizationSetBy = Automatic
+
+	partition QueryVisuals = m
+		mode: directQuery
+		source =
+				let
+				    Source = Sql.Database(ServerName, DatabaseName),
+				    Data = Source{[Schema=SchemaName, Item="QueryVisuals"]}[Data]
+				in
+				    Data
+
+	annotation PBI_ResultType = Table
+

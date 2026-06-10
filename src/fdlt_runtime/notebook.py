@@ -70,7 +70,7 @@ def bootstrap(
     `lakehouse_name` is **optional**. When supplied, the lakehouse is
     located in `lakehouse_workspace` (display name or GUID; defaults
     to the notebook's workspace) and used as the destination for the
-    5 Delta tables written after each run. **When omitted, persistence
+    6 Delta tables written after each run. **When omitted, persistence
     is skipped entirely** — the load test still runs, plots still
     render (they read the local LoadGen CSV directly, no Spark
     needed), but no Delta tables are created and no SQL-endpoint sync
@@ -182,12 +182,15 @@ def run(
     def _read_abfss(path: str) -> str:
         return notebookutils.fs.head(path, 1024 * 1024 * 4)
 
-    queries, q_src = load_queries(
+    queries, query_visuals, q_src = load_queries(
         queries_file, queries_inline or [], read_abfss=_read_abfss)
     print(f"Queries   : {len(queries)}  from {q_src}")
     if q_src.startswith("(QUERIES_INLINE"):
         print("          ⚠ no resource file attached — using fallback queries only.")
         print("          Drop a Performance Analyzer .json onto Resources for a real test.")
+    bound_visuals = sum(1 for v in query_visuals if v is not None)
+    if bound_visuals:
+        print(f"Visuals   : {bound_visuals}/{len(queries)} queries bound to a Power BI visual")
     base, u_src = load_users(
         users_file, users_inline or [], read_abfss=_read_abfss)
     print(f"Users     : pool={len(base)}  from {u_src}")
@@ -244,7 +247,7 @@ def run(
     # Forensic artifacts (executions CSV, trace CSV, result.json, *.log)
     # stay on the Spark driver's local disk under run_local_dir. We
     # deliberately do NOT copy them to OneLake — everything the analytics
-    # layer needs already lives in the 5 Delta tables. Run the load test
+    # layer needs already lives in the 6 Delta tables. Run the load test
     # again and you'll get a fresh /tmp dir; if you need the raw artifacts
     # for forensics, grab them from `run_dest` before the kernel cycles.
     run_dest = rr.run_local_dir
@@ -265,7 +268,7 @@ def run(
             load_test_name=resolved_name,
             target_workspace=tgt_ws_name, target_dataset=ds.dataset_name,
             target_replica=target_replica, xmla=cfg.xmla,
-            queries=queries, user_count=concurrent_users,
+            queries=queries, query_visuals=query_visuals, user_count=concurrent_users,
             duration_sec=duration_seconds, ramp_sec=user_ramp_time_sec,
             concurrent_queries_per_user=concurrent_queries_per_user,
             pause_iter_ms=pause_between_iterations_ms,
@@ -281,7 +284,7 @@ def run(
         print(f"  Executions : {write_summary.executions_written:,}")
         print(f"  Trace evts : {write_summary.trace_events_written:,}")
         print("  Tables     : LoadTests, LoadTestRuns, Queries, "
-              "QueryExecutions, TraceEvents")
+              "QueryVisuals, QueryExecutions, TraceEvents")
         print(f"  Lakehouse  : {boot.lakehouse.lakehouse_name} "
               f"({boot.lakehouse.lakehouse_id})  "
               f"base={boot.lakehouse.table_base}")
