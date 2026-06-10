@@ -1,9 +1,13 @@
 """Delta-table writer for FabricDaxLoadTest runs.
 
-Pulled from notebook cell 5b. Writes 4 tables:
+Pulled from notebook cell 5b. Writes 5 tables:
 
   LoadTests        — 1 row per logical test (MERGE on LoadTestId)
   LoadTestRuns     — 1 row per run (MERGE on RunId)
+  Queries          — global query dim, keyed by QueryHash. Carries
+                     QueryShapeHash + QueryText. Insert-only (existing
+                     rows preserved so FirstSeenAtUtc stays stable).
+                     QueryExecutions.QueryHash → Queries.QueryHash (M:1).
   QueryExecutions  — per-attempt facts. Generic across sources;
                      keyed (Source, SourceId, ...). For LoadTest runs:
                      Source="LoadTestRun", SourceId=<RunId>.
@@ -178,6 +182,23 @@ def write_run(
         else:
             df_.write.format("delta").mode("overwrite").save(path)
 
+    def _insert_new(df_, name: str, merge_keys):
+        """MERGE that only INSERTs new rows (preserves existing — used for
+        the global Queries dim so QueryText/FirstSeenAtUtc stay stable
+        the first time we observed each query)."""
+        path = _path(name)
+        df_ = df_.coalesce(1)
+        if DeltaTable.isDeltaTable(spark, path):
+            spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+            tgt = DeltaTable.forPath(spark, path)
+            on = " AND ".join(f"t.{k}=s.{k}" for k in merge_keys)
+            (tgt.alias("t")
+                .merge(df_.alias("s"), on)
+                .whenNotMatchedInsertAll()
+                .execute())
+        else:
+            df_.write.format("delta").mode("overwrite").save(path)
+
     def _replace_for_run(df_, name: str, run_id_: str):
         path = _path(name)
         # See _upsert: single-file writes for tiny per-run tables.
@@ -272,8 +293,17 @@ def write_run(
         RuntimeVersion=runtime_version,
     )])
 
-    # LoadTestQueries table dropped — QueryHash, QueryShapeHash, and
-    # QueryText now live directly on each QueryExecutions row.
+    # LoadTestQueries table dropped — QueryText, QueryShapeHash live in
+    # the global `Queries` dim (keyed by QueryHash). QueryExecutions
+    # carries only QueryHash and joins to Queries 1:M.
+    queries_dim_rows = [Row(
+        QueryHash=query_hashes[i],
+        QueryShapeHash=query_shape_hashes[i],
+        QueryText=queries[i],
+        FirstSeenAtUtc=started_at,
+    ) for i in range(len(queries))]
+    queries_dim_df = (spark.createDataFrame(queries_dim_rows).dropDuplicates(["QueryHash"])
+                      if queries_dim_rows else None)
 
     # QueryExecutions --------------------------------------------------------
     if len(df) > 0:
@@ -282,10 +312,6 @@ def write_run(
         df2["EndUtc"] = pd.to_datetime(df2["EndUtc"], utc=True)
         df2["QueryHash"] = df2["QueryIndex"].apply(
             lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
-        df2["QueryShapeHash"] = df2["QueryIndex"].apply(
-            lambda i: query_shape_hashes[int(i)] if 0 <= int(i) < len(query_shape_hashes) else None)
-        df2["QueryText"] = df2["QueryIndex"].apply(
-            lambda i: queries[int(i)] if 0 <= int(i) < len(queries) else None)
         exec_schema = StructType([
             StructField("Source",               StringType(),    False),
             StructField("SourceId",             StringType(),    False),
@@ -298,8 +324,6 @@ def write_run(
             StructField("UserEmail",            StringType(),    True),
             StructField("QueryIndex",           IntegerType(),   True),
             StructField("QueryHash",            StringType(),    True),
-            StructField("QueryShapeHash",       StringType(),    True),
-            StructField("QueryText",            StringType(),    True),
             StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
             # Session identity. RequestId is back-filled from the
@@ -370,8 +394,6 @@ def write_run(
             UserEmail=str(r["UserEmail"]) if pd.notna(r["UserEmail"]) else None,
             QueryIndex=int(r["QueryIndex"]),
             QueryHash=r["QueryHash"],
-            QueryShapeHash=r["QueryShapeHash"],
-            QueryText=r["QueryText"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
             # RequestId back-filled from ExecutionMetrics trace below
@@ -582,6 +604,10 @@ def write_run(
         ("LoadTests",                lambda: _upsert(load_tests_df, "LoadTests", ["LoadTestId"])),
         ("LoadTestRuns",             lambda: _upsert(runs_df, "LoadTestRuns", ["RunId"])),
     ]
+    if queries_dim_df is not None:
+        write_tasks.append(
+            ("Queries",
+             lambda: _insert_new(queries_dim_df, "Queries", ["QueryHash"])))
     if exec_df is not None:
         write_tasks.append(
             ("QueryExecutions",

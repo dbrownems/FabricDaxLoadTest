@@ -118,7 +118,7 @@ def build_run():
     Charts in cell 4 read the LoadGen CSV directly from the Spark driver's
     local `/tmp/` — they need **no Spark and no lakehouse**. Setting
     `LAKEHOUSE_NAME` (cell 1) opts in to writing 5 Delta tables —
-    `LoadTests`, `LoadTestRuns`, `QueryExecutions`,
+    `LoadTests`, `LoadTestRuns`, `Queries`, `QueryExecutions`,
     `TraceEvents` — keyed so multiple runs land side-by-side and can be
     queried as a Direct Lake source for dashboards. Without it, the
     forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the

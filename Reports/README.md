@@ -6,7 +6,7 @@ Power BI reports for visualizing FabricDaxLoadTest results.
 
 DirectQuery report against the Fabric Lakehouse SQL analytics endpoint
 where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
-`QueryExecutions`, `TraceEvents`).
+`Queries`, `QueryExecutions`, `TraceEvents`).
 
 ### First-time setup (per developer)
 
@@ -51,10 +51,11 @@ where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
 
 ### What's in the model
 
-* **4 DirectQuery tables**, related on the natural keys
+* **5 DirectQuery tables**, related on the natural keys
   (`LoadTestRuns.LoadTestId → LoadTests`, `QueryExecutions.SourceId → LoadTestRuns`,
-  `TraceEvents.SourceId → LoadTestRuns`). `QueryHash`, `QueryShapeHash`,
-  and `QueryText` are columns on `QueryExecutions` directly.
+  `TraceEvents.SourceId → LoadTestRuns`, `QueryExecutions.QueryHash → Queries`).
+  `Queries` is a global dim (one row per unique DAX query) carrying
+  `QueryShapeHash` (literals stripped) and `QueryText`.
 * **Friendly measures on `QueryExecutions`** with the raw timing columns
   hidden: `Total Executions`, `Successful Executions`, `Failed Executions`,
   `QPS`, `Avg/P50/P95/P99/Max Latency (ms)`, `Engine CPU (s)`, `SE CPU (s)`,
@@ -89,6 +90,7 @@ Reports/
       tables/
         LoadTests.tmdl
         LoadTestRuns.tmdl
+        Queries.tmdl                      # global query dim
         QueryExecutions.tmdl              # all the friendly-named measures
         TraceEvents.tmdl
   LoadTestsOverview.Report/               # PBIR report

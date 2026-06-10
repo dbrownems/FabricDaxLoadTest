@@ -1,0 +1,50 @@
+table Queries
+	lineageTag: d4f8c2e1-1010-4a5e-9b3a-3a1c5e7f8c01
+
+	column QueryHash
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: d4f8c2e1-1010-4a5e-9b3a-3a1c5e7f8c02
+		summarizeBy: none
+		sourceColumn: QueryHash
+
+		annotation SummarizationSetBy = Automatic
+
+	column QueryShapeHash
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: d4f8c2e1-1010-4a5e-9b3a-3a1c5e7f8c03
+		summarizeBy: none
+		sourceColumn: QueryShapeHash
+
+		annotation SummarizationSetBy = Automatic
+
+	column QueryText
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: d4f8c2e1-1010-4a5e-9b3a-3a1c5e7f8c04
+		summarizeBy: none
+		sourceColumn: QueryText
+
+		annotation SummarizationSetBy = Automatic
+
+	column FirstSeenAtUtc
+		dataType: dateTime
+		formatString: General Date
+		sourceProviderType: datetime2
+		lineageTag: d4f8c2e1-1010-4a5e-9b3a-3a1c5e7f8c05
+		summarizeBy: none
+		sourceColumn: FirstSeenAtUtc
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Queries = m
+		mode: directQuery
+		source =
+				let
+				    Source = Sql.Database(ServerName, DatabaseName),
+				    Data = Source{[Schema=SchemaName, Item="Queries"]}[Data]
+				in
+				    Data
+
+	annotation PBI_ResultType = Table

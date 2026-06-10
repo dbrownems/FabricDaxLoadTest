@@ -7,7 +7,7 @@ model Model
 		legacyRedirects
 		returnErrorValuesAsNull
 
-annotation PBI_QueryOrder = ["ServerName","DatabaseName","SchemaName","LoadTests","LoadTestRuns","QueryExecutions","TraceEvents"]
+annotation PBI_QueryOrder = ["ServerName","DatabaseName","SchemaName","LoadTests","LoadTestRuns","Queries","QueryExecutions","TraceEvents"]
 
 annotation __PBI_TimeIntelligenceEnabled = 0
 
@@ -17,6 +17,7 @@ annotation PBI_ProTooling = ["DevMode","TMDLView_Desktop","DaxQueryView_Desktop"
 
 ref table LoadTests
 ref table LoadTestRuns
+ref table Queries
 ref table QueryExecutions
 ref table TraceEvents
 

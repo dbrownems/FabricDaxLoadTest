@@ -280,7 +280,7 @@ def run(
               f"(scenario hash {write_summary.scenario_hash[:12]}...)")
         print(f"  Executions : {write_summary.executions_written:,}")
         print(f"  Trace evts : {write_summary.trace_events_written:,}")
-        print("  Tables     : LoadTests, LoadTestRuns, "
+        print("  Tables     : LoadTests, LoadTestRuns, Queries, "
               "QueryExecutions, TraceEvents")
         print(f"  Lakehouse  : {boot.lakehouse.lakehouse_name} "
               f"({boot.lakehouse.lakehouse_id})  "

@@ -17,7 +17,7 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
 
 Cell 4 plots latency / QPS / users / engine CPU for this Run, read straight from the per-run CSV on the Spark driver — **no lakehouse required**.
 
-> **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 4 Delta tables (`LoadTests`, `LoadTestRuns`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
+> **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 5 Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
 
 > **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`.
 
@@ -27,7 +27,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 
 - **Load Test** — a *named, reusable test configuration* (e.g. `"Main"` or `"DIAD 5u baseline"`). One notebook = one Load Test. Identity lives in the `LoadTests` Delta table, keyed by `LoadTestId` (a hash of the name). Cell 1's `LOAD_TEST_NAME` (or the notebook filename: `LoadTest - Main` → `Main`) sets it.
 - **Run** — *one execution* of a Load Test. Every Run-All of the notebook mints a fresh `RunId` (timestamp-based GUID) and appends a row to `LoadTestRuns`. Re-running is purely additive — prior Runs are preserved untouched, so you can compare a baseline against a regression Run side-by-side.
-- **Scenario** — the *DAX workload* a Run executes: the list of queries (+ optional impersonated users for RLS). Provided per-Run via a `.json` attached to the notebook's *Resources* panel (typically a Power BI Desktop **Performance Analyzer** export), or inline in cell 1. `QueryHash`, `QueryShapeHash`, and `QueryText` land inline on each `QueryExecutions` row, and a `ScenarioHash` on the Run summarizes the whole workload — so you can tell at a glance whether two Runs of the same Load Test executed the same queries.
+- **Scenario** — the *DAX workload* a Run executes: the list of queries (+ optional impersonated users for RLS). Provided per-Run via a `.json` attached to the notebook's *Resources* panel (typically a Power BI Desktop **Performance Analyzer** export), or inline in cell 1. Each unique query is upserted into the global `Queries` dim (keyed by `QueryHash`, with `QueryShapeHash` and `QueryText`); a `ScenarioHash` on the Run summarizes the whole workload — so you can tell at a glance whether two Runs of the same Load Test executed the same queries.
 
 ## Components
 
@@ -42,7 +42,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows).
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows).
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
@@ -64,7 +64,8 @@ The tool deploys a single self-contained bundle into a workspace folder:
     │   └── Tables[/dbo]/              ← /dbo/ added when lakehouse is schema-enabled
     │       ├── LoadTests
     │       ├── LoadTestRuns
-    │       ├── QueryExecutions      ← keyed (Source, SourceId); QueryHash/QueryShapeHash/QueryText inline
+    │       ├── Queries              ← global dim: QueryHash → (QueryShapeHash, QueryText)
+    │       ├── QueryExecutions      ← keyed (Source, SourceId); QueryHash → Queries
     │       └── TraceEvents          ← keyed (Source, SourceId)
     └── LoadTest - Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
 ```
@@ -294,7 +295,8 @@ The notebook MERGEs Run metadata into three small dimensions and bulk-loads the 
 |---|---|---|
 | `LoadTests` | one row per Load Test (`LoadTestId = lt-<workspace>-<notebook>`) | Identity + provenance: `Name`, `WorkspaceId`/`WorkspaceName`, `NotebookId`/`NotebookName`, `TargetWorkspace`/`TargetDataset`. |
 | `LoadTestRuns` | one row per Run (`RunId = run-yyyyMMdd-HHmmss`) | Run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) + config snapshot (`UserCount`, `DurationSec`, …) + target (`TargetWorkspace`, `TargetDataset`, `XmlaEndpoint`). |
-| `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. `QueryHash`, `QueryShapeHash` (literals stripped), and `QueryText` are inline. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. |
+| `Queries` | one row per unique DAX query (`QueryHash` PK) | Global query dim: `QueryShapeHash` (literals stripped), `QueryText`, `FirstSeenAtUtc`. Insert-only — existing rows preserved on re-runs. Joined M:1 from `QueryExecutions.QueryHash`. |
+| `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. `QueryHash` joins to `Queries`. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. |
 | `TraceEvents` | one row per AS trace event, keyed `(Source, SourceId, …)` | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Same `(Source, SourceId)` scheme as `QueryExecutions`. Best-effort — empty when tracing fails or is disabled. |
 
 All fact tables share the `(Source, SourceId)` natural key so future

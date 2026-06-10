@@ -9,3 +9,7 @@ relationship 9a32e622-d70d-4017-b73d-9fe71990b2cf
 relationship 9b227fc6-5bd4-4b8d-bd7b-7da9b91a55a0
 	fromColumn: TraceEvents.SourceId
 	toColumn: LoadTestRuns.RunId
+
+relationship 7c1e9d4a-2020-4b6f-8a3c-5d7e1f9b2c01
+	fromColumn: QueryExecutions.QueryHash
+	toColumn: Queries.QueryHash
