@@ -397,7 +397,7 @@ class Program
         EmitEnvelope(new Dictionary<string, object?>
         {
             ["type"] = "started",
-            ["runId"] = handle.RunId.ToString(),
+            ["runId"] = handle.RunId,
         });
 
         // Wire SIGINT (and Ctrl+Break) to a single graceful Cancel.

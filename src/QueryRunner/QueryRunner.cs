@@ -138,7 +138,7 @@ namespace FabricDaxLoadTest
 
     internal class TelemetryRecord
     {
-        public Guid RunId { get; set; }
+        public string RunId { get; set; } = "";
         public int UserIndex { get; set; }
         public string UserEmail { get; set; } = "";
         public int QueryIndex { get; set; }
@@ -363,16 +363,20 @@ namespace FabricDaxLoadTest
 
         /// <summary>
         /// Encode (runId, seq) into a deterministic Guid: first 12 bytes
-        /// from runId, last 4 bytes big-endian seq. The runId-prefix is
-        /// constant within a run, so Snappy/ZSTD page compression on the
-        /// trace's ActivityID column collapses to ~5–8 effective bytes/row.
-        /// persist.py decodes the last 4 bytes back to QuerySeq for the
-        /// JOIN. AS validates AdomdProperty("ActivityID") as a real Guid,
-        /// so this MUST stay 128-bit Guid-shaped.
+        /// from a hash of the runId string, last 4 bytes big-endian seq.
+        /// The runId-prefix is constant within a run, so Snappy/ZSTD page
+        /// compression on the trace's ActivityID column collapses to ~5–8
+        /// effective bytes/row. persist.py decodes the last 4 bytes back
+        /// to QuerySeq for the JOIN. AS validates AdomdProperty("ActivityID")
+        /// as a real Guid, so this MUST stay 128-bit Guid-shaped.
         /// </summary>
-        internal static Guid MakeActivityId(Guid runId, int seq)
+        internal static Guid MakeActivityId(string runId, int seq)
         {
-            var bytes = runId.ToByteArray();
+            // Hash the runId string to a stable 16-byte prefix; we overwrite
+            // the last 4 bytes with seq below. MD5 is fine here (not crypto).
+            byte[] bytes;
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+                bytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(runId));
             // Big-endian write of seq into bytes 12..15
             bytes[12] = (byte)(seq >> 24);
             bytes[13] = (byte)(seq >> 16);
@@ -400,7 +404,7 @@ namespace FabricDaxLoadTest
                     "Call Cancel() and Wait() on the existing handle, " +
                     "or wait for it to complete, before starting another.");
 
-            var runId = Guid.NewGuid();
+            var runId = $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
             var externalCts = new CancellationTokenSource();
             var box = new SnapshotBox(new LoadTestProgressSnapshot
             {
@@ -459,7 +463,7 @@ namespace FabricDaxLoadTest
         }
 
         private static string RunLoadTestCore(
-            LoadTestConfig config, Guid runId,
+            LoadTestConfig config, string runId,
             CancellationToken externalCt, SnapshotBox snapshotBox)
         {
             var queries = config.Queries;
@@ -578,7 +582,7 @@ namespace FabricDaxLoadTest
                     ? Path.GetFileNameWithoutExtension(logFileName)
                     : $"LoadTest.{testStartTime:yyyyMMdd-HHmmss}";
                 traceFilePath = Path.Combine(logDirectory!, traceBaseName + ".trace.csv");
-                var appFilter = $"FabricDaxLoadTest/{runId:D}";
+                var appFilter = $"FabricDaxLoadTest/{runId}";
                 try
                 {
                     File.WriteAllText(traceFilePath,
@@ -625,7 +629,7 @@ namespace FabricDaxLoadTest
                             using var sw = new StreamWriter(fs, new UTF8Encoding(false), bufferSize: bufBytes);
                             await foreach (var ev in traceCapture.Events.ReadAllAsync().ConfigureAwait(false))
                             {
-                                sw.Write(runIdLocal.ToString("D")); sw.Write(',');
+                                sw.Write(runIdLocal); sw.Write(',');
                                 sw.Write(ev.UtcTimestamp.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")); sw.Write(',');
                                 sw.Write(SanitizeCsvField(ev.EventClass)); sw.Write(',');
                                 sw.Write(ev.DurationMs); sw.Write(',');
@@ -1105,7 +1109,7 @@ namespace FabricDaxLoadTest
                         {
                             var err = SanitizeCsvField(r.ErrorMessage);
                             var email = SanitizeCsvField(r.UserEmail);
-                            sw.Write(r.RunId.ToString("D")); sw.Write(',');
+                            sw.Write(r.RunId); sw.Write(',');
                             sw.Write(r.UserIndex); sw.Write(',');
                             sw.Write(email); sw.Write(',');
                             sw.Write(r.QueryIndex); sw.Write(',');
@@ -1160,7 +1164,7 @@ namespace FabricDaxLoadTest
             IDbConnection[] connections, string connStr,
             bool skipResults,
             Stopwatch testStart,
-            Guid runId, DateTime testStartUtc,
+            string runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
             ErrorPolicy errorPolicy,
             CancellationToken ct)
@@ -1195,7 +1199,7 @@ namespace FabricDaxLoadTest
             bool skipResults,
             int pauseBetweenQueriesMs,
             Stopwatch testStart,
-            Guid runId, DateTime testStartUtc,
+            string runId, DateTime testStartUtc,
             BlockingCollection<TelemetryRecord>? telemetryQueue,
             ErrorPolicy errorPolicy,
             CancellationToken ct)
@@ -1286,7 +1290,7 @@ namespace FabricDaxLoadTest
         }
 
         private static void SubmitTelemetry(BlockingCollection<TelemetryRecord>? telemetryQueue,
-            Guid runId, DateTime testStartUtc, int qi, int userIndex, string email, QueryResult r)
+            string runId, DateTime testStartUtc, int qi, int userIndex, string email, QueryResult r)
         {
             if (telemetryQueue != null && !telemetryQueue.IsAddingCompleted)
             {
@@ -1315,7 +1319,7 @@ namespace FabricDaxLoadTest
 
         private static QueryResult ExecuteQuery(int userIndex, int queryIndex,
             int iteration, string query, IDbConnection conn, bool skipResults,
-            Stopwatch testStart, Guid runId)
+            Stopwatch testStart, string runId)
         {
             // Per-attempt monotonic seq → deterministic ActivityID Guid that
             // pairs this execution with its ExecutionMetrics trace row in persist.py.
@@ -1398,7 +1402,7 @@ namespace FabricDaxLoadTest
         // non-empty. Roles is comma-separated when multiple roles apply.
         private static string BuildConnectionString(
             string xmlaEndpoint, string dataset, string token,
-            string effectiveUserName, string customData, string roles, Guid runId)
+            string effectiveUserName, string customData, string roles, string runId)
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={xmlaEndpoint};Initial Catalog={dataset};");
@@ -1408,7 +1412,7 @@ namespace FabricDaxLoadTest
             // <Filter> clauses on subscription traces, so we filter
             // client-side on this exact value). Format must match
             // TraceSubscriber's _applicationFilter.
-            sb.Append($"Application Name=FabricDaxLoadTest/{runId:D};");
+            sb.Append($"Application Name=FabricDaxLoadTest/{runId};");
             // Empty token => integrated/Windows auth (local SSAS or Power BI Desktop). For the
             // Power BI Service / Fabric XMLA endpoint a bearer token is required.
             if (!string.IsNullOrEmpty(token))

@@ -6,7 +6,7 @@ Power BI reports for visualizing FabricDaxLoadTest results.
 
 DirectQuery report against the Fabric Lakehouse SQL analytics endpoint
 where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
-`LoadTestQueries`, `QueryExecutions`, `TraceEvents`).
+`QueryExecutions`, `TraceEvents`).
 
 ### First-time setup (per developer)
 
@@ -51,9 +51,10 @@ where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
 
 ### What's in the model
 
-* **5 DirectQuery tables**, related on the natural keys
+* **4 DirectQuery tables**, related on the natural keys
   (`LoadTestRuns.LoadTestId → LoadTests`, `QueryExecutions.SourceId → LoadTestRuns`,
-  `QueryExecutions.RunQueryKey → LoadTestQueries`, etc.).
+  `TraceEvents.SourceId → LoadTestRuns`). `QueryHash`, `QueryShapeHash`,
+  and `QueryText` are columns on `QueryExecutions` directly.
 * **Friendly measures on `QueryExecutions`** with the raw timing columns
   hidden: `Total Executions`, `Successful Executions`, `Failed Executions`,
   `QPS`, `Avg/P50/P95/P99/Max Latency (ms)`, `Engine CPU (s)`, `SE CPU (s)`,
@@ -88,7 +89,6 @@ Reports/
       tables/
         LoadTests.tmdl
         LoadTestRuns.tmdl
-        LoadTestQueries.tmdl
         QueryExecutions.tmdl              # all the friendly-named measures
         TraceEvents.tmdl
   LoadTestsOverview.Report/               # PBIR report

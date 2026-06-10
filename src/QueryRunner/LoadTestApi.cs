@@ -176,12 +176,12 @@ namespace FabricDaxLoadTest
         private readonly SnapshotBox _box;
         private int _disposed;
 
-        public Guid RunId { get; }
+        public string RunId { get; }
         public bool IsCompleted => _task.IsCompleted;
         public LoadTestProgressSnapshot LatestSnapshot => _box.Value;
 
         internal LoadTestHandle(
-            Guid runId,
+            string runId,
             Task<string> task,
             CancellationTokenSource externalCts,
             SnapshotBox box)

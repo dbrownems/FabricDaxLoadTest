@@ -118,7 +118,7 @@ def build_run():
     Charts in cell 4 read the LoadGen CSV directly from the Spark driver's
     local `/tmp/` — they need **no Spark and no lakehouse**. Setting
     `LAKEHOUSE_NAME` (cell 1) opts in to writing 5 Delta tables —
-    `LoadTests`, `LoadTestRuns`, `LoadTestQueries`, `QueryExecutions`,
+    `LoadTests`, `LoadTestRuns`, `QueryExecutions`,
     `TraceEvents` — keyed so multiple runs land side-by-side and can be
     queried as a Direct Lake source for dashboards. Without it, the
     forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the
@@ -187,9 +187,6 @@ QUERIES_INLINE = [
 TARGET_REPLICA               = ""        # "readonly" → scale-out read replica
 LAKEHOUSE_WORKSPACE_NAME     = None      # for BYO-lakehouse in another workspace
 LAKEHOUSE_SCHEMA             = None      # None → auto-detect (schema-enabled → "dbo")
-
-LOAD_TEST_NAME               = None      # None → derived from notebook name
-LOAD_TEST_DESCRIPTION        = ""        # free-text notes for this run
 
 CONCURRENT_QUERIES_PER_USER  = 1         # in-flight queries per user (1 = serial)
 PAUSE_BETWEEN_ITERATIONS_MS  = 1000      # think-time between iterations
@@ -295,8 +292,6 @@ boot = fdlt_nb.bootstrap(
 # Press the ■ Interrupt Kernel button to cancel.
 outcome = fdlt_nb.run(
     boot,
-    load_test_name=LOAD_TEST_NAME,
-    load_test_description=LOAD_TEST_DESCRIPTION,
     target_workspace=TARGET_WORKSPACE,
     target_dataset=TARGET_DATASET,
     target_replica=TARGET_REPLICA,

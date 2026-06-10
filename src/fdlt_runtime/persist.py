@@ -1,11 +1,9 @@
 """Delta-table writer for FabricDaxLoadTest runs.
 
-Pulled from notebook cell 5b. Writes 5 tables:
+Pulled from notebook cell 5b. Writes 4 tables:
 
   LoadTests        — 1 row per logical test (MERGE on LoadTestId)
   LoadTestRuns     — 1 row per run (MERGE on RunId)
-  LoadTestQueries  — Load Test Scenario snapshots (insert-only,
-                     keyed (LoadTestId, RunId, QueryHash))
   QueryExecutions  — per-attempt facts. Generic across sources;
                      keyed (Source, SourceId, ...). For LoadTest runs:
                      Source="LoadTestRun", SourceId=<RunId>.
@@ -53,6 +51,32 @@ def _hash_query(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
+_LITERAL_NUM_RE = __import__("re").compile(r"-?\d+(?:\.\d+)?")
+_LITERAL_STR_RE = __import__("re").compile(r"\"[^\"]*\"")
+_WS_RE = __import__("re").compile(r"\s+")
+
+
+def _shape_hash(text: str) -> str:
+    """SHA256 of the DAX text with literals collapsed to placeholders.
+
+    Numeric literals → ``?``, string literals → ``"?"``, whitespace
+    normalized, lowercased. Two queries that differ only in filter
+    values share the same shape hash; two queries that differ in
+    structure (column refs, measure names) get different shapes.
+    """
+    s = _LITERAL_STR_RE.sub('"?"', text)
+    s = _LITERAL_NUM_RE.sub("?", s)
+    s = _WS_RE.sub(" ", s).strip().lower()
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _slug(s: str) -> str:
+    """Filename/identifier-safe slug: lowercase, non-alnum → '-'."""
+    import re as _re
+    s = _re.sub(r"[^A-Za-z0-9]+", "-", s or "").strip("-").lower()
+    return s or "unknown"
+
+
 def _scenario_hash(query_hashes: Iterable[str]) -> str:
     return hashlib.sha256(
         ("\u0001".join(query_hashes)).encode("utf-8")
@@ -68,7 +92,6 @@ def write_run(
     notebook_id: Optional[str],
     notebook_name: Optional[str],
     load_test_name: str,
-    load_test_description: str,
     target_workspace: str,
     target_dataset: str,
     target_replica: str,
@@ -92,16 +115,15 @@ def write_run(
     )
     from delta.tables import DeltaTable
 
-    # LoadTestId == the Fabric notebook item GUID (§1.6 Table 1). Fall back
-    # to a deterministic UUID when the runtime can't surface a notebook id.
-    if notebook_id:
-        load_test_id = str(notebook_id)
-    else:
-        load_test_id = str(uuid.uuid5(
-            uuid.NAMESPACE_URL, f"fdlt://{workspace_id}/{load_test_name}"))
+    # LoadTestId is a friendly composite key: lt-<workspace-slug>-<notebook-slug>.
+    # Stable across runs of the same notebook in the same workspace; changes if
+    # either is renamed. NotebookId column keeps the underlying notebook GUID
+    # (when available) for traceability.
+    load_test_id = f"lt-{_slug(workspace_name)}-{_slug(notebook_name or load_test_name)}"
     notebook_label = notebook_name or load_test_name
 
     query_hashes = [_hash_query(q) for q in queries]
+    query_shape_hashes = [_shape_hash(q) for q in queries]
     scenario_hash = _scenario_hash(query_hashes)
 
     summary = (run.result_envelope or {}).get("summary", {}) if run.result_envelope else {}
@@ -199,10 +221,9 @@ def write_run(
     load_tests_df = spark.createDataFrame([Row(
         LoadTestId=load_test_id,
         Name=load_test_name,
-        Description=load_test_description,
         WorkspaceId=workspace_id,
         WorkspaceName=workspace_name,
-        NotebookId=load_test_id,
+        NotebookId=str(notebook_id) if notebook_id else None,
         NotebookName=notebook_label,
         TargetWorkspace=target_workspace,
         TargetDataset=target_dataset,
@@ -251,16 +272,8 @@ def write_run(
         RuntimeVersion=runtime_version,
     )])
 
-    # LoadTestQueries — per-run snapshot (LoadTestId, RunId, QueryHash) ------
-    queries_rows = [Row(
-        LoadTestId=load_test_id,
-        RunId=run_id,
-        QueryIndex=i,
-        QueryHash=query_hashes[i],
-        QueryText=queries[i],
-        SourceType="HandAuthored",
-    ) for i in range(len(queries))]
-    queries_df = spark.createDataFrame(queries_rows) if queries_rows else None
+    # LoadTestQueries table dropped — QueryHash, QueryShapeHash, and
+    # QueryText now live directly on each QueryExecutions row.
 
     # QueryExecutions --------------------------------------------------------
     if len(df) > 0:
@@ -269,6 +282,10 @@ def write_run(
         df2["EndUtc"] = pd.to_datetime(df2["EndUtc"], utc=True)
         df2["QueryHash"] = df2["QueryIndex"].apply(
             lambda i: query_hashes[int(i)] if 0 <= int(i) < len(query_hashes) else None)
+        df2["QueryShapeHash"] = df2["QueryIndex"].apply(
+            lambda i: query_shape_hashes[int(i)] if 0 <= int(i) < len(query_shape_hashes) else None)
+        df2["QueryText"] = df2["QueryIndex"].apply(
+            lambda i: queries[int(i)] if 0 <= int(i) < len(queries) else None)
         exec_schema = StructType([
             StructField("Source",               StringType(),    False),
             StructField("SourceId",             StringType(),    False),
@@ -281,6 +298,8 @@ def write_run(
             StructField("UserEmail",            StringType(),    True),
             StructField("QueryIndex",           IntegerType(),   True),
             StructField("QueryHash",            StringType(),    True),
+            StructField("QueryShapeHash",       StringType(),    True),
+            StructField("QueryText",            StringType(),    True),
             StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
             # Session identity. RequestId is back-filled from the
@@ -351,6 +370,8 @@ def write_run(
             UserEmail=str(r["UserEmail"]) if pd.notna(r["UserEmail"]) else None,
             QueryIndex=int(r["QueryIndex"]),
             QueryHash=r["QueryHash"],
+            QueryShapeHash=r["QueryShapeHash"],
+            QueryText=r["QueryText"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
             # RequestId back-filled from ExecutionMetrics trace below
@@ -561,10 +582,6 @@ def write_run(
         ("LoadTests",                lambda: _upsert(load_tests_df, "LoadTests", ["LoadTestId"])),
         ("LoadTestRuns",             lambda: _upsert(runs_df, "LoadTestRuns", ["RunId"])),
     ]
-    if queries_df is not None:
-        write_tasks.append(
-            ("LoadTestQueries",
-             lambda: _replace_for_run(queries_df, "LoadTestQueries", run_id)))
     if exec_df is not None:
         write_tasks.append(
             ("QueryExecutions",
@@ -623,7 +640,7 @@ def write_run(
         load_test_id=load_test_id,
         run_id=run_id,
         scenario_hash=scenario_hash,
-        queries_written=len(queries_rows),
+        queries_written=len(queries),
         executions_written=executions_written,
         trace_events_written=trace_events_written,
         table_base=table_base,

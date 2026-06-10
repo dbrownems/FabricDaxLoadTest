@@ -520,12 +520,23 @@ table QueryExecutions
 
 		annotation SummarizationSetBy = Automatic
 
-	column RunQueryKey = QueryExecutions[SourceId] & "|" & QueryExecutions[QueryHash]
+	column QueryShapeHash
 		dataType: string
-		isHidden
-		isAvailableInMdx: false
-		lineageTag: 65e301ba-912a-4bcd-b8ff-4411718fc082
+		sourceProviderType: varchar(8000)
+		lineageTag: c1f04e22-1d70-4b3a-9a9f-b3e0a7c2d101
 		summarizeBy: none
+		sourceColumn: QueryShapeHash
+
+		annotation SummarizationSetBy = Automatic
+
+	column QueryText
+		dataType: string
+		sourceProviderType: varchar(8000)
+		lineageTag: c1f04e22-1d70-4b3a-9a9f-b3e0a7c2d102
+		summarizeBy: none
+		sourceColumn: QueryText
+
+		annotation SummarizationSetBy = Automatic
 
 	column StartSecond = INT(QueryExecutions[StartTimeMs] / 1000)
 		dataType: int64

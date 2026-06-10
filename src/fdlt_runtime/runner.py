@@ -31,7 +31,6 @@ class RunConfig:
 
     # Identity / human labels
     load_test_name: str = "my-load-test"
-    load_test_description: str = ""
 
     # Target
     target_workspace: str = "MyWorkspace"

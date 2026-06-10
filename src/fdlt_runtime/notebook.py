@@ -134,21 +134,9 @@ def bootstrap(
         dotnet=dotnet, loadgen_dll=loadgen_dll, runtime_version=__version__)
 
 
-def _derive_load_test_name(explicit: Optional[str], nb_name: str) -> str:
-    if explicit:
-        return explicit
-    if nb_name.lower().startswith("loadtest"):
-        derived = nb_name[len("loadtest"):].lstrip(" -").strip()
-        return derived or nb_name
-    return nb_name or "my-load-test"
-
-
 def run(
     boot: BootstrapResult,
     *,
-    # Identity
-    load_test_name: Optional[str] = None,
-    load_test_description: str = "",
     # Target
     target_workspace: Optional[str] = None,
     target_dataset: Optional[str] = None,
@@ -215,12 +203,11 @@ def run(
         workspace_name=tgt_ws_name, dataset_name=target_dataset)
     print(f"Target    : {ds.workspace_name} / {ds.dataset_name}")
 
-    resolved_name = _derive_load_test_name(load_test_name, boot.notebook_name)
+    resolved_name = boot.notebook_name or "my-load-test"
     print(f"LoadTest  : {resolved_name}")
 
     cfg = RunConfig(
         load_test_name=resolved_name,
-        load_test_description=load_test_description,
         target_workspace=tgt_ws_name,
         target_dataset=ds.dataset_name,
         target_replica=target_replica,
@@ -276,7 +263,6 @@ def run(
                          or boot.ctx.get("notebookId")),
             notebook_name=boot.notebook_name or resolved_name,
             load_test_name=resolved_name,
-            load_test_description=load_test_description,
             target_workspace=tgt_ws_name, target_dataset=ds.dataset_name,
             target_replica=target_replica, xmla=cfg.xmla,
             queries=queries, user_count=concurrent_users,
@@ -294,7 +280,7 @@ def run(
               f"(scenario hash {write_summary.scenario_hash[:12]}...)")
         print(f"  Executions : {write_summary.executions_written:,}")
         print(f"  Trace evts : {write_summary.trace_events_written:,}")
-        print("  Tables     : LoadTests, LoadTestRuns, LoadTestQueries, "
+        print("  Tables     : LoadTests, LoadTestRuns, "
               "QueryExecutions, TraceEvents")
         print(f"  Lakehouse  : {boot.lakehouse.lakehouse_name} "
               f"({boot.lakehouse.lakehouse_id})  "
