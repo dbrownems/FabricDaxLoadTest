@@ -16,6 +16,8 @@ Thumbs.db
 
 # Tokens & local artifacts
 *.token
+samples/token.txt
+samples/*.token
 logs/
 
 # Personal AI agent instructions (not for sharing)
