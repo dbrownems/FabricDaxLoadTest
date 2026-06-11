@@ -189,7 +189,7 @@ LAKEHOUSE_WORKSPACE_NAME     = None      # for BYO-lakehouse in another workspac
 LAKEHOUSE_SCHEMA             = None      # None → auto-detect (schema-enabled → "dbo")
 
 CONCURRENT_QUERIES_PER_USER  = 1         # in-flight queries per user (1 = serial)
-PAUSE_BETWEEN_ITERATIONS_MS  = 1000      # think-time between iterations
+PAUSE_BETWEEN_ITERATIONS_MS  = 10000     # think-time between iterations (ms) — ~10s mimics human dwell
 PAUSE_BETWEEN_QUERIES_MS     = 0         # think-time between queries in an iteration
 
 ENABLE_TRACING               = True      # capture engine events to TraceEvents

@@ -81,7 +81,6 @@ table QueryExecutions
 		formatString: 0.0%
 		lineageTag: 9b1e7c38-3f4d-45a2-bb71-1f2a9d0e7c44
 
-
 	column Source
 		dataType: string
 		isHidden
@@ -143,8 +142,8 @@ table QueryExecutions
 	column QueryIndex
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: a6006bf5-d5b0-4363-950c-94a67d4e7155
 		summarizeBy: none
@@ -166,8 +165,8 @@ table QueryExecutions
 	column Iteration
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 472a4752-a009-4d79-ad3d-5ab1b3e51345
 		summarizeBy: sum
@@ -180,8 +179,8 @@ table QueryExecutions
 	column QuerySeq
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: c55e06cf-d7fe-4a6b-a477-cf66fd970fa2
 		summarizeBy: none
@@ -240,8 +239,8 @@ table QueryExecutions
 	column StartTimeMs
 		dataType: double
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: float
 		lineageTag: 7359c076-5f5e-47a0-8642-6548c2d65152
 		summarizeBy: sum
@@ -254,8 +253,8 @@ table QueryExecutions
 	column ClientDurationMs
 		dataType: double
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: float
 		lineageTag: 170ea6bd-2819-41f4-9f8d-2f6d7f4e6629
 		summarizeBy: sum
@@ -268,8 +267,8 @@ table QueryExecutions
 	column EngineDurationMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 8a4ecf33-262c-41f7-9e0d-3287a4e80f17
 		summarizeBy: sum
@@ -282,8 +281,8 @@ table QueryExecutions
 	column EngineCpuMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 607b33cc-8fc5-4a06-adb4-8be764f08f25
 		summarizeBy: sum
@@ -296,8 +295,8 @@ table QueryExecutions
 	column SECpuMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: cec1f335-92b8-42c5-9285-7a2fbe64e8bd
 		summarizeBy: sum
@@ -310,8 +309,8 @@ table QueryExecutions
 	column FECpuMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: e3482d54-3a9b-4924-91b0-4fb00aa67246
 		summarizeBy: sum
@@ -324,8 +323,8 @@ table QueryExecutions
 	column ExecutionDelayMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: ed666e26-9354-4513-86eb-c5d45e1d9051
 		summarizeBy: sum
@@ -338,8 +337,8 @@ table QueryExecutions
 	column CapacityThrottlingMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 5d6e3a14-7c1c-4a72-9b7a-9e1c4b8c2d11
 		summarizeBy: sum
@@ -352,8 +351,8 @@ table QueryExecutions
 	column PeakMemoryKB
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 1ca5d470-ecbf-493e-a967-6d4d25349aaf
 		summarizeBy: sum
@@ -366,8 +365,8 @@ table QueryExecutions
 	column QueryResultRows
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 5c66ec1d-5102-4ad7-9ce2-ec66a6daff3c
 		summarizeBy: sum
@@ -393,8 +392,8 @@ table QueryExecutions
 	column VertiPaqQueryCount
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 9350fe05-32f6-4813-96b1-b2982b373bb7
 		summarizeBy: sum
@@ -407,8 +406,8 @@ table QueryExecutions
 	column VertiPaqDurationMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 33e41f9a-b03f-401c-a85a-b598ae52b040
 		summarizeBy: sum
@@ -421,8 +420,8 @@ table QueryExecutions
 	column DirectQueryCount
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: d26b81b8-268f-4011-a2fe-35132ae7e591
 		summarizeBy: sum
@@ -435,8 +434,8 @@ table QueryExecutions
 	column DirectQueryDurationMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: fb404955-e362-4822-a587-a1e137ae0331
 		summarizeBy: sum
@@ -449,8 +448,8 @@ table QueryExecutions
 	column DirectQueryCpuMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: 75b45da4-cfe6-4324-9640-9b7c6c8db07e
 		summarizeBy: sum
@@ -472,8 +471,8 @@ table QueryExecutions
 	column RowCount
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 40601e56-61ae-4e1b-9f42-74d993b5f583
 		summarizeBy: sum
@@ -486,8 +485,8 @@ table QueryExecutions
 	column ResponseBytes
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: bigint
 		lineageTag: f1507659-981e-462f-893f-5002e2cd5ae4
 		summarizeBy: sum
@@ -509,8 +508,8 @@ table QueryExecutions
 	column ActiveUsersAtStart
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 13ca974c-7205-436b-88b3-d34f9e32ac3b
 		summarizeBy: max
@@ -526,7 +525,6 @@ table QueryExecutions
 		lineageTag: e9186c6c-8fb9-423b-ad4e-7094f91bad84
 		summarizeBy: none
 
-
 	partition QueryExecutions = m
 		mode: directQuery
 		source =
@@ -537,3 +535,4 @@ table QueryExecutions
 				    Data
 
 	annotation PBI_ResultType = Table
+

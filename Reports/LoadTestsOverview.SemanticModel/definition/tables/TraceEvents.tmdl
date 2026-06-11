@@ -152,3 +152,4 @@ table TraceEvents
 				    Data
 
 	annotation PBI_ResultType = Table
+

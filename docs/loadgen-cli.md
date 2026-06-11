@@ -40,7 +40,7 @@ the response, then issues the next. There is no fixed-rate firing.
 | `--duration`          | 60      | Wall-clock seconds. Each user finishes its current iteration after this elapses; tail can run a few seconds longer. |
 | `--concurrent-queries-per-user` | 1 | In-flight DAX queries per user. Each user has this many ADOMD connections and a **rolling drain** over the iteration's query list — when any connection finishes, the next pending query is dispatched on the freed connection. This matches Power BI Desktop, which fires up to 6 visual queries concurrently and dispatches the next as each finishes (not in batched all-finish-then-fire-next-batch rounds). `1` = strictly serial per user. |
 | `--ramp-time`         | 30      | Seconds over which to stagger the start of all users (linearly). `0` = all start together (cold-cache hammer).        |
-| `--pause-iterations`  | 1000ms  | Sleep between iterations (one full pass through the query list). Applied per-user once all queries in the iteration have completed. |
+| `--pause-iterations`  | 10000ms | Sleep between iterations (one full pass through the query list). Applied per-user once all queries in the iteration have completed. ~10s approximates human dwell time between page interactions; lower it to stress the engine, raise it to model heavier think time. |
 | `--pause-queries`     | 0ms     | Sleep on a connection after each individual query completes, before that connection picks up the next pending query. |
 
 ### How a "user" iterates

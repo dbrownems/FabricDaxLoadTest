@@ -50,7 +50,7 @@ namespace FabricDaxLoadTest
         /// </summary>
         public int ConcurrentQueriesPerUser { get; set; } = 4;
 
-        public int PauseBetweenIterationsMs { get; set; } = 1000;
+        public int PauseBetweenIterationsMs { get; set; } = 10000;
         public int PauseBetweenQueriesMs { get; set; }
         public string? LogDirectory { get; set; }
         public int UserRampTimeSec { get; set; }

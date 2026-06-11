@@ -41,7 +41,7 @@ class RunConfig:
     duration_seconds: int = 60
     concurrent_users: int = 5
     concurrent_queries_per_user: int = 1
-    pause_between_iterations_ms: int = 1000
+    pause_between_iterations_ms: int = 10000
     pause_between_queries_ms: int = 0
     user_ramp_time_sec: int = 15
     skip_results: bool = False

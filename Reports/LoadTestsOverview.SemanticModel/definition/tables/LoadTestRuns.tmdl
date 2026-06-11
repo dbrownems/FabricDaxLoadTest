@@ -13,7 +13,6 @@ table LoadTestRuns
 		formatString: #,0
 		lineageTag: 6c688996-2774-45e0-8e44-f5a6b50dd9aa
 
-
 	column RunId
 		dataType: string
 		sourceProviderType: varchar(8000)
@@ -202,8 +201,8 @@ table LoadTestRuns
 	column ConcurrentQueriesPerUser
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 38117baa-0069-4f9b-b28b-16cb1b1fab5e
 		summarizeBy: sum
@@ -216,8 +215,8 @@ table LoadTestRuns
 	column PauseIterMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: 9ddf9250-6cb4-402e-8a2d-a5810dace837
 		summarizeBy: sum
@@ -230,8 +229,8 @@ table LoadTestRuns
 	column PauseQueryMs
 		dataType: int64
 		isHidden
-		isAvailableInMdx: false
 		formatString: 0
+		isAvailableInMdx: false
 		sourceProviderType: int
 		lineageTag: fad963de-0fe0-43b8-b8b2-e23b18af7eb5
 		summarizeBy: sum
@@ -368,3 +367,4 @@ table LoadTestRuns
 				    Data
 
 	annotation PBI_ResultType = Table
+

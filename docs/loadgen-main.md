@@ -80,7 +80,7 @@ DURATION_SECONDS             = 60     # how long virtual users execute queries
 CONCURRENT_USERS             = 25     # max concurrency at steady state
 USER_RAMP_TIME_SEC           = 15     # linear ramp from 0 → CONCURRENT_USERS
 CONCURRENT_QUERIES_PER_USER  = 1      # in-flight queries per user
-PAUSE_BETWEEN_ITERATIONS_MS  = 1000   # think-time between iterations per user
+PAUSE_BETWEEN_ITERATIONS_MS  = 10000  # think-time between iterations per user (~10s ≈ human dwell)
 PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside an iteration
 ```
 

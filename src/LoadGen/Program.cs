@@ -46,7 +46,7 @@ class Program
                          "the iteration's queries — when one finishes, the next pending query is dispatched on " +
                          "the freed connection (Power BI Desktop-style; not batched all-finish-then-fire-next). " +
                          "1 = strictly serial.");
-        var pauseIterOption = new Option<int>("--pause-iterations", () => 1000, "Pause between iterations (ms)");
+        var pauseIterOption = new Option<int>("--pause-iterations", () => 10000, "Pause between iterations (ms)");
         var pauseQueryOption = new Option<int>("--pause-queries", () => 0, "Pause between queries (ms)");
         var rampOption = new Option<int>("--ramp-time", () => 30, "User ramp-up time (seconds)");
         var replicaOption = new Option<string>("--replica", () => "", "Target replica ('readonly' for scale-out read replica, or '')");
