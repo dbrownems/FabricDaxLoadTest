@@ -134,8 +134,17 @@ the conclusion. **One to ten minutes is the useful range**; tests longer
 than ~15 minutes rarely add information and just complicate the post-run
 analysis.
 
-For runs longer than 60 minutes, see [`loadgen-main.md`](loadgen-main.md)
-for the periodic-token-refresh story.
+> **Hard ceiling at ~60 minutes today.** The notebook acquires a Power
+> BI access token at the start of cell 3 and hands it to LoadGen, which
+> uses it for every new ADOMD connection. Tokens are valid for ~60–75
+> minutes, so any virtual user that needs to reconnect after that
+> window will fail. Already-open connections keep working — the engine
+> validates the token at connect time only — so a run that opens all
+> its users during the ramp and never drops a connection can sometimes
+> finish past the token's expiry. Periodic in-flight token refresh is
+> on the roadmap but not yet implemented; for now, **keep runs under
+> 60 minutes** (one minute to ten minutes is the useful range anyway —
+> see *Duration* above).
 
 ---
 
