@@ -4,6 +4,12 @@ A load testing tool for Microsoft Fabric and Power BI semantic models. Simulates
 
 Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dotnet build` required for end users. Import a single `.ipynb`, edit cell 1, and **Run All**. An optional deploy script and lakehouse-backed Delta tables are available when you want cross-run history.
 
+> **New here?** Read [**docs/load-testing-overview.md**](docs/load-testing-overview.md)
+> first — it explains *what* a load test in this tool is, *why* you'd
+> run one, *how to read the four charts* in cell 4, and *how to translate
+> the results into capacity impact* via the Capacity Metrics App. The
+> rest of this README and the docs in `docs/` are reference material.
+
 ## Quick start
 
 The minimal end-to-end flow, assuming you already have a Power BI semantic model you want to load-test:
@@ -65,6 +71,7 @@ The tool deploys a single self-contained bundle into a workspace folder:
     │       ├── LoadTests
     │       ├── LoadTestRuns
     │       ├── Queries              ← global dim: QueryHash → (QueryShapeHash, QueryText)
+    │       ├── QueryVisuals         ← (QueryHash, VisualId) → VisualTitle, VisualType
     │       ├── QueryExecutions      ← keyed (Source, SourceId); QueryHash → Queries
     │       └── TraceEvents          ← keyed (Source, SourceId)
     └── LoadTest - Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
@@ -141,13 +148,13 @@ The deployed `LoadTest - Main` notebook is meant to be **edited and run directly
    USER_RAMP_TIME_SEC = 15
 
    LAKEHOUSE_NAME     = None          # None → no persistence; charts read local CSV.
-                                      #   Set to a lakehouse name to write 5 Delta
+                                      #   Set to a lakehouse name to write 6 Delta
                                       #   tables for cross-run analysis.
    ```
 
    See [`docs/loadgen-main.md`](docs/loadgen-main.md) for every other parameter (load-shape advanced knobs, RLS users, BYO lakehouse, schema override, log folder, runtime wheel, etc.).
-4. **Run All.** Cell 3 prints a live status line every second while LoadGen runs; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly. When the run completes, cell 3 writes the Run into the four Delta tables. Every Run-All mints a fresh `RunId`, so prior Runs are preserved untouched. Re-executing **only cell 3** (after a completed run) is also safe — it deletes and rewrites just that one `RunId`'s fact rows.
-5. **Cell 4** plots latency / QPS / users for the Run that just completed, straight from the per-run CSV.
+4. **Run All.** Cell 3 prints a live status line every second while LoadGen runs; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly. When the run completes, cell 3 writes the Run into the six Delta tables. Every Run-All mints a fresh `RunId`, so prior Runs are preserved untouched. Re-executing **only cell 3** (after a completed run) is also safe — it deletes and rewrites just that one `RunId`'s fact rows.
+5. **Cell 4** plots latency / QPS / users / engine CPU for the Run that just completed, straight from the per-run CSV. See [**Reading the charts**](docs/loadgen-main.md#reading-the-charts-cell-4) for what each panel means and how to interpret it.
 
 After the Run, the Delta tables are queryable as a Direct Lake source — point a semantic model + Power BI report at them for cross-Run analysis.
 
@@ -289,13 +296,14 @@ The CSV is the input to the Delta-table write — once `QueryExecutions` is popu
 
 ### Delta tables
 
-The notebook MERGEs Run metadata into three small dimensions and bulk-loads the query-execution facts. Writes happen in parallel via a ThreadPool (one Spark job per table).
+The notebook MERGEs Run metadata into four small dimensions (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`) and bulk-loads the two fact tables (`QueryExecutions`, `TraceEvents`). Writes happen in parallel via a ThreadPool (one Spark job per table).
 
 | Table | Grain | Notes |
 |---|---|---|
 | `LoadTests` | one row per Load Test (`LoadTestId = lt-<workspace>-<notebook>`) | Identity + provenance: `Name`, `WorkspaceId`/`WorkspaceName`, `NotebookId`/`NotebookName`, `TargetWorkspace`/`TargetDataset`. |
 | `LoadTestRuns` | one row per Run (`RunId = run-yyyyMMdd-HHmmss`) | Run-level rollups (`P50/P95/P99/MeanMs`, `Status`, `AbortReason`, `ScenarioHash`) + config snapshot (`UserCount`, `DurationSec`, …) + target (`TargetWorkspace`, `TargetDataset`, `XmlaEndpoint`). |
 | `Queries` | one row per unique DAX query (`QueryHash` PK) | Global query dim: `QueryShapeHash` (literals stripped), `QueryText`, `FirstSeenAtUtc`. Insert-only — existing rows preserved on re-runs. Joined M:1 from `QueryExecutions.QueryHash`. |
+| `QueryVisuals` | one row per `(QueryHash, VisualId)` | Maps DAX queries back to the Power BI visual that fired them, parsed from the Performance Analyzer JSON: `VisualTitle`, `VisualType`. Upserted per Run (visual title/type changes propagate). Joined M:1 to `Queries.QueryHash`. |
 | `QueryExecutions` | one row per query execution, keyed `(Source, SourceId, …)` | Generic across data origins. For load-test rows: `Source="LoadTestRun"`, `SourceId=<RunId>`. `QueryHash` joins to `Queries`. Idempotent on `(Source, SourceId)`: re-running cell 3 deletes and rewrites just that Run's rows. Trace columns (`EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, …) back-filled via `ActivityID` correlation. |
 | `TraceEvents` | one row per AS trace event, keyed `(Source, SourceId, …)` | Raw `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` / `DirectQueryEnd` / `ProgressReport*` events for forensic drill-down. Same `(Source, SourceId)` scheme as `QueryExecutions`. Best-effort — empty when tracing fails or is disabled. |
 

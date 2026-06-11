@@ -62,16 +62,15 @@ end.
 
 ## Load test identity
 
-```python
-LOAD_TEST_NAME        = None   # None → derived from notebook name
-LOAD_TEST_DESCRIPTION = ""     # free-text notes
-```
+The Load Test name is **the notebook name with any `LoadTest -` prefix
+stripped** (so a notebook named `LoadTest - DIAD` becomes Load Test
+`DIAD`). This is the natural key in the `LoadTests` Delta dimension —
+to create a separate Load Test, **Save As** the notebook to a new name.
+There is no in-cell override.
 
-- `LOAD_TEST_NAME` is the natural key into the `LoadTests` dim table.
-  Defaults to the notebook name with any `LoadTest -` prefix stripped, so
-  `LoadTest - Foo` → `Foo`. Set explicitly if you want a different label.
-- `LOAD_TEST_DESCRIPTION` is free text — a place to note what the run is
-  measuring, what changed since last time, etc.
+The `LoadTestId` is `lt-<workspace>-<notebook>` (slugified); the
+`RunId` for each execution is `run-yyyyMMdd-HHmmss`, generated at
+Run-All time.
 
 ## Load shape
 
@@ -202,3 +201,64 @@ Forms supported:
 
 To upgrade: bump the version in the URL (e.g. `v0.9.0` → `v0.10.0`) and
 Run-All.
+
+---
+
+## Reading the charts (cell 4)
+
+When cell 3 finishes, cell 4 renders a stacked figure with three or four
+panels (the fourth, engine CPU, only appears when the trace produced
+`ExecutionMetrics` events — i.e. `ENABLE_TRACING = True` and you have
+permission to subscribe to the trace).
+
+For the methodology and what to do with these numbers, see
+[`load-testing-overview.md`](load-testing-overview.md). This section is
+the quick reference.
+
+### Panel 1 — Query duration
+
+A blue band (per-bucket min–max) with a mean line and a max line, in
+milliseconds. This is **client-side** wall-clock duration as observed
+by the simulated user (ADOMD round-trip from `Open()` of the reader to
+draining the result rows). Includes serialization, network, and any
+queueing.
+
+The engine-side duration (DAX engine only, no client-side cost) is
+written per-execution to `QueryExecutions.EngineDurationMs` from the
+trace correlation. To compare the two, query the Delta tables — the
+chart only shows the client-side number to keep it concise.
+
+### Panel 2 — Throughput
+
+Bucketed queries-per-second across the run. If any queries errored,
+error QPS is **stacked in red** on top of the success bars. Steady-state
+QPS is the test's headline throughput number.
+
+### Panel 3 — Active users
+
+The number of virtual users actually running at each point in time.
+This is the ramp curve as actually executed (vs. as configured).
+Useful as a sanity check: the slope should match
+`USER_RAMP_TIME_SEC` and the plateau should match `CONCURRENT_USERS`.
+
+### Panel 4 — Engine CPU (when tracing is on)
+
+Purple bars showing **CPU-seconds per second of wall-clock**, sourced
+from `ExecutionMetrics` `totalCpuTimeMs` distributed across each query's
+wall-clock interval. The legend reports peak / average / bucket width.
+
+The unit is the **effective number of CPU cores the AS engine kept busy
+on average** during each bucket. A peak of 5 means the engine was
+running on average 5 cores' worth of CPU during that bucket.
+
+If the capacity throttled any queries (queries waited behind the
+smoothing window before the engine accepted them), an **orange line on
+a secondary axis** appears showing throttle-seconds-per-second. Any
+orange means at least some queries queued; the legend reports throttle
+peak and total queued time.
+
+> Engine CPU drives capacity unit (CU) consumption, but the conversion
+> factor and smoothing window are capacity- and SKU-specific and aren't
+> modeled in this chart. To get the actual CU cost of the Run, use the
+> **Capacity Metrics App** — see [Translating engine CPU into capacity
+> impact](load-testing-overview.md#translating-engine-cpu-into-capacity-impact).
