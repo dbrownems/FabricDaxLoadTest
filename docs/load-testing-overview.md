@@ -147,6 +147,8 @@ the simulated users experienced.
 
 ### Panel 1 — Query duration (latency)
 
+![Query duration panel — blue min/max band with mean and max lines](img/chart-latency.png)
+
 A blue band showing **min / max** query duration per time bucket, a
 **mean** line, and a **max** line. Y-axis is milliseconds.
 
@@ -168,6 +170,8 @@ percentiles summarize the distribution.
 
 ### Panel 2 — Throughput (queries/sec)
 
+![Throughput panel — queries-per-second bar chart with error overlay in red](img/chart-throughput.png)
+
 A bar chart of queries-per-second, bucketed across the run. If any
 queries errored, error QPS is stacked in red on top of the success bars.
 
@@ -181,6 +185,8 @@ What to look for:
 
 ### Panel 3 — Active users
 
+![Active users panel — green area chart of virtual users over time](img/chart-active-users.png)
+
 A green area chart of active virtual users over time. This is mostly a
 sanity-check panel — confirms the ramp ran as configured and that users
 didn't drop out mid-test.
@@ -192,6 +198,8 @@ What to look for:
   fatal connection error). Cross-check with the error QPS bars in Panel 2.
 
 ### Panel 4 — Engine CPU
+
+![Engine CPU panel — purple bars of CPU-seconds per second with optional throttle line](img/chart-engine-cpu.png)
 
 The most important panel for capacity planning. Purple bars showing
 **CPU-seconds per second of wall-clock**, sourced from the engine trace's

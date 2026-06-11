@@ -217,6 +217,8 @@ the quick reference.
 
 ### Panel 1 — Query duration
 
+![Query duration panel](img/chart-latency.png)
+
 A blue band (per-bucket min–max) with a mean line and a max line, in
 milliseconds. This is **client-side** wall-clock duration as observed
 by the simulated user (ADOMD round-trip from `Open()` of the reader to
@@ -230,11 +232,15 @@ chart only shows the client-side number to keep it concise.
 
 ### Panel 2 — Throughput
 
+![Throughput panel](img/chart-throughput.png)
+
 Bucketed queries-per-second across the run. If any queries errored,
 error QPS is **stacked in red** on top of the success bars. Steady-state
 QPS is the test's headline throughput number.
 
 ### Panel 3 — Active users
+
+![Active users panel](img/chart-active-users.png)
 
 The number of virtual users actually running at each point in time.
 This is the ramp curve as actually executed (vs. as configured).
@@ -242,6 +248,8 @@ Useful as a sanity check: the slope should match
 `USER_RAMP_TIME_SEC` and the plateau should match `CONCURRENT_USERS`.
 
 ### Panel 4 — Engine CPU (when tracing is on)
+
+![Engine CPU panel](img/chart-engine-cpu.png)
 
 Purple bars showing **CPU-seconds per second of wall-clock**, sourced
 from `ExecutionMetrics` `totalCpuTimeMs` distributed across each query's
