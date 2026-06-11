@@ -221,6 +221,17 @@ What to look for:
   showing throttle-seconds-per-second (queued time). Any orange means
   some queries waited behind the capacity's smoothing window.
 
+![Engine CPU panel showing throttling — purple CPU bars drop sharply while the orange throttle line rises](img/chart-engine-cpu-throttled.png)
+
+The throttled run above shows the classic signature: CPU plateaus at
+~13 CPUs for the first ~225 seconds, then the orange throttle line
+shoots up to 60+ queued-seconds-per-second while the CPU bars collapse
+to ~3 — the engine isn't doing less work because the model got faster,
+it's doing less because the capacity is making queries wait. Latency
+in panel 1 for the same run will balloon at that point. The legend
+reports total queued seconds (`total=3600s` here) so you can see the
+aggregate user-perceived delay.
+
 > The engine CPU shown here is the same metric that drives capacity
 > utilization in Power BI / Fabric — but the **conversion** from CPU
 > consumption to capacity units (CUs), and the smoothing window applied

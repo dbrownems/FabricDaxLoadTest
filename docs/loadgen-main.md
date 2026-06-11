@@ -265,6 +265,15 @@ a secondary axis** appears showing throttle-seconds-per-second. Any
 orange means at least some queries queued; the legend reports throttle
 peak and total queued time.
 
+![Engine CPU panel with throttling overlay](img/chart-engine-cpu-throttled.png)
+
+In the throttled run above, the engine plateaus at ~13 CPUs until the
+capacity's smoothing window kicks in around t=225s, at which point the
+orange throttle line climbs to 60+ queued-s/s and the CPU bars collapse
+to ~3 — i.e. queries are waiting in the capacity queue rather than
+hitting the engine. The legend's `total=3600s` is the aggregate
+user-perceived delay across all queries in the run.
+
 > Engine CPU drives capacity unit (CU) consumption, but the conversion
 > factor and smoothing window are capacity- and SKU-specific and aren't
 > modeled in this chart. To get the actual CU cost of the Run, use the
