@@ -163,7 +163,7 @@ def build_run():
 TARGET_DATASET   = None
 TARGET_WORKSPACE = None
 
-# Load shape
+# Load Test Configuration
 DURATION_SECONDS   = 60
 CONCURRENT_USERS   = 25
 PAUSE_BETWEEN_ITERATIONS_MS  = 10000     # think-time between iterations (ms) — ~10s mimics human dwell
