@@ -263,10 +263,29 @@ def write_run(
     )])
 
     # LoadTestRuns -----------------------------------------------------------
+    # RunName = "<LoadTestName>-NN" where NN = ROW_NUMBER() OVER
+    # (PARTITION BY LoadTestId ORDER BY StartedAtUtc, RunId). We compute
+    # the sequence number by counting prior rows in LoadTestRuns; on a
+    # re-run of cell 3 the row for this RunId is MERGE-replaced, and the
+    # strict-less-than filter on (StartedAtUtc, RunId) excludes it so the
+    # number stays stable.
+    run_seq = 1
+    runs_path = _path("LoadTestRuns")
+    if DeltaTable.isDeltaTable(spark, runs_path):
+        from pyspark.sql.functions import col, lit
+        prior = (spark.read.format("delta").load(runs_path)
+                 .filter(col("LoadTestId") == lit(load_test_id))
+                 .filter((col("StartedAtUtc") < lit(started_at)) |
+                         ((col("StartedAtUtc") == lit(started_at)) &
+                          (col("RunId") < lit(run_id))))
+                 .count())
+        run_seq = prior + 1
+    run_name = f"{load_test_name}-{run_seq:02d}"
+
     runs_df = spark.createDataFrame([Row(
         RunId=run_id,
         LoadTestId=load_test_id,
-        RunName=load_test_name,
+        RunName=run_name,
         OwnerType="LoadTestRun",
         OwnerId=run_id,
         OwnerKey=f"LoadTestRun/{run_id}",
