@@ -16,7 +16,7 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
 
 1. **Capture a workload** with [**Performance Analyzer**](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) — available **in both the Fabric portal and Power BI Desktop** (so no Windows device or local `.pbix` is required). Open the report → *View → Performance Analyzer → Start recording → interact with the report (apply slicers, switch pages, refresh visuals) → Export*. This produces a `.json` file describing the exact DAX queries the report fired.
 2. **Import the notebook.** Download [`LoadTest-Main.ipynb`](https://github.com/dbrownems/FabricDaxLoadTest/releases/latest) from the latest GitHub release, then in your Fabric workspace: **+ New item → Import notebook → From this computer**.
-3. **Run.** Open the imported `LoadTest - Main` notebook:
+3. **Run.** Open the imported `LoadTest-Main` notebook:
    - Upload the Performance Analyzer `.json` onto the notebook's **Resources** panel (left sidebar).
    - In cell 1, set `TARGET_DATASET` to the semantic model you want to hit (or leave `None` if the workspace has exactly one model). Defaults are 25 users for 60 s — see [`docs/loadgen-main.md`](docs/loadgen-main.md) to tune the load shape.
    - **Run All**.
@@ -25,13 +25,13 @@ Cell 4 plots query duration / QPS / users / engine CPU for this Run, read straig
 
 > **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 6 Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
 
-> **One Load Test per workspace is the common case.** Edit `LoadTest - Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest - <descriptive name>`.
+> **One Load Test per workspace is the common case.** Edit `LoadTest-Main` directly. If you later need *additional* Load Tests (e.g. a baseline vs. a what-if scenario), **Save As** in the portal to a new name like `LoadTest-<descriptive name>`.
 
 ## Concepts
 
 Three nouns thread through the code, the notebook, and the Delta tables:
 
-- **Load Test** — a *named, reusable test configuration* (e.g. `"Main"` or `"DIAD 5u baseline"`). One notebook = one Load Test. Identity lives in the `LoadTests` Delta table, keyed by `LoadTestId` (a hash of the name). Cell 1's `LOAD_TEST_NAME` (or the notebook filename: `LoadTest - Main` → `Main`) sets it.
+- **Load Test** — a *named, reusable test configuration* (e.g. `"Main"` or `"DIAD 5u baseline"`). One notebook = one Load Test. Identity lives in the `LoadTests` Delta table, keyed by `LoadTestId` (a hash of the name). Cell 1's `LOAD_TEST_NAME` (or the notebook filename: `LoadTest-Main` → `Main`) sets it.
 - **Run** — *one execution* of a Load Test. Every Run-All of the notebook mints a fresh `RunId` (timestamp-based GUID) and appends a row to `LoadTestRuns`. Re-running is purely additive — prior Runs are preserved untouched, so you can compare a baseline against a regression Run side-by-side.
 - **Scenario** — the *DAX workload* a Run executes: the list of queries (+ optional impersonated users for RLS). Provided per-Run via a `.json` attached to the notebook's *Resources* panel (typically a Power BI Desktop **Performance Analyzer** export), or inline in cell 1. Each unique query is upserted into the global `Queries` dim (keyed by `QueryHash`, with `QueryShapeHash` and `QueryText`); a `ScenarioHash` on the Run summarizes the whole workload — so you can tell at a glance whether two Runs of the same Load Test executed the same queries.
 
@@ -42,7 +42,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 | `QueryRunner.dll` | .NET 8 library: orchestrates concurrent users, opens ADOMD.NET connections, runs DAX, writes per-query telemetry CSV. |
 | `LoadGen.dll` | Thin .NET CLI wrapper over `QueryRunner`. Run as `dotnet LoadGen.dll …` (Linux Spark host inside the notebook, or anywhere `dotnet` is installed locally). Bundled inside the `fdlt_runtime` wheel as of v0.5.0 — no separate zip download. |
 | `fdlt_runtime` (Python wheel) | **The single deploy artifact.** Bundles `LoadGen.dll` + ADOMD assemblies under `fdlt_runtime/loadgen/` and exposes Python orchestration (`bootstrap`, `run`, `persist`, `analyze`). The notebook is a thin shim, so changing the `WHEEL_URL` in cell 2 to a newer release is the entire upgrade story. |
-| `notebooks/LoadTest-Main.ipynb` | Deployed as **`LoadTest - Main`**. Drop a queries `.json` onto Resources → edit cell 1 → Run All. |
+| `notebooks/LoadTest-Main.ipynb` | Deployed as **`LoadTest-Main`**. Drop a queries `.json` onto Resources → edit cell 1 → Run All. |
 | `scripts/Deploy-LoadTests.ps1` | One-shot deploy: `dotnet publish` LoadGen, stages binaries into the wheel source tree, builds the wheel, creates the folder + lakehouse, uploads the wheel, patches cell 2's `WHEEL_URL` to the just-uploaded `abfss://` path, deploys (or refreshes) the runner notebook. |
 
 ## Status
@@ -74,7 +74,7 @@ The tool deploys a single self-contained bundle into a workspace folder:
     │       ├── QueryVisuals         ← (QueryHash, VisualId) → VisualTitle, VisualType
     │       ├── QueryExecutions      ← keyed (Source, SourceId); QueryHash → Queries
     │       └── TraceEvents          ← keyed (Source, SourceId)
-    └── LoadTest - Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
+    └── LoadTest-Main (Notebook)     ← edit cell 1 + drop a queries .json on Resources + Run All
 ```
 
 Everything (lakehouse, notebooks, files) lives inside the `LoadTests` workspace folder. The runner notebook **discovers the destination lakehouse via cell-1 parameters** (`LAKEHOUSE_WORKSPACE_NAME` defaults to the current workspace; `LAKEHOUSE_NAME` defaults to `LoadTests`). No UI lakehouse-attach step is required. Per-run forensic artifacts (raw executions CSV, trace CSV, `result.json`, `*.log`) stay on the Spark driver's local disk under `/tmp/fdlt-<RunId>/` — cell 3 prints the path. Only Delta tables are written to OneLake.
@@ -99,14 +99,14 @@ fab auth login
 pwsh ./scripts/Deploy-LoadTests.ps1 -Workspace "<your-workspace-display-name>" -Verbose
 ```
 
-The script is idempotent and safe to re-run: every time it `dotnet publish`es LoadGen, builds a fresh `fdlt_runtime` wheel with those binaries embedded, uploads the wheel to `Files/`, and rebakes cell 2's `WHEEL_URL` on the deployed `LoadTest - Main` notebook so it points at the just-uploaded wheel. Cell 1 (your parameters) lives on Save-As copies (`LoadTest - <name>`) which the deploy never touches.
+The script is idempotent and safe to re-run: every time it `dotnet publish`es LoadGen, builds a fresh `fdlt_runtime` wheel with those binaries embedded, uploads the wheel to `Files/`, and rebakes cell 2's `WHEEL_URL` on the deployed `LoadTest-Main` notebook so it points at the just-uploaded wheel. Cell 1 (your parameters) lives on Save-As copies (`LoadTest-<name>`) which the deploy never touches.
 
 Useful flags:
 
 | Flag | Effect |
 |---|---|
 | `-SkipPublish` | Skip `dotnet publish`; reuse the existing publish output and just rebuild + re-upload the wheel. |
-| `-SkipNotebookUpdate` | Leave an existing `LoadTest - Main` untouched (don't rebake `WHEEL_URL`). Use only if you've made manual edits to cells ≥ 2 in the portal that you don't want clobbered. |
+| `-SkipNotebookUpdate` | Leave an existing `LoadTest-Main` untouched (don't rebake `WHEEL_URL`). Use only if you've made manual edits to cells ≥ 2 in the portal that you don't want clobbered. |
 
 ### Option B — Manual setup
 
@@ -130,9 +130,9 @@ For users who can't run the deploy script (no local CLIs, restricted network, no
 
 ## Running a load test
 
-The deployed `LoadTest - Main` notebook is meant to be **edited and run directly**. The notebook has just four code cells: **(1)** configuration, **(2)** bootstrap, **(3)** run + persist, **(4)** charts.
+The deployed `LoadTest-Main` notebook is meant to be **edited and run directly**. The notebook has just four code cells: **(1)** configuration, **(2)** bootstrap, **(3)** run + persist, **(4)** charts.
 
-1. Open `LoadTest - Main` in the workspace. (Or, if you need *additional* Load Tests in the same workspace, **File → Save As** → rename to `LoadTest - <descriptive name>` and keep it in the `LoadTests` folder.)
+1. Open `LoadTest-Main` in the workspace. (Or, if you need *additional* Load Tests in the same workspace, **File → Save As** → rename to `LoadTest-<descriptive name>` and keep it in the `LoadTests` folder.)
 2. **Set up the Scenario.** Two options:
    - **Drop a queries `.json` onto the notebook's *Resources* panel** (left sidebar). If exactly one `.json` is attached, the notebook picks it up automatically. Power BI Desktop's *Performance Analyzer* exports work verbatim; plain DAX-string lists also work — see [Scenario formats](#scenario-formats).
    - **Or edit `QUERIES_INLINE` in cell 1** with the DAX you want to drive. The notebook ships with a 3-query model-agnostic warm-up Scenario that's only useful for smoke-testing the pipeline.
@@ -333,7 +333,7 @@ dotnet publish src/LoadGen -c Release -r linux-x64 `
   -p:SelfContained=false -p:UseAppHost=false                  # what Deploy-LoadTests.ps1 does
 ```
 
-Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits, rebuild the wheel, upload it to `Files/`, and rebake cell 2's `WHEEL_URL` on `LoadTest - Main`.
+Re-running `scripts/Deploy-LoadTests.ps1` will pick up the new bits, rebuild the wheel, upload it to `Files/`, and rebake cell 2's `WHEEL_URL` on `LoadTest-Main`.
 
 To regenerate the notebooks from `scripts/build_notebooks.py`:
 

@@ -14,7 +14,7 @@
                                 Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}.
                                 Per-run forensic CSVs stay on the driver's
                                 local /tmp — only Delta tables go to OneLake.
-      * LoadTest - Main      — the runner notebook; users edit cell 1 and
+      * LoadTest-Main      — the runner notebook; users edit cell 1 and
                                 Run All directly. Save As (in the portal)
                                 to make *additional* Load Tests in the
                                 same workspace. Redeploys refresh the
@@ -44,7 +44,7 @@
     a stable wheel to all deployed notebooks.
 
 .PARAMETER Recreate
-    Delete the `LoadTests` lakehouse and `LoadTest - Main` notebook
+    Delete the `LoadTests` lakehouse and `LoadTest-Main` notebook
     in the target workspace before redeploying. The lakehouse delete
     wipes both Tables/ and Files/ — you lose all prior load-test
     history. Use when the schema has changed (e.g. v0.8.0
@@ -56,14 +56,14 @@
     Only meaningful with `-LocalWheel`.
 
 .PARAMETER SkipNotebookUpdate
-    Leave an existing `LoadTest - Main` notebook in the workspace
+    Leave an existing `LoadTest-Main` notebook in the workspace
     untouched, even if its embedded WHEEL_URL points at an older wheel.
     Default behavior is to redeploy the notebook with the freshly
     baked WHEEL_URL so it stays in sync with the wheel that was just
     uploaded to Files/. Use this only when you've made manual edits to
     cells 2-onwards in the portal that you don't want clobbered (cell
-    1 is the parameters cell — those edits live in `LoadTest - <Name>`
-    Save-As copies, never in `LoadTest - Main`).
+    1 is the parameters cell — those edits live in `LoadTest-<name>`
+    Save-As copies, never in `LoadTest-Main`).
 
 .EXAMPLE
     # Standard deploy from the latest GitHub Release:
@@ -337,9 +337,9 @@ Info "WorkspaceId: $wsId"
 
 # ---- recreate: tear down existing notebook + lakehouse ----------------------
 if ($Recreate) {
-    Step "Recreate: deleting existing 'LoadTest - Main' notebook (if present)"
+    Step "Recreate: deleting existing 'LoadTest-Main' notebook (if present)"
     $nbItems = Invoke-Fabric GET "/v1/workspaces/$wsId/items?type=Notebook"
-    $existingNb = $nbItems.value | Where-Object { $_.displayName -eq "LoadTest - Main" }
+    $existingNb = $nbItems.value | Where-Object { $_.displayName -eq "LoadTest-Main" }
     if ($existingNb) {
         $r = Invoke-FabricRaw -Method DELETE -Url "$ApiBase/v1/workspaces/$wsId/items/$($existingNb.id)"
         if ($r.StatusCode -eq 202) {
@@ -548,7 +548,7 @@ function Deploy-Notebook {
     }
 }
 
-Deploy-Notebook -Name "LoadTest - Main" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Main.ipynb") `
+Deploy-Notebook -Name "LoadTest-Main" -IpynbPath (Join-Path $NotebooksDir "LoadTest-Main.ipynb") `
                 -Description "FabricDaxLoadTest runner — edit cell 1 and Run All."
 
 # ---- summary ----------------------------------------------------------------
@@ -557,14 +557,14 @@ Write-Host ""
 Write-Host "Workspace : $Workspace ($wsId)" -ForegroundColor Green
 Write-Host "Folder    : LoadTests ($folderId)" -ForegroundColor Green
 Write-Host "Lakehouse : LoadTests.Lakehouse ($lhId)" -ForegroundColor Green
-Write-Host "Notebooks : LoadTest - Main" -ForegroundColor Green
+Write-Host "Notebooks : LoadTest-Main" -ForegroundColor Green
 Write-Host ""
 Write-Host "Minimal use case:" -ForegroundColor White
-Write-Host "  1. Open 'LoadTest - Main' in the workspace." -ForegroundColor White
+Write-Host "  1. Open 'LoadTest-Main' in the workspace." -ForegroundColor White
 Write-Host "  2. Drag a Power BI Desktop Performance Analyzer .json onto the" -ForegroundColor White
 Write-Host "     notebook's Resources panel (left sidebar)." -ForegroundColor White
 Write-Host "  3. Edit TARGET_DATASET in cell 1 (or leave None to auto-pick" -ForegroundColor White
 Write-Host "     the only model in the workspace) and Run All." -ForegroundColor White
 Write-Host ""
-Write-Host "Save As 'LoadTest - <name>' to add additional Load Tests." -ForegroundColor White
+Write-Host "Save As 'LoadTest-<name>' to add additional Load Tests." -ForegroundColor White
 Write-Host "https://app.powerbi.com/groups/$wsId/list" -ForegroundColor White

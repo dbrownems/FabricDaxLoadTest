@@ -1,6 +1,6 @@
-# `LoadTest - Main` — parameters reference
+# `LoadTest-Main` — parameters reference
 
-The `LoadTest - Main` notebook (built from
+The `LoadTest-Main` notebook (built from
 [`scripts/build_notebooks.py`](../scripts/build_notebooks.py)) exposes every
 load-test knob as a top-level variable in **cell 1**. Cell 1 itself is
 deliberately terse — most parameters get a one-line comment and the full

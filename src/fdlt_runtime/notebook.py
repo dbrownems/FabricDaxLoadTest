@@ -1,6 +1,6 @@
 """Thin orchestrator API for saved LoadTest notebooks.
 
-Saved `LoadTest - <name>.ipynb` files are near-immutable shims that
+Saved `LoadTest-<name>.ipynb` files are near-immutable shims that
 import this module and call `bootstrap()` → `run()` → `analyze()`.
 That way a `Deploy-LoadTests.ps1` redeploy can ship behavior changes
 in the wheel without users having to re-save their notebooks.

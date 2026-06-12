@@ -129,8 +129,8 @@ def build_run():
     > in [`docs/loadgen-main.md`](../docs/loadgen-main.md).
 
     > **Multiple Load Tests in one workspace?** **File → Save As** /
-    > **Duplicate** and rename the copy to `LoadTest - <name>`.
-    > `Deploy-LoadTests.ps1` only updates the original `LoadTest - Main`,
+    > **Duplicate** and rename the copy to `LoadTest-<name>`.
+    > `Deploy-LoadTests.ps1` only updates the original `LoadTest-Main`,
     > so cell-1 edits on saved copies survive redeploys.
 
     > **Upgrades.** Change `WHEEL_URL` in cell 2 to a newer release
