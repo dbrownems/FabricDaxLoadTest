@@ -30,17 +30,24 @@ caller polls and joins.
 
 ```
 src/QueryRunner/
-├── QueryRunner.cs        ── 1412 lines  ── single big file (see "Sections" below)
-├── LoadTestApi.cs        ──  225 lines  ── public DTOs + LoadTestHandle
-├── QueryRunner.csproj    ──   48 lines  ── net8.0, nullable enabled, ADOMD.NET ref
+├── QueryRunner.cs        ── ~1240 lines ── StartLoadTest + RunLoadTestCore engine, TelemetryRecord
+├── QueryRunnerLogger.cs  ──   115 lines ── public sealed class QueryRunnerLogger
+├── QueryResult.cs        ──    22 lines ── public class QueryResult
+├── QueryRunnerStatus.cs  ──   190 lines ── public class QueryRunnerStatus + nested WindowSnapshot
+├── LoadTestApi.cs        ──   225 lines ── public DTOs + LoadTestHandle
+├── QueryRunner.csproj    ──    48 lines ── net8.0, nullable enabled, ADOMD.NET ref
 └── Tracing/
     ├── TraceModels.cs        ── 103 lines  ── AS rowset → CSV-shaped events
     └── TraceSubscriber.cs    ── 649 lines  ── XMLA trace subscription
 ```
 
-`QueryRunner.cs` and `Tracing/TraceSubscriber.cs` are both on the large
-side. `QueryRunner.cs` is the next refactoring candidate; the line
-ranges below double as a "where to split if/when we split" map.
+`QueryRunner.cs` is still the largest file in the project. The 3 public
+helper types previously inlined in it (`QueryRunnerLogger`,
+`QueryResult`, `QueryRunnerStatus`/`WindowSnapshot`) now each live in
+their own file at the project root — same `FabricDaxLoadTest`
+namespace, no visibility changes. `TelemetryRecord` (internal) stays
+in `QueryRunner.cs` because the only consumer is the executions-CSV
+writer that lives there.
 
 ## Public types (LoadTestApi.cs)
 
@@ -59,74 +66,74 @@ declared visibility is `public`.
 
 ## QueryRunner.cs — sections
 
-`QueryRunner.cs` mixes several concerns in one namespace-level file.
+`QueryRunner.cs` holds the engine itself plus one internal helper.
 Use these line ranges as bookmarks:
 
 | Lines | Section | Notes |
 |---|---|---|
-| 1-15 | usings + `namespace FabricDaxLoadTest` | |
-| **17-121** | `public sealed class QueryRunnerLogger : IDisposable` | Lock-free file logger. Background consumer thread on a `BlockingCollection<string>`. Caller wires `OnLogLine` for stdout/stderr echo (left null in Livy/Jupyter contexts to avoid corrupting JSON-RPC framing). |
-| **123-137** | `public class QueryResult` | Per-iteration outcome (latency, status, query hash, response bytes, active-user snapshot). Used by status counters and the CSV writer. |
-| **139-156** | `internal class TelemetryRecord` | What gets serialized into the executions CSV (one row per query attempt, including retries on reconnect). |
-| **163-343** | `public class QueryRunnerStatus` (singleton) | Mutable in-memory counters: cumulative + per-window totals, active-user count, in-flight count, P50/P95/P99 reservoir. `RecordQuery` is called from every user task; `SnapshotAndReset` is called by the periodic reporter. Process-wide singleton (`QueryRunnerStatus.Instance`) — safe because of the run gate (one run per process). |
-| 331-342 | nested `WindowSnapshot` | Per-window summary returned by `SnapshotAndReset`. |
-| **345-1462** | `public static class QueryRunner` | The engine. Sub-sections below. |
+| 1-13 | usings + `namespace FabricDaxLoadTest` | |
+| 17-22 | move-comments | Pointers to the three sibling files. |
+| 24-41 | `internal class TelemetryRecord` | What gets serialized into the executions CSV (one row per query attempt, including retries on reconnect). Stays here because the executions-CSV writer is the only consumer. |
+| 44-end | `public static class QueryRunner` | The engine. Sub-sections below. |
 
-### Inside `static class QueryRunner` (345-1462)
+### Inside `static class QueryRunner`
 
-| Lines | Sub-section | What it does |
-|---|---|---|
-| 350-362 | static state | `_logger`, `_activeRun` gate, `_querySeq`. |
-| 373-386 | `MakeActivityId(runId, seq)` | Encodes `(runId, seq)` into a deterministic Guid we send as ADOMD `ActivityID`. Lets `persist.py` JOIN executions to `ExecutionMetrics` trace events for engine-CPU back-fill. |
-| 397-433 | `StartLoadTest(LoadTestConfig)` | Public entry point. Validates, claims the run gate, allocates `SnapshotBox`, spawns `RunLoadTestCore` on a `Task`, returns `LoadTestHandle`. Synchronous-throws on invalid config or concurrent run. |
-| 435-463 | `ValidateConfig` | Argument-shape checks (queries non-empty, slot arrays consistent, endpoint/dataset present, durations positive). |
-| **465-1045** | `RunLoadTestCore` | The actual run. ~580 lines. |
-| 1047-1144 | `LogWriterLoop` | Background drain of the executions queue into a buffered `StreamWriter` over a `FileStream` opened with `FileShare.Read` so external tailers work mid-run. |
-| 1146-1159 | `SanitizeCsvField` | CSV-escapes / truncates one field. |
-| 1161-1194 | `SimulateUserWithConnections` | Per-user driver loop: iteration → `RunIteration` → think-time pause. Holds the user's connection array for the lifetime of the run. |
-| 1196-1290 | `RunIteration` | Per-iteration query fan-out. `SemaphoreSlim` gate sized to `concurrentQueriesPerUser`, slot-index queue tracks which connection a task uses, transparent reconnect on "connection lost" with a single retry. |
-| 1292-1318 | `SubmitTelemetry` | `QueryResult` → `TelemetryRecord` → enqueue into the CSV writer queue. |
-| 1320-1401 | `ExecuteQuery` | The hot path: open `AdomdCommand`, set `ActivityID`, run the query, drain rows (or skip with `--skip-results`), build `QueryResult`. ADOMD calls are synchronous. |
-| 1403-1427 | `BuildConnectionString` | Assembles the ADOMD connection string (token, EUN, CustomData, Roles, ApplicationName=run-id for trace filtering). |
-| 1429-1462 | Slot-array helpers | `SlotCount`, `ThrowIfMismatched`, `NormalizeSlotArray`, `UserLabel`. Normalize the three impersonation arrays to a common length. |
-| 1464-end | `BuildStats` + redaction helpers | Final JSON summary; redacts the bearer token from any captured exception text. |
+(All line numbers below are approximate — they shifted by ~290 after
+the public-type split. Search for the symbol names if precision matters.)
 
-### What `RunLoadTestCore` does, in order (465-1045)
+| Section | What it does |
+|---|---|
+| static state (`_logger`, `_activeRun`, `_querySeq`) | Process-wide. The `_activeRun` interlock keeps us safe with these. |
+| `MakeActivityId(runId, seq)` | Encodes `(runId, seq)` into a deterministic Guid we send as ADOMD `ActivityID`. Lets `persist.py` JOIN executions to `ExecutionMetrics` trace events for engine-CPU back-fill. |
+| `StartLoadTest(LoadTestConfig)` | Public entry point. Validates, claims the run gate, allocates `SnapshotBox`, spawns `RunLoadTestCore` on a `Task`, returns `LoadTestHandle`. Synchronous-throws on invalid config or concurrent run. |
+| `ValidateConfig` | Argument-shape checks (queries non-empty, slot arrays consistent, endpoint/dataset present, durations positive). |
+| **`RunLoadTestCore`** | The actual run. ~580 lines. Phase walkthrough below. |
+| `LogWriterLoop` | Background drain of the executions queue into a buffered `StreamWriter` over a `FileStream` opened with `FileShare.Read` so external tailers work mid-run. |
+| `SanitizeCsvField` | CSV-escapes / truncates one field. |
+| `SimulateUserWithConnections` | Per-user driver loop: iteration → `RunIteration` → think-time pause. Holds the user's connection array for the lifetime of the run. |
+| `RunIteration` | Per-iteration query fan-out. `SemaphoreSlim` gate sized to `concurrentQueriesPerUser`, slot-index queue tracks which connection a task uses, transparent reconnect on "connection lost" with a single retry. |
+| `SubmitTelemetry` | `QueryResult` → `TelemetryRecord` → enqueue into the CSV writer queue. |
+| `ExecuteQuery` | The hot path: open `AdomdCommand`, set `ActivityID`, run the query, drain rows (or skip with `--skip-results`), build `QueryResult`. ADOMD calls are synchronous. |
+| `BuildConnectionString` | Assembles the ADOMD connection string (token, EUN, CustomData, Roles, ApplicationName=run-id for trace filtering). |
+| Slot-array helpers (`SlotCount`, `ThrowIfMismatched`, `NormalizeSlotArray`, `UserLabel`) | Normalize the three impersonation arrays to a common length. |
+| `BuildStats` + redaction helpers | Final JSON summary; redacts the bearer token from any captured exception text. |
 
-1. **Setup** (469-557): destructure config, normalize slot arrays, init the
+### What `RunLoadTestCore` does, in order
+
+1. **Setup**: destructure config, normalize slot arrays, init the
    linked `CancellationTokenSource` (caller cancel ⨯ duration timer),
    create `_logger`, seed the initial snapshot, open the executions CSV +
    start `LogWriterLoop`.
-2. **Trace subscription** (568-661): if `EnableTracing && logDirectory`,
+2. **Trace subscription**: if `EnableTracing && logDirectory`,
    create a `TraceSubscriber` (filters server-side trace rows by
    `ApplicationName=FabricDaxLoadTest/<runId>`), open the trace CSV, and
    start a writer task draining `subscriber.Events` into the file.
    Failures here are warnings, not fatal — except the `OnFatalError`
    callback, which sets `traceFatalError` and cancels the run.
-3. **Threadpool warmup** (672-685): `ThreadPool.SetMinThreads` sized for
+3. **Threadpool warmup**: `ThreadPool.SetMinThreads` sized for
    `users × concurrentQueriesPerUser` so the .NET injection rate does
    not serialize ramp-up on small Fabric notebook hosts.
-4. **Pre-warm connection** (706-717): a single up-front `Open()` against
+4. **Pre-warm connection**: a single up-front `Open()` against
    slot 0 to absorb the gateway/model cold-start (50-100s on a cold
    capacity) before per-user opens hit the front-end.
-5. **Ramp** (719-849): one task per user, scheduled with `rampIntervalMs`
+5. **Ramp**: one task per user, scheduled with `rampIntervalMs`
    delay. Each task opens its `concurrentQueriesPerUser` connections,
    bumps `connectedUsers` + `status.IncrementActiveUsers`, then jumps
    into `SimulateUserWithConnections`. The main thread loops printing
    ramp progress every `nUsers/10` connections.
-6. **Snapshot publisher** (782-822): 1 Hz background task that reads
+6. **Snapshot publisher**: 1 Hz background task that reads
    `QueryRunnerStatus`, computes a 5 s rolling QPS and the latency
    percentiles, and writes the result into `SnapshotBox` so polling
    callers (LoadGen's chart, `fdlt_runtime`) see live progress.
-7. **Steady-state** (909-934): `Task.WaitAll(userTasks)`. The 60 s
+7. **Steady-state**: `Task.WaitAll(userTasks)`. The 60 s
    periodic reporter runs in parallel.
-8. **Drain & shutdown** (943-1042): cancel the snapshot publisher, wait
+8. **Drain & shutdown**: cancel the snapshot publisher, wait
    for the periodic reporter, complete the executions queue and join
    the writer, give the trace 5 s to flush in-flight `ExecutionMetrics`
    events, dispose the `TraceSubscriber`, resolve the final phase
    (`Failed > Cancelled > Done`), publish the final snapshot, dispose
    the logger.
-9. **Return** (1044): the JSON string built by `BuildStats`. The
+9. **Return**: the JSON string built by `BuildStats`. The
    `LoadTestHandle.Wait()` caller receives this.
 
 ## Tracing/
@@ -204,29 +211,24 @@ The heavier `Microsoft.AnalysisServices` (AMO) package is referenced
 only by `TraceSubscriber.cs`, but currently lives at the project level —
 `TraceModels.cs`'s no-AMO comment is aspirational, not enforced.
 
-## When to split QueryRunner.cs
+## When to split QueryRunner.cs further
 
-A future refactor would carve the file into ~4-5 files in the same
-namespace (no new sub-namespaces beyond `Tracing/`):
+The 3 public helper types (`QueryRunnerLogger`, `QueryResult`,
+`QueryRunnerStatus`+`WindowSnapshot`) have already been moved to
+sibling files. A future refactor could carve the engine itself:
 
-- `Telemetry.cs` ← `QueryResult`, `TelemetryRecord`,
-  `QueryRunnerStatus`, `WindowSnapshot`, `SnapshotBox`.
-- `Output.cs` ← `QueryRunnerLogger`, `LogWriterLoop`,
-  `SanitizeCsvField`, `BuildStats`.
 - `Helpers.cs` ← `BuildConnectionString`, `MakeActivityId`,
   `SlotCount`/`NormalizeSlotArray`/`ThrowIfMismatched`/`UserLabel`,
-  `ValidateConfig`.
+  `ValidateConfig`, `SanitizeCsvField` — pure-ish, easy to unit test.
+- `Output.cs` ← `LogWriterLoop`, `BuildStats`, `TelemetryRecord`.
 - `QueryRunner.cs` keeps `StartLoadTest` + `RunLoadTestCore` +
   `SimulateUserWithConnections` + `RunIteration` + `ExecuteQuery` +
   `SubmitTelemetry` (the engine).
 
-The line ranges in this doc map directly to that split. Most of the
-"public" types in `QueryRunner.cs` today (`QueryRunnerLogger`,
-`QueryResult`, `QueryRunnerStatus`, `WindowSnapshot`) are public by
-historical accident and would become `internal` in the split, which
-also enables `[InternalsVisibleTo("QueryRunner.Tests")]` for unit
-tests on the pure helpers (`BuildConnectionString`, `MakeActivityId`,
-slot-array helpers, `SanitizeCsvField`, `BuildStats`).
+That split would also enable `[InternalsVisibleTo("QueryRunner.Tests")]`
+for unit tests on the pure helpers (`BuildConnectionString`,
+`MakeActivityId`, slot-array helpers, `SanitizeCsvField`,
+`BuildStats`).
 
-The split is not blocking any current work; this doc exists so that
-work isn't blocked on someone re-discovering the structure either.
+Not blocking any current work; this doc exists so that work isn't
+blocked on someone re-discovering the structure either.
