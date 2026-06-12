@@ -467,7 +467,7 @@ namespace FabricDaxLoadTest
                         return;
                     }
 
-                    SimulateUserWithConnections(userIdx, queries, UserLabel(userEffectiveNames, userCustomData, userIdx),
+                    SimulateUserWithConnections(userIdx, queries, UserEmail(userEffectiveNames, userCustomData, userIdx),
                         concurrentQueriesPerUser, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
                         testStart, runId, testStartTime, telemetryQueue,
@@ -581,9 +581,10 @@ namespace FabricDaxLoadTest
 
             // ── Connection summary after ramp-up ──
             int totalConns = connectedUsers * concurrentQueriesPerUser;
-            // Distinct identities = distinct (effectiveName,customData) pairs.
+            // Distinct identities = distinct non-empty (effectiveName,customData) pairs.
             var distinctEmails = Enumerable.Range(0, nUsers)
-                .Select(i => UserLabel(userEffectiveNames, userCustomData, i))
+                .Select(i => UserEmail(userEffectiveNames, userCustomData, i))
+                .Where(e => !string.IsNullOrEmpty(e))
                 .Distinct().Count();
             var distinctRoles = userRoles.Distinct().Count();
             status.SetConnectionInfo(totalConns, distinctEmails);
@@ -1157,6 +1158,16 @@ namespace FabricDaxLoadTest
             if (i < effectiveNames.Length && !string.IsNullOrEmpty(effectiveNames[i])) return effectiveNames[i];
             if (i < customData.Length     && !string.IsNullOrEmpty(customData[i]))     return $"cd:{customData[i]}";
             return $"slot-{i}";
+        }
+
+        // UserEmail value persisted to telemetry: real EffectiveUserName when
+        // a users file pinned one, else empty string (which persist.py turns
+        // into NULL). Distinct from UserLabel — slot-N is for logs only.
+        private static string UserEmail(string[] effectiveNames, string[] customData, int i)
+        {
+            if (i < effectiveNames.Length && !string.IsNullOrEmpty(effectiveNames[i])) return effectiveNames[i];
+            if (i < customData.Length     && !string.IsNullOrEmpty(customData[i]))     return $"cd:{customData[i]}";
+            return "";
         }
 
         private static string BuildStats(List<QueryResult> results, double totalMs,

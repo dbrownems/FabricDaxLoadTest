@@ -357,20 +357,6 @@ table QueryExecutions
 
 		annotation SummarizationSetBy = Automatic
 
-	column QueryResultRows
-		dataType: int64
-		isHidden
-		formatString: 0
-		isAvailableInMdx: false
-		sourceProviderType: bigint
-		lineageTag: 5c66ec1d-5102-4ad7-9ce2-ec66a6daff3c
-		summarizeBy: sum
-		sourceColumn: QueryResultRows
-
-		changedProperty = IsHidden
-
-		annotation SummarizationSetBy = Automatic
-
 	column ExecutionMetricsJson
 		dataType: string
 		isHidden
@@ -514,11 +500,38 @@ table QueryExecutions
 
 		annotation SummarizationSetBy = Automatic
 
-	column StartSecond = INT(QueryExecutions[StartTimeMs] / 1000)
+	column StartTimeSec
 		dataType: int64
 		formatString: 0
-		lineageTag: e9186c6c-8fb9-423b-ad4e-7094f91bad84
+		isAvailableInMdx: false
+		sourceProviderType: int
+		lineageTag: a1c0f000-0000-4001-8000-00000000aaaa
 		summarizeBy: none
+		sourceColumn: StartTimeSec
+
+		annotation SummarizationSetBy = Automatic
+
+	column StartTime10Sec
+		dataType: int64
+		formatString: 0
+		isAvailableInMdx: false
+		sourceProviderType: int
+		lineageTag: a1c0f000-0000-4001-8000-00000000bbbb
+		summarizeBy: none
+		sourceColumn: StartTime10Sec
+
+		annotation SummarizationSetBy = Automatic
+
+	column StartTime30Sec
+		dataType: int64
+		formatString: 0
+		isAvailableInMdx: false
+		sourceProviderType: int
+		lineageTag: a1c0f000-0000-4001-8000-00000000cccc
+		summarizeBy: none
+		sourceColumn: StartTime30Sec
+
+		annotation SummarizationSetBy = Automatic
 
 	partition QueryExecutions = m
 		mode: directQuery

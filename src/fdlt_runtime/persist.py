@@ -86,6 +86,22 @@ def _slug(s: str) -> str:
     return s or "unknown"
 
 
+def _nstr(v) -> Optional[str]:
+    """Empty/whitespace/NaN → None; otherwise stripped str.
+
+    Repo-wide rule: never persist empty strings to Delta. Distinguishing
+    "" from NULL downstream creates hard-to-diagnose bugs (DAX ISBLANK
+    matches both but `[c]=""` only matches the empty one, etc.).
+    """
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return s or None
+
+
 def _scenario_hash(query_hashes: Iterable[str]) -> str:
     return hashlib.sha256(
         ("\u0001".join(query_hashes)).encode("utf-8")
@@ -295,7 +311,7 @@ def write_run(
         TargetWorkspace=target_workspace,
         TargetDataset=target_dataset,
         XmlaEndpoint=xmla,
-        Replica=target_replica or "",
+        Replica=_nstr(target_replica),
         UserCount=int(user_count),
         DurationSec=int(duration_sec),
         RampSec=int(ramp_sec),
@@ -400,6 +416,11 @@ def write_run(
             StructField("StartUtc",             TimestampType(), False),
             StructField("EndUtc",               TimestampType(), True),
             StructField("StartTimeMs",          DoubleType(),    True),
+            # Pre-bucketed elapsed-seconds columns for Power BI x-axis
+            # bucketing — Direct Lake doesn't bin DOUBLE columns gracefully.
+            StructField("StartTimeSec",         IntegerType(),   True),
+            StructField("StartTime10Sec",       IntegerType(),   True),
+            StructField("StartTime30Sec",       IntegerType(),   True),
             StructField("ClientDurationMs",     DoubleType(),    True),
             # Engine totals from ExecutionMetrics (v0.10.2+):
             # totalCpuTimeMs → EngineCpuMs, durationMs → EngineDurationMs.
@@ -411,7 +432,6 @@ def write_run(
             StructField("ExecutionDelayMs",     LongType(),      True),
             StructField("CapacityThrottlingMs", LongType(),      True),
             StructField("PeakMemoryKB",         LongType(),      True),
-            StructField("QueryResultRows",      LongType(),      True),
             # Raw ExecutionMetrics JSON passthrough so we don't lose any
             # fields AS emits in regimes we haven't tested (e.g. capacity
             # throttling, which we expect adds a throttle-delay field but
@@ -452,7 +472,7 @@ def write_run(
             SourceId=str(r["RunId"]),
             LoadTestId=load_test_id,
             UserIndex=int(r["UserIndex"]),
-            UserEmail=str(r["UserEmail"]) if pd.notna(r["UserEmail"]) else None,
+            UserEmail=_nstr(r.get("UserEmail")),
             QueryIndex=int(r["QueryIndex"]),
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
@@ -466,12 +486,15 @@ def write_run(
             StartUtc=r["StartUtc"].to_pydatetime(),
             EndUtc=r["EndUtc"].to_pydatetime() if pd.notna(r["EndUtc"]) else None,
             StartTimeMs=float(r["StartTimeMs"]) if pd.notna(r["StartTimeMs"]) else None,
+            StartTimeSec=int(r["StartTimeMs"] // 1000) if pd.notna(r["StartTimeMs"]) else None,
+            StartTime10Sec=int(r["StartTimeMs"] // 10000) * 10 if pd.notna(r["StartTimeMs"]) else None,
+            StartTime30Sec=int(r["StartTimeMs"] // 30000) * 30 if pd.notna(r["StartTimeMs"]) else None,
             ClientDurationMs=float(r["DurationMs"]) if pd.notna(r["DurationMs"]) else None,
             # All trace-derived columns are back-filled below.
             EngineDurationMs=None, EngineCpuMs=None,
             SECpuMs=None, FECpuMs=None, ExecutionDelayMs=None,
             CapacityThrottlingMs=None,
-            PeakMemoryKB=None, QueryResultRows=None,
+            PeakMemoryKB=None,
             ExecutionMetricsJson=None,
             VertiPaqQueryCount=None, VertiPaqDurationMs=None,
             DirectQueryCount=None, DirectQueryDurationMs=None,
@@ -479,9 +502,7 @@ def write_run(
             Outcome=str(r["Outcome"]),
             RowCount=int(r["RowCount"]) if pd.notna(r["RowCount"]) else None,
             ResponseBytes=int(r["ResponseBytes"]) if pd.notna(r["ResponseBytes"]) else None,
-            ErrorMessage=(str(r["ErrorMessage"])
-                          if pd.notna(r["ErrorMessage"]) and str(r["ErrorMessage"])
-                          else None),
+            ErrorMessage=_nstr(r.get("ErrorMessage")),
             ActiveUsersAtStart=int(r["ActiveUsersAtStart"])
                               if pd.notna(r["ActiveUsersAtStart"]) else None,
         ) for _, r in df2.iterrows()]
@@ -525,18 +546,16 @@ def write_run(
                 SourceId=run_id,
                 LoadTestId=load_test_id,
                 UtcTimestamp=r["UtcTimestamp"].to_pydatetime(),
-                EventClass=str(r["EventClass"]) if pd.notna(r["EventClass"]) else None,
+                EventClass=_nstr(r.get("EventClass")),
                 DurationMs=int(r["DurationMs"]) if pd.notna(r["DurationMs"]) else None,
                 CpuMs=int(r["CpuMs"]) if pd.notna(r["CpuMs"]) else None,
-                ApplicationName=str(r["ApplicationName"]) if pd.notna(r["ApplicationName"]) else None,
-                UserName=str(r["UserName"]) if pd.notna(r["UserName"]) else None,
-                SessionId=str(r["SessionId"]) if pd.notna(r["SessionId"]) else None,
-                RequestId=str(r["RequestId"]) if pd.notna(r["RequestId"]) else None,
-                ActivityId=(str(r["ActivityId"])
-                            if "ActivityId" in r and pd.notna(r["ActivityId"])
-                            else None),
-                DatabaseName=str(r["DatabaseName"]) if pd.notna(r["DatabaseName"]) else None,
-                TextData=str(r["TextData"]) if pd.notna(r["TextData"]) else None,
+                ApplicationName=_nstr(r.get("ApplicationName")),
+                UserName=_nstr(r.get("UserName")),
+                SessionId=_nstr(r.get("SessionId")),
+                RequestId=_nstr(r.get("RequestId")),
+                ActivityId=_nstr(r.get("ActivityId")) if "ActivityId" in r else None,
+                DatabaseName=_nstr(r.get("DatabaseName")),
+                TextData=_nstr(r.get("TextData")),
             ) for _, r in tdf.iterrows()]
             trace_df = spark.createDataFrame(trace_rows, schema=trace_schema)
             trace_events_written = len(trace_rows)
@@ -598,7 +617,6 @@ def write_run(
                 F.col("em.executionDelayMs").alias("ExecutionDelayMs"),
                 F.col("em.capacityThrottlingMs").alias("CapacityThrottlingMs"),
                 F.col("em.approximatePeakMemConsumptionKB").alias("PeakMemoryKB"),
-                F.col("em.queryResultRows").alias("QueryResultRows"),
                 # Raw JSON passthrough — keeps fields we haven't parsed
                 # (e.g. future throttling-related fields).
                 F.col("TextData").alias("ExecutionMetricsJson"))
@@ -645,7 +663,7 @@ def write_run(
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
             "CapacityThrottlingMs",
-            "PeakMemoryKB", "QueryResultRows", "ExecutionMetricsJson",
+            "PeakMemoryKB", "ExecutionMetricsJson",
             "VertiPaqQueryCount", "VertiPaqDurationMs",
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
