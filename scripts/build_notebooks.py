@@ -166,6 +166,7 @@ TARGET_WORKSPACE = None
 # Load shape
 DURATION_SECONDS   = 60
 CONCURRENT_USERS   = 25
+PAUSE_BETWEEN_ITERATIONS_MS  = 10000     # think-time between iterations (ms) — ~10s mimics human dwell
 USER_RAMP_TIME_SEC = 15
 
 # Optional: persist the run to Delta tables for cross-run analysis.
@@ -189,7 +190,6 @@ LAKEHOUSE_WORKSPACE_NAME     = None      # for BYO-lakehouse in another workspac
 LAKEHOUSE_SCHEMA             = None      # None → auto-detect (schema-enabled → "dbo")
 
 CONCURRENT_QUERIES_PER_USER  = 1         # in-flight queries per user (1 = serial)
-PAUSE_BETWEEN_ITERATIONS_MS  = 10000     # think-time between iterations (ms) — ~10s mimics human dwell
 PAUSE_BETWEEN_QUERIES_MS     = 0         # think-time between queries in an iteration
 
 ENABLE_TRACING               = True      # capture engine events to TraceEvents
