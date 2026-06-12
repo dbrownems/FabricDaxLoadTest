@@ -273,11 +273,11 @@ def render_progress(env_obj: Mapping[str, Any]) -> str:
     inflight = env_obj.get("inFlight")
     if inflight is not None:
         parts.append(f"inflight={inflight}")
-    p95 = env_obj.get("latencyMsP95")
-    p99 = env_obj.get("latencyMsP99")
-    if p95 is not None and (p95 or env_obj.get("latencySamples", 0)):
+    p95 = env_obj.get("durationMsP95")
+    p99 = env_obj.get("durationMsP99")
+    if p95 is not None and (p95 or env_obj.get("durationSamples", 0)):
         parts.append(f"p95={p95:.0f}ms")
-    if p99 is not None and (p99 or env_obj.get("latencySamples", 0)):
+    if p99 is not None and (p99 or env_obj.get("durationSamples", 0)):
         parts.append(f"p99={p99:.0f}ms")
     cpu = env_obj.get("driverCpuPct")
     if cpu is not None:
@@ -538,7 +538,7 @@ class LiveDashboard:
             return
         try:
             qps = float(env_obj.get("qps") or 0.0)
-            p95 = float(env_obj.get("latencyMsP95") or 0.0)
+            p95 = float(env_obj.get("durationMsP95") or 0.0)
             cpu = float(env_obj.get("driverCpuPct") or 0.0)
         except (TypeError, ValueError):
             qps, p95, cpu = 0.0, 0.0, 0.0
@@ -603,10 +603,10 @@ class LiveDashboard:
         err = int(env_obj.get("failed", 0) or 0)
         qps = float(env_obj.get("qps", 0) or 0)
         inflight = env_obj.get("inFlight")
-        p50 = float(env_obj.get("latencyMsP50") or 0)
-        p95 = float(env_obj.get("latencyMsP95") or 0)
-        p99 = float(env_obj.get("latencyMsP99") or 0)
-        latn = int(env_obj.get("latencySamples") or 0)
+        p50 = float(env_obj.get("durationMsP50") or 0)
+        p95 = float(env_obj.get("durationMsP95") or 0)
+        p99 = float(env_obj.get("durationMsP99") or 0)
+        durn = int(env_obj.get("durationSamples") or 0)
         cpu = env_obj.get("driverCpuPct")
         mem = env_obj.get("driverMemPct")
         err_rate = (err / (ok + err) * 100.0) if (ok + err) else 0.0
@@ -642,13 +642,13 @@ class LiveDashboard:
         # In-flight
         if inflight is not None:
             lines.append(f"  {bold}In-flight{reset}  {inflight}")
-        # Latency line
+        # Duration line
         lines.append(
-            f"  {bold}Latency ms{reset} "
+            f"  {bold}Duration ms{reset} "
             f"p50 {bold}{p50:6.0f}{reset}   "
             f"p95 {yellow}{bold}{p95:6.0f}{reset}   "
             f"p99 {red}{bold}{p99:6.0f}{reset}   "
-            f"n={latn}   {cyan}{self._spark(self._p95_hist)}{reset}"
+            f"n={durn}   {cyan}{self._spark(self._p95_hist)}{reset}"
         )
         # Driver
         if cpu is not None:

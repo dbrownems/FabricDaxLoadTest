@@ -400,7 +400,7 @@ namespace FabricDaxLoadTest
             // and the ramp curve is smooth. AS engine cold-start is a per-model cost,
             // not per-connection, so paying it once is sufficient. Per-user Open()
             // warmup queries still execute and absorb per-socket TCP/TLS/H2 handshake
-            // cost, keeping per-query latency metrics clean.
+            // cost, keeping per-query duration metrics clean.
             try
             {
                 var warmupSw = Stopwatch.StartNew();
@@ -498,7 +498,7 @@ namespace FabricDaxLoadTest
                     lastSuccessful = successful;
                     lastSampleAt.Restart();
 
-                    var (p50, p95, p99, latCount) = status.ComputeLatencyPercentiles();
+                    var (p50, p95, p99, durCount) = status.ComputeDurationPercentiles();
 
                     snapshotBox.Set(new LoadTestProgressSnapshot
                     {
@@ -511,10 +511,10 @@ namespace FabricDaxLoadTest
                         Failed = errors,
                         RollingQps = qps,
                         InFlight = status.InFlight,
-                        LatencyMsP50 = p50,
-                        LatencyMsP95 = p95,
-                        LatencyMsP99 = p99,
-                        LatencySamples = latCount,
+                        DurationMsP50 = p50,
+                        DurationMsP95 = p95,
+                        DurationMsP99 = p99,
+                        DurationSamples = durCount,
                     });
                 }
             });
@@ -1183,7 +1183,7 @@ namespace FabricDaxLoadTest
                 stats["logFile"] = logFilePath;
 
             if (durs.Any())
-                stats["latency"] = new Dictionary<string, object>
+                stats["duration"] = new Dictionary<string, object>
                 {
                     ["min"] = Math.Round(durs.First()),
                     ["max"] = Math.Round(durs.Last()),
@@ -1200,7 +1200,7 @@ namespace FabricDaxLoadTest
                     ["iterations"] = g.Max(r => r.Iteration),
                     ["executions"] = g.Count(),
                     ["errors"] = g.Count(r => r.Error != null),
-                    ["meanLatencyMs"] = g.Where(r => r.Error == null).Select(r => r.DurationMs)
+                    ["meanDurationMs"] = g.Where(r => r.Error == null).Select(r => r.DurationMs)
                         .DefaultIfEmpty(0).Average() is var avg ? Math.Round(avg) : 0,
                 }).ToList();
             stats["perUser"] = perUser;

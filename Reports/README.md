@@ -58,7 +58,7 @@ where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
   `QueryShapeHash` (literals stripped) and `QueryText`.
 * **Friendly measures on `QueryExecutions`** with the raw timing columns
   hidden: `Total Executions`, `Successful Executions`, `Failed Executions`,
-  `QPS`, `Avg/P50/P95/P99/Max Latency (ms)`, `Engine CPU (s)`, `SE CPU (s)`,
+  `QPS`, `Avg/P50/P95/P99/Max Duration (ms)`, `Engine CPU (s)`, `SE CPU (s)`,
   `FE CPU (s)`, `Engine Duration (s)`, `Total Engine CPU (ms)`,
   `Active Users (max)`.
 * **Run-level passthrough measures on `LoadTestRuns`**: `Run QPS`,
@@ -68,7 +68,7 @@ where `fdlt_runtime` writes its Delta tables (`LoadTests`, `LoadTestRuns`,
 ### Pages
 
 * **Load Test Overview** — slicer to pick a single run; KPI cards for
-  Successful Executions / QPS / Avg & P95 Latency; latency, QPS,
+  Successful Executions / QPS / Avg & P95 Duration; duration, QPS,
   active-users, and engine-CPU-per-second time series; Top Queries by
   Engine CPU table.
 

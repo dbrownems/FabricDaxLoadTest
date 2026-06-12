@@ -122,7 +122,7 @@ the public-type split. Search for the symbol names if precision matters.)
    into `SimulateUserWithConnections`. The main thread loops printing
    ramp progress every `nUsers/10` connections.
 6. **Snapshot publisher**: 1 Hz background task that reads
-   `QueryRunnerStatus`, computes a 5 s rolling QPS and the latency
+   `QueryRunnerStatus`, computes a 5 s rolling QPS and the duration
    percentiles, and writes the result into `SnapshotBox` so polling
    callers (LoadGen's chart, `fdlt_runtime`) see live progress.
 7. **Steady-state**: `Task.WaitAll(userTasks)`. The 60 s

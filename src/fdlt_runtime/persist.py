@@ -137,7 +137,7 @@ def write_run(
     scenario_hash = _scenario_hash(query_hashes)
 
     summary = (run.result_envelope or {}).get("summary", {}) if run.result_envelope else {}
-    lat = summary.get("latency", {}) or {}
+    dur = summary.get("duration", {}) or {}
     run_status = (
         "Aborted" if run.error_envelope is not None
         else ("Cancelled" if run.returncode == 130 else "Completed")
@@ -292,10 +292,10 @@ def write_run(
         Qps=float(summary.get("qps") or 0.0),
         Status=run_status,
         AbortReason=abort_reason,
-        P50Ms=float(lat.get("median") or 0.0),
-        P95Ms=float(lat.get("p95") or 0.0),
-        P99Ms=float(lat.get("p99") or 0.0),
-        MeanMs=float(lat.get("mean") or 0.0),
+        P50Ms=float(dur.get("median") or 0.0),
+        P95Ms=float(dur.get("p95") or 0.0),
+        P99Ms=float(dur.get("p99") or 0.0),
+        MeanMs=float(dur.get("mean") or 0.0),
         RuntimeVersion=runtime_version,
     )])
 

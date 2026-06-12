@@ -109,7 +109,7 @@ def build_run():
     2. **Edit cell 1**: set `TARGET_DATASET` (or leave `None` if there's
        only one semantic model in the workspace).
     3. **Run All.** Cell 3 prints a live status line; cell 4 plots
-       latency / QPS / users / engine CPU.
+       duration / QPS / users / engine CPU.
     4. *(Optional)* set `LAKEHOUSE_NAME` in cell 1 to persist results to
        Delta tables for cross-run analysis.
 
@@ -315,7 +315,7 @@ outcome = fdlt_nb.run(
     # 4. Analyze (charts)
     code(nb, r"""
 # ── 4. Charts ────────────────────────────────────────────────────────────────
-# Latency band + QPS + active-user figure from the per-run CSV.
+# Duration band + QPS + active-user figure from the per-run CSV.
 fdlt_nb.analyze(outcome)
 """)
 

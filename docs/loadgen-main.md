@@ -217,7 +217,7 @@ the quick reference.
 
 ### Panel 1 — Query duration
 
-![Query duration panel](img/chart-latency.png)
+![Query duration panel](img/chart-duration.png)
 
 A blue band (per-bucket min–max) with a mean line and a max line, in
 milliseconds. This is **client-side** wall-clock duration as observed

@@ -24,9 +24,9 @@ namespace FabricDaxLoadTest
         private int _distinctUsers;
 
         // Ring of (timestampTicks, durationMs) for successful queries within
-        // the last LATENCY_WINDOW_SECONDS. Single-thread (snapshot loop)
+        // the last DURATION_WINDOW_SECONDS. Single-thread (snapshot loop)
         // trims the head; producers (user threads) only enqueue. Lock-free.
-        private const int LATENCY_WINDOW_SECONDS = 5;
+        private const int DURATION_WINDOW_SECONDS = 5;
         private readonly ConcurrentQueue<(long Ticks, double DurationMs)> _recentDurations = new();
 
         // All results (kept for BuildStats at the end)
@@ -116,14 +116,14 @@ namespace FabricDaxLoadTest
         }
 
         /// <summary>
-        /// Drain entries older than <see cref="LATENCY_WINDOW_SECONDS"/> from
-        /// the rolling-latency ring and return p50/p95/p99 over what remains.
+        /// Drain entries older than <see cref="DURATION_WINDOW_SECONDS"/> from
+        /// the rolling-duration ring and return p50/p95/p99 over what remains.
         /// Called once per second from the snapshot loop. Returns
         /// (0,0,0,0) when the window is empty.
         /// </summary>
-        public (double P50, double P95, double P99, int Count) ComputeLatencyPercentiles()
+        public (double P50, double P95, double P99, int Count) ComputeDurationPercentiles()
         {
-            long cutoff = DateTime.UtcNow.Ticks - (LATENCY_WINDOW_SECONDS * TimeSpan.TicksPerSecond);
+            long cutoff = DateTime.UtcNow.Ticks - (DURATION_WINDOW_SECONDS * TimeSpan.TicksPerSecond);
             while (_recentDurations.TryPeek(out var head) && head.Ticks < cutoff)
             {
                 _recentDurations.TryDequeue(out _);

@@ -20,23 +20,23 @@ table QueryExecutions
 		lineageTag: d361b3d5-6d38-478c-9f71-c3b31f4ef3a6
 
 	/// Mean client-observed query duration in milliseconds.
-	measure 'Avg Latency (ms)' = AVERAGE(QueryExecutions[ClientDurationMs])
+	measure 'Avg Duration (ms)' = AVERAGE(QueryExecutions[ClientDurationMs])
 		formatString: #,0
 		lineageTag: 0ea1f035-87da-48d5-98f2-ba785052e43c
 
-	measure 'Max Latency (ms)' = MAX(QueryExecutions[ClientDurationMs])
+	measure 'Max Duration (ms)' = MAX(QueryExecutions[ClientDurationMs])
 		formatString: #,0
 		lineageTag: 467db6b0-348a-4028-af97-7f841e4c65d2
 
-	measure 'P50 Latency (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.5)
+	measure 'P50 Duration (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.5)
 		formatString: #,0
 		lineageTag: 3cfae3e2-4c8d-488f-aa40-79927a30a46e
 
-	measure 'P95 Latency (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.95)
+	measure 'P95 Duration (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.95)
 		formatString: #,0
 		lineageTag: 576a3f1e-a664-4201-acbf-f3f89741d657
 
-	measure 'P99 Latency (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.99)
+	measure 'P99 Duration (ms)' = PERCENTILEX.INC(QueryExecutions, QueryExecutions[ClientDurationMs], 0.99)
 		formatString: #,0
 		lineageTag: 914e1f9c-4c0a-4fbf-9469-4e46dbc5b76e
 
@@ -56,11 +56,6 @@ table QueryExecutions
 	measure 'Engine Duration (s)' = DIVIDE(SUM(QueryExecutions[EngineDurationMs]), 1000)
 		formatString: 0.00
 		lineageTag: 4242d79e-269b-47b7-94a2-9a8e4028982a
-
-	/// Total engine CPU in milliseconds. Used as the ranking measure for the Top Queries by CPU visual.
-	measure 'Total Engine CPU (ms)' = SUM(QueryExecutions[EngineCpuMs])
-		formatString: #,0
-		lineageTag: 82947d8f-c861-4f16-b24d-f700909e16ab
 
 	/// Peak concurrent virtual users seen at any point in the current filter context.
 	measure 'Active Users (max)' = MAX(QueryExecutions[ActiveUsersAtStart])

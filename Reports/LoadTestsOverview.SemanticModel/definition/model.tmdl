@@ -18,9 +18,9 @@ annotation PBI_ProTooling = ["DevMode","TMDLView_Desktop","DaxQueryView_Desktop"
 ref table LoadTests
 ref table LoadTestRuns
 ref table Queries
-ref table QueryVisuals
 ref table QueryExecutions
 ref table TraceEvents
+ref table QueryVisuals
 
 ref cultureInfo en-US
 

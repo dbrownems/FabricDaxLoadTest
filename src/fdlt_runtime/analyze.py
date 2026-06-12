@@ -1,4 +1,4 @@
-"""Per-run plotting helpers (latency / QPS / users / CPU)."""
+"""Per-run plotting helpers (duration / QPS / users / CPU)."""
 
 from __future__ import annotations
 
@@ -27,17 +27,17 @@ def _pick_bucket_size_s(duration_s: float, target_buckets: int = 20) -> float:
 
 def plot_run(csv_path: str | Path, *, title: str | None = None,
              trace_csv_path: str | Path | None = None):
-    """Plot bucketed latency band + QPS + active-user count from a LoadGen CSV.
+    """Plot bucketed query-duration band + QPS + active-user count from a LoadGen CSV.
 
     Mirrors the chart that used to live in notebook cell 6: a 3-panel
-    figure where the top panel shows the per-bucket min/max latency band
-    + mean line, the middle stacks success vs error QPS, and the bottom
-    plots active users over time. When ``trace_csv_path`` is supplied
-    and contains ``ExecutionMetrics`` events with CPU data, an additional
-    bottom panel plots **CPU-seconds per second** (i.e. effective
-    parallel CPU consumption) — the most useful single metric for
-    capacity-utilization assessment, since Fabric Capacity CU is just a
-    region/SKU-specific multiplier on engine CPU. Returns the
+    figure where the top panel shows the per-bucket min/max query-duration
+    band + mean line, the middle stacks success vs error QPS, and the
+    bottom plots active users over time. When ``trace_csv_path`` is
+    supplied and contains ``ExecutionMetrics`` events with CPU data, an
+    additional bottom panel plots **CPU-seconds per second** (i.e.
+    effective parallel CPU consumption) — the most useful single metric
+    for capacity-utilization assessment, since Fabric Capacity CU is
+    just a region/SKU-specific multiplier on engine CPU. Returns the
     matplotlib Figure so the caller can save / restyle it. Pandas +
     matplotlib imports are deferred so the wheel can be imported in
     environments without them.
@@ -91,7 +91,7 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
     ax1.plot(agg.time_s, agg.mean_ms, color="steelblue", linewidth=1.5, label="mean")
     ax1.plot(agg.time_s, agg.max_ms, color="coral",
              linewidth=0.8, alpha=0.7, label="max")
-    ax1.set_ylabel("Latency (ms)")
+    ax1.set_ylabel("Duration (ms)")
     ax1.legend(loc="upper left")
     ax1.grid(True, alpha=0.3)
     if title:
@@ -249,7 +249,7 @@ def _cpu_per_second(trace_csv_path, df, duration_s):
     tdf["end_s"] = (tdf["UtcTimestamp"] - t0).dt.total_seconds()
     tdf["start_s"] = tdf["end_s"] - tdf["DurationMs"] / 1000.0
 
-    # Bucket sizing: shared with QPS/latency panels — see _pick_bucket_size_s.
+    # Bucket sizing: shared with QPS/duration panels — see _pick_bucket_size_s.
     # Targets ~20 buckets, snapped to {1, 2, 5, 10, 15, 30, 60, 120, 300, 600}s.
     bucket_size_s = _pick_bucket_size_s(duration_s)
     n_buckets = max(1, int(math.ceil(duration_s / bucket_size_s)))

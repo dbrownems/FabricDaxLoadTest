@@ -1,0 +1,223 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.10.0/schema.json",
+  "name": "4a57bc0e37c42b3077e5",
+  "position": {
+    "x": 0,
+    "y": 261.487758640245,
+    "z": 3,
+    "height": 183.17416595103455,
+    "width": 1279.5644635999806,
+    "tabOrder": 3
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "QueryHash"
+                }
+              },
+              "queryRef": "QueryExecutions.QueryHash",
+              "nativeQueryRef": "QueryHash"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "Engine CPU (s)"
+                }
+              },
+              "queryRef": "QueryExecutions.Engine CPU (s)",
+              "nativeQueryRef": "Engine CPU (s)"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "FE CPU (s)"
+                }
+              },
+              "queryRef": "QueryExecutions.FE CPU (s)",
+              "nativeQueryRef": "FE CPU (s)"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "SE CPU (s)"
+                }
+              },
+              "queryRef": "QueryExecutions.SE CPU (s)",
+              "nativeQueryRef": "SE CPU (s)"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "P50 Duration (ms)"
+                }
+              },
+              "queryRef": "QueryExecutions.P50 Duration (ms)",
+              "nativeQueryRef": "P50 Duration (ms)"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "P95 Duration (ms)"
+                }
+              },
+              "queryRef": "QueryExecutions.P95 Duration (ms)",
+              "nativeQueryRef": "P95 Duration (ms)"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "P99 Duration (ms)"
+                }
+              },
+              "queryRef": "QueryExecutions.P99 Duration (ms)",
+              "nativeQueryRef": "P99 Duration (ms)"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "9e59568e476d36c4004b",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "QueryHash"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "56101ce5351dc659e995",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "FE CPU (s)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "00f9a521592dbe3c9831",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "SE CPU (s)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "090d3ae54c2b538d9d07",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "Engine CPU (s)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "426632a5143a00bdb2eb",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "P50 Duration (ms)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "d4443766d937a6da0b4a",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "P95 Duration (ms)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "c8c9237c47c466b340de",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "P99 Duration (ms)"
+          }
+        },
+        "type": "Advanced"
+      }
+    ]
+  }
+}

@@ -222,10 +222,10 @@ def main() -> int:
         print("=== Results ===")
         print(f"total : {s.get('totalExecutions')}  ok={s.get('successfulExecutions')}  "
               f"err={s.get('failedExecutions')}  qps={s.get('qps')}")
-        lat = s.get("latency", {}) or {}
-        if lat:
-            print(f"latency ms: min={lat.get('min')} median={lat.get('median')} "
-                  f"mean={lat.get('mean')} p95={lat.get('p95')} max={lat.get('max')}")
+        dur = s.get("duration", {}) or {}
+        if dur:
+            print(f"duration ms: min={dur.get('min')} median={dur.get('median')} "
+                  f"mean={dur.get('mean')} p95={dur.get('p95')} max={dur.get('max')}")
 
     return 0
 

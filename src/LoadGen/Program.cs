@@ -475,17 +475,17 @@ class Program
             ["failed"] = s.Failed,
             ["qps"] = Math.Round(s.RollingQps, 2),
             ["inFlight"] = s.InFlight,
-            ["latencyMsP50"] = Math.Round(s.LatencyMsP50, 1),
-            ["latencyMsP95"] = Math.Round(s.LatencyMsP95, 1),
-            ["latencyMsP99"] = Math.Round(s.LatencyMsP99, 1),
-            ["latencySamples"] = s.LatencySamples,
+            ["durationMsP50"] = Math.Round(s.DurationMsP50, 1),
+            ["durationMsP95"] = Math.Round(s.DurationMsP95, 1),
+            ["durationMsP99"] = Math.Round(s.DurationMsP99, 1),
+            ["durationSamples"] = s.DurationSamples,
         });
     }
 
     static void EmitResultEnvelope(string fullResultJson, string resultFilePath)
     {
         // Slim the on-stdout envelope: drop `executions[]` (can be
-        // very large) but keep summary scalars + latency block.
+        // very large) but keep summary scalars + duration block.
         using var doc = JsonDocument.Parse(fullResultJson);
         var root = doc.RootElement;
         var summary = new Dictionary<string, object?>();
@@ -647,16 +647,16 @@ class Program
         Console.WriteLine($"  QPS:          {stats.GetProperty("qps").GetDouble()}");
         Console.WriteLine($"  Max iter:     {stats.GetProperty("maxIteration").GetInt32()}");
 
-        if (stats.TryGetProperty("latency", out var lat))
+        if (stats.TryGetProperty("duration", out var dur))
         {
             Console.WriteLine();
-            Console.WriteLine("  Latency:");
-            Console.WriteLine($"    Min:    {lat.GetProperty("min").GetDouble()}ms");
-            Console.WriteLine($"    Median: {lat.GetProperty("median").GetDouble()}ms");
-            Console.WriteLine($"    Mean:   {lat.GetProperty("mean").GetDouble()}ms");
-            Console.WriteLine($"    P95:    {lat.GetProperty("p95").GetDouble()}ms");
-            Console.WriteLine($"    P99:    {lat.GetProperty("p99").GetDouble()}ms");
-            Console.WriteLine($"    Max:    {lat.GetProperty("max").GetDouble()}ms");
+            Console.WriteLine("  Duration:");
+            Console.WriteLine($"    Min:    {dur.GetProperty("min").GetDouble()}ms");
+            Console.WriteLine($"    Median: {dur.GetProperty("median").GetDouble()}ms");
+            Console.WriteLine($"    Mean:   {dur.GetProperty("mean").GetDouble()}ms");
+            Console.WriteLine($"    P95:    {dur.GetProperty("p95").GetDouble()}ms");
+            Console.WriteLine($"    P99:    {dur.GetProperty("p99").GetDouble()}ms");
+            Console.WriteLine($"    Max:    {dur.GetProperty("max").GetDouble()}ms");
         }
 
         Console.WriteLine();
@@ -674,7 +674,7 @@ class Program
                 var iters = u.GetProperty("iterations").GetInt32();
                 var execs = u.GetProperty("executions").GetInt32();
                 var errs = u.GetProperty("errors").GetInt32();
-                var avgMs = u.GetProperty("meanLatencyMs").GetDouble();
+                var avgMs = u.GetProperty("meanDurationMs").GetDouble();
                 Console.WriteLine($"    {email,-35} iters={iters,-4} execs={execs,-5} errs={errs,-3} avg={avgMs}ms");
             }
         }

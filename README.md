@@ -21,7 +21,7 @@ The minimal end-to-end flow, assuming you already have a Power BI semantic model
    - In cell 1, set `TARGET_DATASET` to the semantic model you want to hit (or leave `None` if the workspace has exactly one model). Defaults are 25 users for 60 s — see [`docs/loadgen-main.md`](docs/loadgen-main.md) to tune the load shape.
    - **Run All**.
 
-Cell 4 plots latency / QPS / users / engine CPU for this Run, read straight from the per-run CSV on the Spark driver — **no lakehouse required**.
+Cell 4 plots query duration / QPS / users / engine CPU for this Run, read straight from the per-run CSV on the Spark driver — **no lakehouse required**.
 
 > **Want to capture results across runs?** Set `LAKEHOUSE_NAME` in cell 1 to opt in to writing 6 Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) keyed so multiple runs land side-by-side and can be queried as a Direct Lake source for cross-run dashboards. Without it, the forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the driver and disappear at session end. The optional [`scripts/Deploy-LoadTests.ps1`](#setup) provisions a `LoadTests` lakehouse for you and pre-bakes cell 1.
 
@@ -48,7 +48,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows). `QueryVisuals` is populated from the Performance Analyzer JSON (Visual Container Lifecycle → Execute DAX Query pairing) so dashboards can break down latency/CPU by visual title and type.
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows). `QueryVisuals` is populated from the Performance Analyzer JSON (Visual Container Lifecycle → Execute DAX Query pairing) so dashboards can break down query duration/CPU by visual title and type.
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
@@ -154,7 +154,7 @@ The deployed `LoadTest - Main` notebook is meant to be **edited and run directly
 
    See [`docs/loadgen-main.md`](docs/loadgen-main.md) for every other parameter (load-shape advanced knobs, RLS users, BYO lakehouse, schema override, log folder, runtime wheel, etc.).
 4. **Run All.** Cell 3 prints a live status line every second while LoadGen runs; press **Interrupt Kernel** (■) to cancel — the subprocess receives SIGINT and drains cleanly. When the run completes, cell 3 writes the Run into the six Delta tables. Every Run-All mints a fresh `RunId`, so prior Runs are preserved untouched. Re-executing **only cell 3** (after a completed run) is also safe — it deletes and rewrites just that one `RunId`'s fact rows.
-5. **Cell 4** plots latency / QPS / users / engine CPU for the Run that just completed, straight from the per-run CSV. See [**Reading the charts**](docs/loadgen-main.md#reading-the-charts-cell-4) for what each panel means and how to interpret it.
+5. **Cell 4** plots query duration / QPS / users / engine CPU for the Run that just completed, straight from the per-run CSV. See [**Reading the charts**](docs/loadgen-main.md#reading-the-charts-cell-4) for what each panel means and how to interpret it.
 
 After the Run, the Delta tables are queryable as a Direct Lake source — point a semantic model + Power BI report at them for cross-Run analysis.
 

@@ -70,7 +70,7 @@ For real measurements, see *How long should the test run?* below.
 
 ### 3. Analyze
 
-Cell 4 plots four charts (latency, throughput, active users, engine CPU)
+Cell 4 plots four charts (query duration, throughput, active users, engine CPU)
 straight from the per-run telemetry. If you opted into a lakehouse, the
 same data lands in six Delta tables for cross-Run dashboards. See
 *Reading the charts* below.
@@ -102,7 +102,7 @@ You typically know this from one of:
 - "It's a Monday-morning report and we have ~200 people on at 9am" rule of thumb
 
 When in doubt, sweep — run the test at 25, 50, 100, 200 concurrent users
-and look at where latency starts to degrade.
+and look at where query duration starts to degrade.
 
 ### Ramp time
 
@@ -154,21 +154,21 @@ Cell 4 produces a stacked figure with four panels sharing one time axis.
 All four panels read off the same per-Run CSV — they are *exactly* what
 the simulated users experienced.
 
-### Panel 1 — Query duration (latency)
+### Panel 1 — Query duration
 
-![Query duration panel — blue min/max band with mean and max lines](img/chart-latency.png)
+![Query duration panel — blue min/max band with mean and max lines](img/chart-duration.png)
 
 A blue band showing **min / max** query duration per time bucket, a
 **mean** line, and a **max** line. Y-axis is milliseconds.
 
 What to look for:
-- During ramp: latency typically rises as more users queue against the
-  engine. After the ramp, it should flatten into a steady state.
-- A widening band (max far above mean) means **tail latency** —
-  users-of-the-hour are still getting the responses they want, but a
+- During ramp: query duration typically rises as more users queue against
+  the engine. After the ramp, it should flatten into a steady state.
+- A widening band (max far above mean) means **tail durations** —
+  most users are still getting the responses they want, but a
   fraction are waiting much longer. This is usually queueing or memory
   pressure.
-- Latency that keeps rising past the ramp is a saturation signal — the
+- Durations that keep rising past the ramp is a saturation signal — the
   engine can't keep up with the offered load and the queue is growing
   without bound. The throughput panel will show a flat ceiling at the
   same time.
@@ -224,7 +224,7 @@ What to look for:
   steady-state load.
 - A plateau much lower than your capacity's CPU budget means there's
   headroom; users could go higher.
-- A plateau that is suspiciously flat *with* growing latency means the
+- A plateau that is suspiciously flat *with* growing query duration means the
   engine is throttled or memory-bound — CPU is no longer the bottleneck.
 - If throttling occurred, an **orange line** appears on a secondary axis
   showing throttle-seconds-per-second (queued time). Any orange means
@@ -236,7 +236,7 @@ The throttled run above shows the classic signature: CPU plateaus at
 ~13 CPUs for the first ~225 seconds, then the orange throttle line
 shoots up to 60+ queued-seconds-per-second while the CPU bars collapse
 to ~3 — the engine isn't doing less work because the model got faster,
-it's doing less because the capacity is making queries wait. Latency
+it's doing less because the capacity is making queries wait. Query duration
 in panel 1 for the same run will balloon at that point. The legend
 reports total queued seconds (`total=3600s` here) so you can see the
 aggregate user-perceived delay.
@@ -294,7 +294,7 @@ Linear extrapolation works only inside the regime where the engine
 isn't saturated. If your 100-user run drove 5 CPUs and your 200-user
 run drove 9, the relationship is roughly linear and you can extrapolate
 to 300. If your 100-user run drove 5 and your 200-user run drove 6
-*with sharply rising latency*, the engine is queueing — you're seeing
+*with sharply rising query duration*, the engine is queueing — you're seeing
 saturation, not capacity, and adding users will hurt the user
 experience without burning much more CPU. **Always run two or three
 concurrency levels** before quoting a capacity-cost number.
@@ -305,10 +305,10 @@ concurrency levels** before quoting a capacity-cost number.
 
 A healthy load test (engine has headroom, capacity has headroom):
 
-- Latency band ramps up during the warm-up, plateaus during steady state,
+- Duration band ramps up during the warm-up, plateaus during steady state,
   and the P99 line stays close to the mean.
 - Throughput climbs linearly with active users and plateaus at a
-  level that is *predicted* by single-user latency × concurrent users.
+  level that is *predicted* by single-user duration × concurrent users.
 - Engine CPU plateaus well below the capacity's CPU budget; no orange
   throttle line.
 - Capacity Metrics App, 30 minutes later, shows < 50% of CU budget for
@@ -316,7 +316,7 @@ A healthy load test (engine has headroom, capacity has headroom):
 
 A load test of a **saturated** engine looks like:
 
-- Latency keeps rising past the ramp; max line diverges from mean.
+- Query duration keeps rising past the ramp; max line diverges from mean.
 - Throughput plateaus (or worse, dips) while users are still ramping.
 - Errors appear in the QPS panel.
 - CPU plateaus or starts dipping while users are still ramping —
@@ -345,7 +345,7 @@ can carry production load.
 - **Cold vs. warm.** First Run on a freshly-attached model includes
   cold-start cost. Re-run immediately for warm numbers. The tool's
   pre-warm connection isolates session startup from your measured query
-  latency, but not engine cache state.
+  query duration, but not engine cache state.
 
 ---
 

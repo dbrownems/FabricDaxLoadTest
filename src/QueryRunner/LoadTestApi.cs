@@ -132,15 +132,15 @@ namespace FabricDaxLoadTest
         public int InFlight { get; init; }
 
         /// <summary>
-        /// Latency percentiles in milliseconds over the last ~5 seconds of
-        /// successful queries. 0 when the window is empty.
+        /// Query duration percentiles in milliseconds over the last ~5 seconds
+        /// of successful queries. 0 when the window is empty.
         /// </summary>
-        public double LatencyMsP50 { get; init; }
-        public double LatencyMsP95 { get; init; }
-        public double LatencyMsP99 { get; init; }
+        public double DurationMsP50 { get; init; }
+        public double DurationMsP95 { get; init; }
+        public double DurationMsP99 { get; init; }
 
         /// <summary>Sample count behind the percentile numbers (last ~5s).</summary>
-        public int LatencySamples { get; init; }
+        public int DurationSamples { get; init; }
     }
 
     /// <summary>

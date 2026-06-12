@@ -479,24 +479,24 @@ def _print_run_banner(rr: RunResult, run_dest: str) -> None:
 
     if rr.result_envelope is not None:
         s = rr.result_envelope.get("summary", {}) or {}
-        lat = s.get("latency", {}) or {}
+        dur = s.get("duration", {}) or {}
         print()
         print("=== Results ===")
         print(f"Total executions : {s.get('totalExecutions')}")
         print(f"Successful       : {s.get('successfulExecutions')}")
         print(f"Failed           : {s.get('failedExecutions')}")
         print(f"QPS              : {s.get('qps')}")
-        if lat:
-            print(f"Latency (ms)     : min={lat.get('min')}  "
-                  f"median={lat.get('median')}  mean={lat.get('mean')}  "
-                  f"p95={lat.get('p95')}  p99={lat.get('p99')}  "
-                  f"max={lat.get('max')}")
+        if dur:
+            print(f"Duration (ms)    : min={dur.get('min')}  "
+                  f"median={dur.get('median')}  mean={dur.get('mean')}  "
+                  f"p95={dur.get('p95')}  p99={dur.get('p99')}  "
+                  f"max={dur.get('max')}")
         print(f"\nFull result      : {rr.result_envelope.get('resultFile')}")
         print(f"Run artifacts    : {run_dest}")
 
 
 def analyze(outcome: RunOutcome) -> Any:
-    """Render the latency/QPS/active-users figure for a finished run."""
+    """Render the duration/QPS/active-users figure for a finished run."""
     from .analyze import plot_run
 
     fig = plot_run(

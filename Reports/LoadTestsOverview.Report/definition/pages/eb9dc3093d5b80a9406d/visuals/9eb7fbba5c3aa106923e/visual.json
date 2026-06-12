@@ -1,0 +1,106 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.10.0/schema.json",
+  "name": "9eb7fbba5c3aa106923e",
+  "position": {
+    "x": 706.14968323152459,
+    "y": 0,
+    "z": 2,
+    "height": 217.68524069543238,
+    "width": 573.414780368456,
+    "tabOrder": 2
+  },
+  "visual": {
+    "visualType": "barChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "QueryHash"
+                }
+              },
+              "queryRef": "QueryExecutions.QueryHash",
+              "nativeQueryRef": "QueryHash",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "QueryExecutions"
+                    }
+                  },
+                  "Property": "Engine CPU (s)"
+                }
+              },
+              "queryRef": "QueryExecutions.Engine CPU (s)",
+              "nativeQueryRef": "Engine CPU (s)"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "QueryExecutions"
+                  }
+                },
+                "Property": "Engine CPU (s)"
+              }
+            },
+            "direction": "Descending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    }
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "049723b248705b3db3b9",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "QueryHash"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "bd9fa2731e9bc5145285",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "QueryExecutions"
+              }
+            },
+            "Property": "Engine CPU (s)"
+          }
+        },
+        "type": "Advanced"
+      }
+    ]
+  }
+}

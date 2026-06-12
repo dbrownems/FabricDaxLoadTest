@@ -1,0 +1,167 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.10.0/schema.json",
+  "name": "25c4ec00a18ec0b239ca",
+  "position": {
+    "x": 242.9048722394154,
+    "y": 0,
+    "z": 1,
+    "height": 217.68524069543238,
+    "width": 451.29866973443296,
+    "tabOrder": 1
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "LoadTestRuns"
+                    }
+                  },
+                  "Property": "RunId"
+                }
+              },
+              "queryRef": "LoadTestRuns.RunId",
+              "nativeQueryRef": "RunId"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "LoadTestRuns"
+                    }
+                  },
+                  "Property": "StartedAtUtc"
+                }
+              },
+              "queryRef": "LoadTestRuns.StartedAtUtc",
+              "nativeQueryRef": "StartedAtUtc"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "LoadTestRuns"
+                    }
+                  },
+                  "Property": "UserCount"
+                }
+              },
+              "queryRef": "LoadTestRuns.UserCount",
+              "nativeQueryRef": "UserCount"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "LoadTestRuns"
+                    }
+                  },
+                  "Property": "TotalQueries"
+                }
+              },
+              "queryRef": "LoadTestRuns.TotalQueries",
+              "nativeQueryRef": "TotalQueries"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "LoadTestRuns"
+                    }
+                  },
+                  "Property": "Run QPS"
+                }
+              },
+              "queryRef": "LoadTestRuns.Run QPS",
+              "nativeQueryRef": "Run QPS"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "dc9b64154662c3cd2661",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "LoadTestRuns"
+              }
+            },
+            "Property": "RunId"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "d489dc76936cc4d34719",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "LoadTestRuns"
+              }
+            },
+            "Property": "StartedAtUtc"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "42cc281c7619025cbcdb",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "LoadTestRuns"
+              }
+            },
+            "Property": "UserCount"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "b0512544ee94b0763891",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "LoadTestRuns"
+              }
+            },
+            "Property": "TotalQueries"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "40c0f768589a5b24e702",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "LoadTestRuns"
+              }
+            },
+            "Property": "Run QPS"
+          }
+        },
+        "type": "Advanced"
+      }
+    ]
+  }
+}
