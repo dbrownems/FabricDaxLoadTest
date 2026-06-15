@@ -137,7 +137,7 @@ def write_run(
     from pyspark.sql import Row
     from pyspark.sql.types import (
         StructType, StructField, StringType, IntegerType, LongType,
-        DoubleType, TimestampType,
+        DoubleType, TimestampType, BooleanType,
     )
     from delta.tables import DeltaTable
 
@@ -261,6 +261,22 @@ def write_run(
     # Ref: https://milescole.dev/data-engineering/2024/04/26/Fabric-Concurrency-Showdown-RunMultiple-vs-ThreadPool.html
 
     # LoadTests --------------------------------------------------------------
+    load_tests_schema = StructType([
+        StructField("LoadTestId",      StringType(),    False),
+        StructField("Name",            StringType(),    True),
+        StructField("WorkspaceId",     StringType(),    True),
+        StructField("WorkspaceName",   StringType(),    True),
+        StructField("NotebookId",      StringType(),    True),
+        StructField("NotebookName",    StringType(),    True),
+        StructField("TargetWorkspace", StringType(),    True),
+        StructField("TargetDataset",   StringType(),    True),
+        StructField("SourceType",      StringType(),    True),
+        StructField("QueryCount",      IntegerType(),   True),
+        StructField("ScenarioHash",    StringType(),    True),
+        StructField("LastRunAtUtc",    TimestampType(), True),
+        StructField("LastRunId",       StringType(),    True),
+        StructField("Status",          StringType(),    True),
+    ])
     load_tests_df = spark.createDataFrame([Row(
         LoadTestId=load_test_id,
         Name=load_test_name,
@@ -276,7 +292,7 @@ def write_run(
         LastRunAtUtc=started_at,
         LastRunId=run_id,
         Status="Active",
-    )])
+    )], schema=load_tests_schema)
 
     # LoadTestRuns -----------------------------------------------------------
     # RunName = "<LoadTestName>-NN" where NN = ROW_NUMBER() OVER
@@ -298,6 +314,39 @@ def write_run(
         run_seq = prior + 1
     run_name = f"{load_test_name}-{run_seq:02d}"
 
+    runs_schema = StructType([
+        StructField("RunId",                    StringType(),    False),
+        StructField("LoadTestId",               StringType(),    False),
+        StructField("RunName",                  StringType(),    True),
+        StructField("OwnerType",                StringType(),    True),
+        StructField("OwnerId",                  StringType(),    True),
+        StructField("OwnerKey",                 StringType(),    True),
+        StructField("ScenarioHash",             StringType(),    True),
+        StructField("StartedAtUtc",             TimestampType(), True),
+        StructField("EndedAtUtc",               TimestampType(), True),
+        StructField("TargetWorkspace",          StringType(),    True),
+        StructField("TargetDataset",            StringType(),    True),
+        StructField("XmlaEndpoint",             StringType(),    True),
+        StructField("Replica",                  StringType(),    True),
+        StructField("UserCount",                IntegerType(),   True),
+        StructField("DurationSec",              IntegerType(),   True),
+        StructField("RampSec",                  IntegerType(),   True),
+        StructField("ConcurrentQueriesPerUser", IntegerType(),   True),
+        StructField("PauseIterMs",              IntegerType(),   True),
+        StructField("PauseQueryMs",             IntegerType(),   True),
+        StructField("SkipResults",              BooleanType(),   True),
+        StructField("TotalQueries",             IntegerType(),   True),
+        StructField("SuccessfulQueries",        IntegerType(),   True),
+        StructField("FailedQueries",            IntegerType(),   True),
+        StructField("Qps",                      DoubleType(),    True),
+        StructField("Status",                   StringType(),    True),
+        StructField("AbortReason",              StringType(),    True),
+        StructField("P50Ms",                    DoubleType(),    True),
+        StructField("P95Ms",                    DoubleType(),    True),
+        StructField("P99Ms",                    DoubleType(),    True),
+        StructField("MeanMs",                   DoubleType(),    True),
+        StructField("RuntimeVersion",           StringType(),    True),
+    ])
     runs_df = spark.createDataFrame([Row(
         RunId=run_id,
         LoadTestId=load_test_id,
@@ -326,13 +375,13 @@ def write_run(
                           (int((df["Outcome"] == "Error").sum()) if len(df) else 0)),
         Qps=float(summary.get("qps") or 0.0),
         Status=run_status,
-        AbortReason=abort_reason,
+        AbortReason=_nstr(abort_reason),
         P50Ms=float(dur.get("median") or 0.0),
         P95Ms=float(dur.get("p95") or 0.0),
         P99Ms=float(dur.get("p99") or 0.0),
         MeanMs=float(dur.get("mean") or 0.0),
         RuntimeVersion=runtime_version,
-    )])
+    )], schema=runs_schema)
 
     # LoadTestQueries table dropped — QueryText, QueryShapeHash live in
     # the global `Queries` dim (keyed by QueryHash). QueryExecutions
@@ -343,7 +392,14 @@ def write_run(
         QueryText=queries[i],
         FirstSeenAtUtc=started_at,
     ) for i in range(len(queries))]
-    queries_dim_df = (spark.createDataFrame(queries_dim_rows).dropDuplicates(["QueryHash"])
+    queries_dim_schema = StructType([
+        StructField("QueryHash",      StringType(),    False),
+        StructField("QueryShapeHash", StringType(),    True),
+        StructField("QueryText",      StringType(),    True),
+        StructField("FirstSeenAtUtc", TimestampType(), True),
+    ])
+    queries_dim_df = (spark.createDataFrame(queries_dim_rows, schema=queries_dim_schema)
+                      .dropDuplicates(["QueryHash"])
                       if queries_dim_rows else None)
 
     # QueryVisuals -----------------------------------------------------------
