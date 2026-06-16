@@ -212,18 +212,6 @@ WHEEL_URL = "{WHEEL_URL_DEFAULT}"
 # is the entire deploy. WHEEL_URL is set in cell 1 — to upgrade, edit
 # the version there and Run-All.
 
-# The sentinel literal is constructed at runtime so the WHEEL_URL line
-# in cell 1 is the *only* occurrence of the literal in the notebook source.
-# That lets scripts/Deploy-LoadTests.ps1 do a blunt string-replace
-# without nuking the comparison value too.
-_SENTINEL = "REPLACE_ME" + "_WITH_WHEEL_URL"
-if WHEEL_URL == _SENTINEL:
-    raise RuntimeError(
-        "Cell 1: WHEEL_URL was not patched. Either re-run the GitHub "
-        "release workflow (sets FDLT_RELEASE_VERSION env var), run "
-        "scripts/Deploy-LoadTests.ps1 (patches the URL to the locally "
-        "uploaded wheel), or paste a release wheel URL by hand.")
-
 import importlib, json, os, subprocess, sys, urllib.request
 import notebookutils
 
