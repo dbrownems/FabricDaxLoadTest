@@ -182,22 +182,31 @@ def run(
     def _read_abfss(path: str) -> str:
         """Read a OneLake abfss:// file as text, full contents.
 
-        Uses Spark's ``read.text(..., wholetext=True)`` because
+        Uses ``notebookutils.fs.cp`` to copy into the local /tmp
+        filesystem, then reads it with built-in ``open()``.
         ``notebookutils.fs.head`` has an internal ~100 KB cap that
         ignores its ``max_bytes`` argument — large trace JSONL files
         get silently truncated mid-line, producing fewer (or zero)
-        queries with no error. Spark handles abfss auth via the
-        session's AAD token, same as ``fs.head`` would.
+        queries with no error. ``cp`` has no such cap.
         """
-        s = spark
-        if s is None:
-            from pyspark.sql import SparkSession  # type: ignore
-            s = SparkSession.builder.getOrCreate()
-        df = s.read.text(path, wholetext=True)
-        rows = df.collect()
-        if not rows:
-            raise RuntimeError(f"Read 0 rows from {path!r}")
-        return rows[0][0]
+        import os as _os
+        import tempfile as _tempfile
+        import uuid as _uuid
+
+        suffix = _os.path.splitext(path)[1] or ".bin"
+        local = _os.path.join(
+            _tempfile.gettempdir(),
+            f"fdlt-read-{_uuid.uuid4().hex}{suffix}",
+        )
+        try:
+            notebookutils.fs.cp(path, "file:" + local, recurse=False)
+            with open(local, "r", encoding="utf-8") as f:
+                return f.read()
+        finally:
+            try:
+                _os.remove(local)
+            except OSError:
+                pass
 
     queries, query_visuals, q_src = load_queries(
         queries_file, queries_inline or [], read_abfss=_read_abfss)
