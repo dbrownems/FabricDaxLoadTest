@@ -177,7 +177,7 @@ The runner loads queries from one of these sources, in order:
 
 1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` or `*.jsonl` is attached to the notebook's **Resources** panel — that file is auto-discovered.
 2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — loads `builtin/<name>` from Resources.
-3. `QUERIES_FILE = "abfss://…"` or `"https://…dfs.fabric.microsoft.com/…"` — point at any OneLake file directly (cross-lakehouse / cross-workspace escape hatch). The notebook reads it via `notebookutils.fs.head`.
+3. `QUERIES_FILE = "abfss://…"` — point at any OneLake file directly (cross-lakehouse / cross-workspace escape hatch). The notebook reads it via `notebookutils.fs.head`. The `https://…dfs.fabric…` form is **not** supported (raises a clear error with the abfss equivalent) — `notebookutils.fs.head` returns HTTP 401 against https URLs.
 4. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the notebook ships with).
 
 A non-empty `QUERIES_FILE` that doesn't resolve raises `FileNotFoundError` rather than silently falling through to `QUERIES_INLINE`, so a typo'd URL or an unattached resource fails loud.

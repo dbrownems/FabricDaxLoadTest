@@ -126,9 +126,9 @@ The runner resolves the scenario in this order:
    to the notebook's *Resources* panel — that file is auto-discovered.
 2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — load `builtin/<name>` from
    Resources.
-3. `QUERIES_FILE = "abfss://…"` or `"https://…dfs.fabric.microsoft.com/…"`
-   — point at any OneLake file directly (cross-lakehouse / cross-
-   workspace escape hatch).
+3. `QUERIES_FILE = "abfss://…"` — cross-lakehouse / cross-workspace
+   escape hatch. The `https://…dfs.fabric…` form is **not** supported
+   (raises with the abfss equivalent).
 4. Nothing matches → fall back to `QUERIES_INLINE`.
 
 A non-empty `QUERIES_FILE` that doesn't resolve raises

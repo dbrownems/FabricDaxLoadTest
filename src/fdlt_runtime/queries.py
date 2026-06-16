@@ -2,9 +2,12 @@
 
 Resolution order for a given ``queries_file`` / ``users_file``:
 
-  1. ``"abfss://..."`` or ``"https://*.dfs.fabric.microsoft.com/..."`` —
-     OneLake URL (read via the caller-supplied ``read_abfss`` callback;
-     in the notebook that's ``notebookutils.fs.head``).
+  1. ``"abfss://..."`` — OneLake URL (read via the caller-supplied
+     ``read_abfss`` callback; in the notebook that's
+     ``notebookutils.fs.head``). The ``https://...dfs.fabric...`` form
+     is **not** supported — ``notebookutils.fs.head`` cannot
+     authenticate against it (returns HTTP 401). If passed, the
+     resolver raises ``ValueError`` with the abfss equivalent.
   2. ``"name.json"`` / ``"name.jsonl"`` — load ``builtin/<name>`` from
      the kernel CWD (the Fabric notebook Resources panel is mounted
      there).
@@ -37,9 +40,12 @@ from typing import Any, Callable, Iterable
 ReadAbfss = Callable[[str], str]
 
 # Schemes we delegate to the `read_abfss` callback (notebookutils.fs.head).
-# Both abfss:// and https:// OneLake DFS forms are accepted — they point at
-# the same backend; abfss is the AS-friendly form, https is what the OneLake
-# UI shows in "Copy URL".
+# Only abfss:// is accepted because that's the only OneLake URL form
+# notebookutils.fs.head authenticates against. The https://...dfs.fabric...
+# form returns HTTP 401 because Hadoop's HttpsFileSystem just does an
+# unauthenticated GET. We accept https in the resolver so we can raise a
+# crisp error with the abfss equivalent, instead of letting py4j surface
+# a stack-traced 401 from the JVM.
 _REMOTE_PREFIXES = ("abfss://", "https://", "http://")
 
 
@@ -47,11 +53,44 @@ def _is_remote_url(s: str) -> bool:
     return s.startswith(_REMOTE_PREFIXES)
 
 
+def _https_to_abfss_hint(url: str) -> str:
+    """Best-effort https://onelake → abfss:// conversion for an error msg.
+
+    Input:  https://<host>.dfs.fabric.microsoft.com/<workspace>/<item>/<path>
+    Output: abfss://<workspace>@<host>.dfs.fabric.microsoft.com/<item>/<path>
+
+    Returns an empty string if the URL doesn't fit the OneLake DFS shape.
+    """
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(url)
+        host = u.netloc
+        if not host.endswith(".dfs.fabric.microsoft.com"):
+            return ""
+        parts = u.path.lstrip("/").split("/", 2)
+        if len(parts) < 3:
+            return ""
+        workspace, item, rest = parts
+        return f"abfss://{workspace}@{host}/{item}/{rest}"
+    except Exception:
+        return ""
+
+
 def _read_text(path: str, read_abfss: ReadAbfss | None) -> str:
-    if _is_remote_url(path):
+    if path.startswith(("https://", "http://")):
+        hint = _https_to_abfss_hint(path)
+        msg = (
+            f"OneLake URL {path!r} uses the https:// form, which "
+            "notebookutils.fs.head cannot authenticate against (returns "
+            "HTTP 401). Use the abfss:// form instead."
+        )
+        if hint:
+            msg += f"\n  Try: QUERIES_FILE = {hint!r}"
+        raise ValueError(msg)
+    if path.startswith("abfss://"):
         if read_abfss is None:
             raise RuntimeError(
-                f"Remote URL {path!r} supplied but no `read_abfss` reader "
+                f"abfss:// URL {path!r} supplied but no `read_abfss` reader "
                 "provided. Pass notebookutils.fs.head (or a wrapper) into "
                 "load_queries / load_users."
             )
