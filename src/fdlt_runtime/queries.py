@@ -1,17 +1,22 @@
 """Query and user scenario loading.
 
-Resolution order for a given filename:
+Resolution order for a given ``queries_file`` / ``users_file``:
 
-  1. ``"abfss://..."`` — literal lakehouse URL (read via the caller-
-     supplied ``read_abfss`` callback, or ``open()`` if it happens to
-     resolve as a regular path).
+  1. ``"abfss://..."`` or ``"https://*.dfs.fabric.microsoft.com/..."`` —
+     OneLake URL (read via the caller-supplied ``read_abfss`` callback;
+     in the notebook that's ``notebookutils.fs.head``).
   2. ``"name.json"`` / ``"name.jsonl"`` — load ``builtin/<name>`` from
      the kernel CWD (the Fabric notebook Resources panel is mounted
      there).
   3. ``None`` — auto-discover: if exactly one ``*.json`` or ``*.jsonl``
      file is present under ``builtin/``, use it. Auto-discovery applies
      to **queries only**; users must always be named explicitly.
-  4. Nothing matches — caller falls back to its inline default.
+  4. None of the above and ``queries_file`` / ``users_file`` is empty
+     → caller falls back to its inline default.
+
+A non-empty ``queries_file`` that fails to resolve raises
+``FileNotFoundError`` rather than silently falling through to inline,
+so a typo'd URL or a not-yet-attached resource is loud.
 
 Supported queries shapes:
 
@@ -31,13 +36,24 @@ from typing import Any, Callable, Iterable
 
 ReadAbfss = Callable[[str], str]
 
+# Schemes we delegate to the `read_abfss` callback (notebookutils.fs.head).
+# Both abfss:// and https:// OneLake DFS forms are accepted — they point at
+# the same backend; abfss is the AS-friendly form, https is what the OneLake
+# UI shows in "Copy URL".
+_REMOTE_PREFIXES = ("abfss://", "https://", "http://")
+
+
+def _is_remote_url(s: str) -> bool:
+    return s.startswith(_REMOTE_PREFIXES)
+
 
 def _read_text(path: str, read_abfss: ReadAbfss | None) -> str:
-    if path.startswith("abfss://"):
+    if _is_remote_url(path):
         if read_abfss is None:
             raise RuntimeError(
-                "abfss:// path supplied but no `read_abfss` reader provided. "
-                "Pass notebookutils.fs.head (or a wrapper) into load_queries / load_users."
+                f"Remote URL {path!r} supplied but no `read_abfss` reader "
+                "provided. Pass notebookutils.fs.head (or a wrapper) into "
+                "load_queries / load_users."
             )
         return read_abfss(path)
     with open(path, "r", encoding="utf-8") as f:
@@ -307,7 +323,7 @@ def normalize_users(raw_json: str) -> list[dict[str, str]]:
 
 
 def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[str | None, str]:
-    if isinstance(name, str) and name.startswith("abfss://"):
+    if isinstance(name, str) and _is_remote_url(name):
         return name, name
     if isinstance(name, str) and name.strip():
         p = f"builtin/{name.lstrip('/')}"
@@ -321,6 +337,15 @@ def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[s
             p = f"builtin/{candidates[0]}"
             return p, f"resources:{p} (auto-discovered)"
     return None, "(no resource)"
+
+
+def _raise_unresolved(kind: str, name: str) -> None:
+    raise FileNotFoundError(
+        f"{kind}_file={name!r} did not resolve to a readable path. "
+        "Expected one of: a filename present on the notebook's Resources "
+        "panel (e.g. 'queries.jsonl'), an abfss://... URL, or an "
+        "https://*.dfs.fabric.microsoft.com/... OneLake URL."
+    )
 
 
 def load_queries(
@@ -337,6 +362,10 @@ def load_queries(
     or ``None`` when the source has no visual binding.
     ``source_label`` is a short human-readable description suitable for
     printing in the notebook.
+
+    Raises ``FileNotFoundError`` when ``queries_file`` is a non-empty
+    string that doesn't resolve to a readable path — the inline fallback
+    only kicks in when no ``queries_file`` was supplied.
     """
     p, src = _resolve_resource(queries_file, allow_auto_discover=True)
     if p is not None:
@@ -346,6 +375,8 @@ def load_queries(
         else:
             queries, visuals = normalize_queries_with_visuals(text)
         return queries, visuals, src
+    if isinstance(queries_file, str) and queries_file.strip():
+        _raise_unresolved("queries", queries_file)
     qs = [str(q) for q in queries_inline]
     return qs, [None] * len(qs), "(QUERIES_INLINE fallback)"
 
@@ -359,6 +390,8 @@ def load_users(
     p, src = _resolve_resource(users_file, allow_auto_discover=False)
     if p is not None:
         return normalize_users(_read_text(p, read_abfss)), src
+    if isinstance(users_file, str) and users_file.strip():
+        _raise_unresolved("users", users_file)
     inline = list(users_inline)
     if inline:
         return normalize_users(json.dumps(inline)), "(USERS_INLINE)"
