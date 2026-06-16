@@ -187,7 +187,7 @@ def run(
     print(f"Queries   : {len(queries)}  from {q_src}")
     if q_src.startswith("(QUERIES_INLINE"):
         print("          ⚠ no resource file attached — using fallback queries only.")
-        print("          Drop a Performance Analyzer .json onto Resources for a real test.")
+        print("          Drop a Performance Analyzer .json or trace .jsonl onto Resources for a real test.")
     bound_visuals = sum(1 for v in query_visuals if v is not None)
     if bound_visuals:
         print(f"Visuals   : {bound_visuals}/{len(queries)} queries bound to a Power BI visual")

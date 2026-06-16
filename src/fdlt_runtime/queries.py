@@ -5,12 +5,22 @@ Resolution order for a given filename:
   1. ``"abfss://..."`` — literal lakehouse URL (read via the caller-
      supplied ``read_abfss`` callback, or ``open()`` if it happens to
      resolve as a regular path).
-  2. ``"name.json"`` — load ``builtin/name.json`` from the kernel CWD
-     (the Fabric notebook Resources panel is mounted there).
-  3. ``None`` — auto-discover: if exactly one ``*.json`` file is present
-     under ``builtin/``, use it. Auto-discovery applies to **queries
-     only**; users must always be named explicitly.
+  2. ``"name.json"`` / ``"name.jsonl"`` — load ``builtin/<name>`` from
+     the kernel CWD (the Fabric notebook Resources panel is mounted
+     there).
+  3. ``None`` — auto-discover: if exactly one ``*.json`` or ``*.jsonl``
+     file is present under ``builtin/``, use it. Auto-discovery applies
+     to **queries only**; users must always be named explicitly.
   4. Nothing matches — caller falls back to its inline default.
+
+Supported queries shapes:
+
+  * ``.json`` — Power BI Performance Analyzer export, object array, or
+    plain string array. See :func:`normalize_queries_with_visuals`.
+  * ``.jsonl`` — Profiler / SSAS trace export with one event per line:
+    ``{"eventClass":"QueryEnd","cols":{"TextData":"<dax>"}}``. Only
+    ``QueryEnd`` events contribute; other event classes are ignored.
+    See :func:`normalize_queries_jsonl`.
 """
 
 from __future__ import annotations
@@ -177,6 +187,71 @@ def normalize_queries_with_visuals(
     raise ValueError("Unrecognized queries.json shape (expected list or {events: [...]})")
 
 
+def normalize_queries_jsonl(raw_text: str) -> tuple[list[str], list[dict[str, str] | None]]:
+    """Parse a Profiler / SSAS trace JSONL export into ``(queries, visuals)``.
+
+    Each non-blank line must be a JSON object of the shape::
+
+        {"eventClass": "QueryEnd", "cols": {"TextData": "<dax>"}}
+
+    Only events whose ``eventClass`` is ``"QueryEnd"`` (case-insensitive)
+    contribute a query. Other event classes (``QueryBegin``,
+    ``VertiPaqSEQueryEnd``, ``ExecutionMetrics``, etc.) are silently
+    ignored — they may share the same ``TextData`` as the matching
+    ``QueryEnd`` and would produce duplicates. ``cols.TextData`` is
+    accepted case-insensitively (``textData`` works too).
+
+    Trace JSONL files don't carry per-query visual metadata, so the
+    returned visuals list is all ``None`` (parallel to ``queries``).
+
+    Tolerates a leading UTF-8 BOM, blank lines, and trailing whitespace.
+    """
+    queries: list[str] = []
+    end_event_count = 0
+    bad_lines = 0
+    for raw_line in raw_text.lstrip("\ufeff").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            bad_lines += 1
+            continue
+        if not isinstance(ev, dict):
+            continue
+        ec = ev.get("eventClass") or ev.get("EventClass") or ev.get("event_class")
+        if not isinstance(ec, str) or ec.strip().lower() != "queryend":
+            continue
+        end_event_count += 1
+        cols = ev.get("cols") or ev.get("Cols") or {}
+        text = None
+        if isinstance(cols, dict):
+            for k in ("TextData", "textData", "text_data"):
+                v = cols.get(k)
+                if isinstance(v, str) and v.strip():
+                    text = v
+                    break
+        if text is None:
+            # Some exports flatten cols into the top-level event.
+            for k in ("TextData", "textData", "text_data"):
+                v = ev.get(k)
+                if isinstance(v, str) and v.strip():
+                    text = v
+                    break
+        if text is not None:
+            queries.append(text)
+    if not queries:
+        raise ValueError(
+            "Trace JSONL file contains no QueryEnd events with TextData "
+            f"({end_event_count} QueryEnd event(s) seen, "
+            f"{bad_lines} unparseable line(s)). Expected one JSON object "
+            "per line of the form "
+            '{"eventClass":"QueryEnd","cols":{"TextData":"<DAX>"}}.'
+        )
+    return queries, [None] * len(queries)
+
+
 def normalize_users(raw_json: str) -> list[dict[str, str]]:
     """Parse a users JSON blob into a list of impersonation dicts.
 
@@ -238,7 +313,10 @@ def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[s
         p = f"builtin/{name.lstrip('/')}"
         return (p, f"resources:{p}") if os.path.exists(p) else (None, f"(missing resource '{name}')")
     if allow_auto_discover and os.path.isdir("builtin"):
-        candidates = sorted(f for f in os.listdir("builtin") if f.lower().endswith(".json"))
+        candidates = sorted(
+            f for f in os.listdir("builtin")
+            if f.lower().endswith((".json", ".jsonl"))
+        )
         if len(candidates) == 1:
             p = f"builtin/{candidates[0]}"
             return p, f"resources:{p} (auto-discovered)"
@@ -262,7 +340,11 @@ def load_queries(
     """
     p, src = _resolve_resource(queries_file, allow_auto_discover=True)
     if p is not None:
-        queries, visuals = normalize_queries_with_visuals(_read_text(p, read_abfss))
+        text = _read_text(p, read_abfss)
+        if p.lower().endswith(".jsonl"):
+            queries, visuals = normalize_queries_jsonl(text)
+        else:
+            queries, visuals = normalize_queries_with_visuals(text)
         return queries, visuals, src
     qs = [str(q) for q in queries_inline]
     return qs, [None] * len(qs), "(QUERIES_INLINE fallback)"

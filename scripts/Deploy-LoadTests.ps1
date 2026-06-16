@@ -561,8 +561,8 @@ Write-Host "Notebooks : LoadTest-Main" -ForegroundColor Green
 Write-Host ""
 Write-Host "Minimal use case:" -ForegroundColor White
 Write-Host "  1. Open 'LoadTest-Main' in the workspace." -ForegroundColor White
-Write-Host "  2. Drag a Power BI Desktop Performance Analyzer .json onto the" -ForegroundColor White
-Write-Host "     notebook's Resources panel (left sidebar)." -ForegroundColor White
+Write-Host "  2. Drag a Power BI Performance Analyzer .json (or trace .jsonl)" -ForegroundColor White
+Write-Host "     onto the notebook's Resources panel (left sidebar)." -ForegroundColor White
 Write-Host "  3. Edit TARGET_DATASET in cell 1 (or leave None to auto-pick" -ForegroundColor White
 Write-Host "     the only model in the workspace) and Run All." -ForegroundColor White
 Write-Host ""

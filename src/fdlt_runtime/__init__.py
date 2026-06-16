@@ -13,6 +13,7 @@ from .queries import (
     load_queries,
     load_users,
     normalize_queries,
+    normalize_queries_jsonl,
     normalize_queries_with_visuals,
     normalize_users,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "load_queries",
     "load_users",
     "normalize_queries",
+    "normalize_queries_jsonl",
     "normalize_queries_with_visuals",
     "normalize_users",
     "plot_run",

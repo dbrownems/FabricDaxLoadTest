@@ -174,8 +174,9 @@ USER_RAMP_TIME_SEC = 15
 LAKEHOUSE_NAME = None
 
 # Scenario (queries to drive). Leave QUERIES_FILE = None to auto-pick the
-# single .json attached to the notebook's *Resources* panel (e.g. a
-# Power BI Performance Analyzer export). QUERIES_INLINE is the fallback.
+# single .json or .jsonl attached to the notebook's *Resources* panel
+# (e.g. a Power BI Performance Analyzer export, or a Profiler trace
+# JSONL with QueryEnd events). QUERIES_INLINE is the fallback.
 QUERIES_FILE   = None
 QUERIES_INLINE = [
     "EVALUATE ROW(\"ping\", 1)",

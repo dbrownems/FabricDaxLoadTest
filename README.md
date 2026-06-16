@@ -175,8 +175,8 @@ If you point the notebook at a BYO lakehouse (by changing `LAKEHOUSE_NAME` in ce
 
 The runner loads queries from one of these sources, in order:
 
-1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` is attached to the notebook's **Resources** panel — that file is auto-discovered.
-2. `QUERIES_FILE = "name.json"` — loads `builtin/name.json` from Resources.
+1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` or `*.jsonl` is attached to the notebook's **Resources** panel — that file is auto-discovered.
+2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — loads `builtin/<name>` from Resources.
 3. `QUERIES_FILE = "abfss://…"` — escape hatch for cross-lakehouse references.
 4. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the notebook ships with).
 
@@ -212,6 +212,13 @@ The notebook accepts any of these shapes for `queries.json`:
 
   ```json
   [ "EVALUATE ROW(\"x\", 1)", "EVALUATE INFO.TABLES()" ]
+  ```
+
+- **Profiler / SSAS trace JSONL export** (one event per line) — drop a `.jsonl` file in Resources. Only `QueryEnd` events contribute (other event classes like `QueryBegin`, `VertiPaqSEQueryEnd`, `ExecutionMetrics` are ignored to avoid duplicates). Per-query visual metadata is unavailable in this shape.
+
+  ```jsonl
+  {"eventClass":"QueryEnd","cols":{"TextData":"EVALUATE TOPN(100, Sales)"}}
+  {"eventClass":"QueryEnd","cols":{"TextData":"EVALUATE INFO.MEASURES()"}}
   ```
 
 #### User list formats

@@ -116,24 +116,28 @@ SKIP_RESULTS   = False   # True → drain rows without parsing
 ## Scenario (queries to drive)
 
 ```python
-QUERIES_FILE   = None             # auto-pick single .json in Resources
+QUERIES_FILE   = None             # auto-pick single .json/.jsonl in Resources
 QUERIES_INLINE = ["EVALUATE …", …]  # fallback if no file resolves
 ```
 
 The runner resolves the scenario in this order:
 
-1. `QUERIES_FILE = None` **and** exactly one `*.json` is attached to the
-   notebook's *Resources* panel — that file is auto-discovered.
-2. `QUERIES_FILE = "name.json"` — load `builtin/name.json` from Resources.
+1. `QUERIES_FILE = None` **and** exactly one `*.json` or `*.jsonl` is attached
+   to the notebook's *Resources* panel — that file is auto-discovered.
+2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — load `builtin/<name>` from
+   Resources.
 3. `QUERIES_FILE = "abfss://…"` — cross-lakehouse / cross-workspace
    escape hatch.
 4. Nothing matches → fall back to `QUERIES_INLINE`.
 
-Accepted JSON shapes (full list in [`README.md` § Scenario formats](../README.md)):
+Accepted shapes (full list in [`README.md` § Scenario formats](../README.md)):
 
-- [Performance Analyzer](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) export with `events[]`
-- `[{"query": "EVALUATE …"}, …]`
-- `["EVALUATE …", …]`
+- [Performance Analyzer](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer) export with `events[]` (`.json`)
+- `[{"query": "EVALUATE …"}, …]` (`.json`)
+- `["EVALUATE …", …]` (`.json`)
+- Profiler / SSAS trace export, one event per line; only `QueryEnd`
+  events contribute (`.jsonl`):
+  `{"eventClass":"QueryEnd","cols":{"TextData":"EVALUATE …"}}`
 
 The default `QUERIES_INLINE` is a 3-query model-agnostic warm-up — only
 useful for smoke-testing the pipeline. Replace with real DAX, or attach a
