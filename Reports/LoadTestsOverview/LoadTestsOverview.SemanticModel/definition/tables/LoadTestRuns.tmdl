@@ -13,6 +13,30 @@ table LoadTestRuns
 		formatString: #,0
 		lineageTag: 6c688996-2774-45e0-8e44-f5a6b50dd9aa
 
+	/// QPS of the most recent run within the current filter context. Used as a hero KPI on overview pages.
+	measure 'Latest Run QPS' =
+			VAR LatestRow = TOPN(1, LoadTestRuns, LoadTestRuns[StartedAtUtc], DESC)
+			RETURN MAXX(LatestRow, LoadTestRuns[Qps])
+		formatString: 0.00
+		lineageTag: a1d0e001-1111-4aaa-bbbb-000000000001
+
+	/// P95 client duration (ms) of the most recent run within the current filter context.
+	measure 'Latest Run P95 (ms)' =
+			VAR LatestRow = TOPN(1, LoadTestRuns, LoadTestRuns[StartedAtUtc], DESC)
+			RETURN MAXX(LatestRow, LoadTestRuns[P95Ms])
+		formatString: #,0
+		lineageTag: a1d0e001-1111-4aaa-bbbb-000000000002
+
+	/// Difference in P95 client duration (ms) between the latest run and the run that preceded it. Positive = regression.
+	measure 'P95 Delta vs Prior' =
+			VAR LatestStart = MAX(LoadTestRuns[StartedAtUtc])
+			VAR PriorStart = CALCULATE(MAX(LoadTestRuns[StartedAtUtc]), LoadTestRuns[StartedAtUtc] < LatestStart)
+			VAR LatestP95 = CALCULATE(MAX(LoadTestRuns[P95Ms]), LoadTestRuns[StartedAtUtc] = LatestStart)
+			VAR PriorP95 = CALCULATE(MAX(LoadTestRuns[P95Ms]), LoadTestRuns[StartedAtUtc] = PriorStart)
+			RETURN LatestP95 - PriorP95
+		formatString: +#,0;-#,0;0
+		lineageTag: a1d0e001-1111-4aaa-bbbb-000000000003
+
 	column RunId
 		dataType: string
 		sourceProviderType: varchar(8000)

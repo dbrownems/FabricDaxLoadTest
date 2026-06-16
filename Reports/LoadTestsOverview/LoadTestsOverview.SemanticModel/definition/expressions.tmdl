@@ -2,7 +2,7 @@
 /// "x6eps4xrq2xudenlfv6naeo3i4-olzonbjxjeyu5ez2pyhhh5obe4.msit-datawarehouse.fabric.microsoft.com".
 /// Get this from your lakehouse's Settings -> SQL analytics endpoint.
 expression ServerName =
-		"REPLACE-WITH-YOUR-SQL-ENDPOINT.datawarehouse.fabric.microsoft.com" meta [IsParameterQuery = true, IsParameterQueryRequired = true, Type = "Text"]
+		"xpkymsttihxelp6vuo2w5ywt2u-t5cj6uilg7suziq4siupnssjca.datawarehouse.fabric.microsoft.com" meta [IsParameterQuery = true, IsParameterQueryRequired = true, Type = "Text"]
 	lineageTag: 8fc8295e-c61e-4491-9f26-0d4ec90810e7
 
 	annotation PBI_ResultType = Text

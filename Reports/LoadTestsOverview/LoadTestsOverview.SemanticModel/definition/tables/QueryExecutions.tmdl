@@ -76,6 +76,13 @@ table QueryExecutions
 		formatString: 0.0%
 		lineageTag: 9b1e7c38-3f4d-45a2-bb71-1f2a9d0e7c44
 
+	/// % Throttled scoped to the most recent run within the current filter context.
+	measure 'Latest Run % Throttled' =
+			VAR LatestStart = MAX(LoadTestRuns[StartedAtUtc])
+			RETURN CALCULATE([% Throttled], LoadTestRuns[StartedAtUtc] = LatestStart)
+		formatString: 0.0%
+		lineageTag: a1d0e001-1111-4aaa-bbbb-000000000004
+
 	column Source
 		dataType: string
 		isHidden
