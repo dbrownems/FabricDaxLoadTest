@@ -48,7 +48,7 @@ Three nouns thread through the code, the notebook, and the Delta tables:
 ## Status
 
 - ✅ Notebook-driven DAX load tests against any Fabric/PBI semantic model via XMLA.
-- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows). `QueryVisuals` is populated from the Performance Analyzer JSON (Visual Container Lifecycle → Execute DAX Query pairing) so dashboards can break down query duration/CPU by visual title and type.
+- ✅ Delta tables (`LoadTests`, `LoadTestRuns`, `Queries`, `QueryVisuals`, `QueryExecutions`, `TraceEvents`) written from the notebook for Power BI Direct Lake reporting — see [`docs/data-dictionary.md`](docs/data-dictionary.md) for every column. The last two are keyed by `(Source, SourceId)` so a future Trace Capture workflow lands rows in the same physical tables (`Source="LoadTestRun"` for these rows, `Source="TraceCapture"` for capture-originated rows). `QueryVisuals` is populated from the Performance Analyzer JSON (Visual Container Lifecycle → Execute DAX Query pairing) so dashboards can break down query duration/CPU by visual title and type.
 - ✅ **Coordinated AS-trace capture** — engine `CpuMs` + `DurationMs` back-filled onto every execution row via per-query `ActivityID` correlation.
 - ✅ Schema-enabled lakehouse support (auto-detected) + multi-workspace BYO-lakehouse.
 - 🚧 Monitor mode against an external model + load-test-from-trace extractor — designed in `plan.md`, not yet implemented.
