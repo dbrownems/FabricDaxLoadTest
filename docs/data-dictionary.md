@@ -231,8 +231,11 @@ The big one. One row per query execution attempt. Generic across the load
 tester and any future Trace Capture flow; for load tests `Source="LoadTestRun"`
 and `SourceId=<RunId>`.
 
-Re-running a load test **deletes and reinserts** rows for that
-`(Source, SourceId)` pair — never partial.
+Each notebook run mints a fresh `RunId`, so in practice rows are **appended**
+per run — prior runs are preserved untouched. (Internally the writer
+`DELETE`s then `INSERT`s for the current `(Source, SourceId)` so a re-run
+of just the persist step on the same `RunId` is idempotent, but that's an
+implementation detail.)
 
 ### Identity / correlation
 
