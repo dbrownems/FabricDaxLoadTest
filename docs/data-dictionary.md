@@ -287,7 +287,7 @@ multi-core scans, CPU can exceed wall-clock. They line up 1:1 with what
 
 | Column | Type | Description |
 |---|---|---|
-| `ExecutionDelayMs` | long | Time the query spent **waiting for an engine worker slot** before execution. Non-zero under heavy concurrency. From `ExecutionMetrics.executionDelayMs`. |
+| `ExecutionDelayMs` | long | Time the query spent **waiting for resources** before execution — typically a thread (engine worker slot) or a memory grant. Non-zero under heavy concurrency (thread-bound) or memory pressure (grant-bound). From `ExecutionMetrics.executionDelayMs`. |
 | `CapacityThrottlingMs` | long | Time the query was held by the Fabric capacity router due to **CU throttling**. Non-zero only when the workspace's capacity is over its smoothed CU budget. From `ExecutionMetrics.capacityThrottlingMs`. |
 
 ### Memory
