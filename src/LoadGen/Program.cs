@@ -564,15 +564,146 @@ class Program
         return null;
     }
 
+    // Parse a queries file into a flat list of DAX strings. Accepted shapes
+    // (kept in sync with normalize_queries_with_visuals in
+    // src/fdlt_runtime/queries.py — the notebook's Python path):
+    //   * Power BI Desktop *Performance Analyzer* export
+    //     ({"version": ..., "events": [...]}). DAX text is pulled from
+    //     metrics.QueryText on "Execute DAX Query" events. Visual metadata
+    //     is not retained here (the CLI only needs the DAX); it's used only
+    //     to warn about visuals that served from cache.
+    //   * Object array: [{"query": "..."}, ...] or [{"Query": "..."}, ...]
+    //   * String array: ["EVALUATE ...", ...]
+    // Tolerates a leading UTF-8 BOM (Power BI Desktop writes one).
     static string[] ParseQueries(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.EnumerateArray().Select(el =>
+        using var doc = JsonDocument.Parse(json.TrimStart('\uFEFF'));
+        var root = doc.RootElement;
+
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("events", out var events)
+            && events.ValueKind == JsonValueKind.Array)
+            return ParsePerformanceAnalyzer(events);
+
+        if (root.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException(
+                "Unrecognized queries file shape. Expected a JSON array of query " +
+                "strings/objects, or a Power BI Performance Analyzer export " +
+                "({\"version\": ..., \"events\": [...]}).");
+
+        return root.EnumerateArray().Select(el =>
         {
             if (el.ValueKind == JsonValueKind.String) return el.GetString()!;
-            if (el.TryGetProperty("query", out var q)) return q.GetString()!;
-            throw new InvalidOperationException("Each query must be a string or an object with a 'query' field.");
+            if (el.TryGetProperty("query", out var q) && q.ValueKind == JsonValueKind.String)
+                return q.GetString()!;
+            if (el.TryGetProperty("Query", out var q2) && q2.ValueKind == JsonValueKind.String)
+                return q2.GetString()!;
+            throw new InvalidOperationException(
+                "Each query must be a string or an object with a 'query' field.");
         }).ToArray();
+    }
+
+    // Extract DAX from a Performance Analyzer events[] array. Mirrors the
+    // event walk in normalize_queries_with_visuals (queries.py): each
+    // "Execute DAX Query" contributes metrics.QueryText; a "Visual Container
+    // Lifecycle" with no following query indicates the visual served from
+    // cache, which we surface as a stderr warning so a misleading "no DAX"
+    // failure isn't cryptic.
+    static string[] ParsePerformanceAnalyzer(JsonElement events)
+    {
+        var queries = new List<string>();
+        int queryNamedEvents = 0;
+        int eventCount = 0;
+        bool pendingVisual = false;
+        string pendingTitle = "", pendingType = "";
+        var cachedVisuals = new List<string>();
+
+        foreach (var ev in events.EnumerateArray())
+        {
+            eventCount++;
+            if (ev.ValueKind != JsonValueKind.Object) continue;
+
+            string? name = (ev.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
+                ? n.GetString() : null;
+
+            if (name == "Visual Container Lifecycle")
+            {
+                // A prior lifecycle never paired with a query => cache hit.
+                if (pendingVisual)
+                    cachedVisuals.Add($"{(pendingTitle.Length > 0 ? pendingTitle : "(untitled)")} " +
+                                      $"[{(pendingType.Length > 0 ? pendingType : "?")}]");
+                pendingVisual = false; pendingTitle = ""; pendingType = "";
+
+                if (ev.TryGetProperty("metrics", out var lm) && lm.ValueKind == JsonValueKind.Object)
+                {
+                    var vid = FirstString(lm, "visualId", "VisualId");
+                    if (!string.IsNullOrEmpty(vid))
+                    {
+                        pendingVisual = true;
+                        pendingTitle = FirstString(lm, "visualTitle", "VisualTitle") ?? "";
+                        pendingType  = FirstString(lm, "visualType", "VisualType") ?? "";
+                    }
+                }
+                continue;
+            }
+
+            if (name == "Execute DAX Query" || name == "Query")
+                queryNamedEvents++;
+
+            string? q = null;
+            if (ev.TryGetProperty("metrics", out var m) && m.ValueKind == JsonValueKind.Object)
+                q = FirstString(m, "QueryText", "queryText");
+            if (string.IsNullOrEmpty(q))
+                q = FirstString(ev, "query", "QueryText", "queryText");
+            if (string.IsNullOrEmpty(q)
+                && ev.TryGetProperty("Query", out var qd) && qd.ValueKind == JsonValueKind.Object)
+                q = FirstString(qd, "Query");
+
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                queries.Add(q!);
+                pendingVisual = false; pendingTitle = ""; pendingType = "";
+            }
+        }
+        if (pendingVisual)
+            cachedVisuals.Add($"{(pendingTitle.Length > 0 ? pendingTitle : "(untitled)")} " +
+                              $"[{(pendingType.Length > 0 ? pendingType : "?")}]");
+
+        if (cachedVisuals.Count > 0)
+        {
+            var shown = string.Join(", ", cachedVisuals.Take(5));
+            var extra = cachedVisuals.Count <= 5 ? "" : $" (+{cachedVisuals.Count - 5} more)";
+            Console.Error.WriteLine(
+                $"\u26a0  {cachedVisuals.Count} Visual Container Lifecycle event(s) had no " +
+                $"following 'Execute DAX Query' — those visuals likely served from cache: {shown}{extra}.\n" +
+                "   To capture DAX for every visual, in Power BI Desktop restart Desktop (or clear " +
+                "permissions) to drop the visual cache, then View > Performance Analyzer > Start " +
+                "recording > 'Refresh visuals' (not page refresh) > Export. In the Fabric/Service " +
+                "portal, hard-reload the report tab (Ctrl+F5) before clicking Refresh visuals.");
+        }
+
+        if (queries.Count == 0)
+            throw new InvalidOperationException(
+                $"Performance Analyzer export contains no DAX query text ({eventCount} events, " +
+                $"{queryNamedEvents} Query/Execute DAX Query events, but none had metrics.QueryText). " +
+                "Re-record the trace from Power BI Desktop (View > Performance Analyzer > Start " +
+                "recording > Refresh visuals > Export), or in the Fabric/Service portal click " +
+                "'Refresh visuals' after starting the recording. Some browser/portal modes capture " +
+                "only timings and omit the DAX text.");
+
+        return queries.ToArray();
+    }
+
+    // First string-valued property among `keys` (in order) on `obj`, else null.
+    static string? FirstString(JsonElement obj, params string[] keys)
+    {
+        foreach (var k in keys)
+            if (obj.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String)
+            {
+                var s = v.GetString();
+                if (!string.IsNullOrEmpty(s)) return s;
+            }
+        return null;
     }
 
     // Parse users.json. Accepted shapes:
