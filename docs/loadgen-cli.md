@@ -15,8 +15,29 @@ dotnet path/to/LoadGen.dll --xmla <endpoint> --dataset <name> \
 | ---------------- | ------------------------------------------------------------------------------------------------------ |
 | `--xmla`         | XMLA endpoint URI, e.g. `powerbi://api.powerbi.com/v1.0/myorg/<workspace>` (workspace **display name**, hyphenated form). |
 | `--dataset`      | Semantic-model display name (case-sensitive).                                                          |
-| `--queries-file` | Path to `queries.json`.                                                                                |
+| `--queries-file` | Path to a queries file. See [Queries file format](#queries-file-format).                              |
 | `--users-file`   | Path to `users.json`. See [docs/impersonation.md](impersonation.md).                                   |
+
+## Queries file format
+
+`--queries-file` accepts three JSON shapes (the same shapes the notebook's
+Python layer normalizes, so a file that works in one works in the other):
+
+- **Power BI Desktop *Performance Analyzer* export** —
+  `{"version": ..., "events": [...]}`. DAX text is pulled from
+  `metrics.QueryText` on `"Execute DAX Query"` events. This is the file you
+  get from *View → Performance Analyzer → Start recording → Refresh visuals
+  → Export*. A leading UTF-8 BOM (which Desktop writes) is tolerated.
+- **Object array** — `[{"query": "EVALUATE ..."}, ...]` (the `Query` key,
+  capitalized, also works).
+- **String array** — `["EVALUATE ...", "EVALUATE ...", ...]`.
+
+If a Performance Analyzer export contains *Visual Container Lifecycle*
+events with no following *Execute DAX Query* (the visual served from cache),
+those visuals are skipped and a warning is printed to stderr listing them —
+re-record with the visual cache dropped to capture their DAX. If **no** DAX
+is found at all, the run aborts with exit code 1 and a message explaining
+how to re-capture.
 
 ## Authentication
 
@@ -105,14 +126,14 @@ envelopes carry summary stats but the raw per-query rows live in the CSVs.
 ## Scheduling model — what's NOT supported
 
 LoadGen does not replay recorded session timings. The Power BI Desktop
-*Performance Analyzer* JSON shape (`{"version": ..., "events": [...]}`)
-**is** accepted as a queries-file, but only the DAX text is extracted —
-the `start` / duration fields are ignored. Queries are then fired by the
-closed-loop scheduler above, not at their original recorded pace. This
-is intentional: replaying one user's exact timing measures "can the
-engine keep up with one historical user?" (almost always yes), not "how
-many concurrent users can this engine support?", which is the question
-load testing should answer.
+*Performance Analyzer* JSON shape (see
+[Queries file format](#queries-file-format)) **is** accepted as a
+queries-file, but only the DAX text is extracted — the `start` / duration
+fields are ignored. Queries are then fired by the closed-loop scheduler
+above, not at their original recorded pace. This is intentional: replaying
+one user's exact timing measures "can the engine keep up with one historical
+user?" (almost always yes), not "how many concurrent users can this engine
+support?", which is the question load testing should answer.
 
 ## Exit codes
 
