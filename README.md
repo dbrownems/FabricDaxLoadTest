@@ -1,5 +1,7 @@
 # FabricDaxLoadTest
 
+<img width="155" height="158" alt="image" src="https://github.com/user-attachments/assets/f03a0c4f-30d0-4f41-b97a-98c435d59fe1" />
+
 A load testing tool for Microsoft Fabric and Power BI semantic models. Simulates concurrent users executing DAX queries against the **XMLA endpoint** using ADOMD.NET, then lands per-query telemetry in Delta tables for analysis in Power BI.
 
 Designed to run **inside a Fabric PySpark notebook** — no separate VM, no `dotnet build` required for end users. Import a single `.ipynb`, edit cell 1, and **Run All**. An optional deploy script and lakehouse-backed Delta tables are available when you want cross-run history.
