@@ -1,20 +1,18 @@
 """Generate notebooks/LoadTest-Main.ipynb.
 
 The notebook is deployed into a `LoadTests` workspace folder by
-scripts/Deploy-LoadTests.ps1, alongside a `LoadTests` lakehouse that
-holds the five Delta tables under Tables[/dbo]/. Per-run telemetry
-(CSVs, *.trace.csv, result.json, *.log) lives only on the Spark
-driver's local /tmp for the lifetime of the kernel — it's strictly
-forensic and never copied to OneLake.
+scripts/Deploy-LoadTests.ps1 (or imported from a GitHub release). With
+`LAKEHOUSE_NAME` set it writes six Delta tables under Tables[/dbo]/ and
+copies each run's *.log / *.trace.csv to Files/run-logs/<run_id>/; the
+executions CSV and result.json stay on the Spark driver's local /tmp.
 
-As of v0.5.0 the .NET LoadGen binaries ship inside the `fdlt_runtime`
-wheel, so cell 2 is a single `pip install <wheel>` — no zip download,
-no unzip step. The default WHEEL_URL is replaced at release-build
-time by setting the `FDLT_RELEASE_VERSION` env var (the GitHub
-Release workflow sets it to the tag, e.g. `0.5.0`). For local
-`Deploy-LoadTests.ps1` runs, the script patches WHEEL_URL inside
-the generated notebook to point at the freshly-built wheel uploaded
-to the lakehouse Files folder via abfss://.
+The .NET LoadGen binaries ship inside the `fdlt_runtime` wheel, so cell
+2 is a single `pip install <wheel>`. WHEEL_URL (cell 1) is set at
+release-build time from the `FDLT_RELEASE_VERSION` env var (the GitHub
+Release workflow sets it to the tag, e.g. `0.12.11`). For
+`Deploy-LoadTests.ps1 -LocalWheel` runs, the script patches WHEEL_URL
+inside the generated notebook to point at the freshly built wheel
+uploaded to the lakehouse Files folder via abfss://.
 
 The notebook self-discovers the workspace + lakehouse at run time via
 `notebookutils.runtime.context`, so it is workspace-portable and does
@@ -23,7 +21,6 @@ not need rewriting per deployment.
 Run from repo root:
     python scripts\\build_notebooks.py
 """
-import json
 import os
 import textwrap
 import nbformat
@@ -33,10 +30,11 @@ REPO = Path(__file__).resolve().parent.parent
 OUT  = REPO / "notebooks"
 OUT.mkdir(exist_ok=True, parents=True)
 
-# Substituted into cell 2's WHEEL_URL string. The release workflow
+# Substituted into cell 1's WHEEL_URL string. The release workflow
 # sets FDLT_RELEASE_VERSION to the tag (without the leading `v`); the
-# deploy script leaves it unset and patches the resulting notebook
-# in-place with an abfss:// URL after lakehouse resolution.
+# deploy script leaves it unset in -LocalWheel mode and patches the
+# resulting notebook in-place with an abfss:// URL after lakehouse
+# resolution.
 RELEASE_VERSION = os.environ.get("FDLT_RELEASE_VERSION", "").strip()
 if RELEASE_VERSION:
     WHEEL_URL_DEFAULT = (
@@ -44,10 +42,10 @@ if RELEASE_VERSION:
         f"v{RELEASE_VERSION}/fdlt_runtime-{RELEASE_VERSION}-py3-none-any.whl"
     )
 else:
-    # Sentinel — cell 2 raises if this is not overridden. Catches the
-    # "ran build_notebooks.py with no env var, never patched it"
-    # mistake at notebook runtime instead of silently 404-ing on pip
-    # install.
+    # Sentinel that Deploy-LoadTests.ps1 -LocalWheel replaces (it fails
+    # if the sentinel is missing). Nothing checks for it at notebook run
+    # time: a notebook generated without FDLT_RELEASE_VERSION and never
+    # patched passes this string to pip as a package name.
     WHEEL_URL_DEFAULT = "REPLACE_ME_WITH_WHEEL_URL"
 
 FABRIC_NB_METADATA = {
@@ -75,17 +73,7 @@ def code(nb, text):
     nb.cells.append(nbformat.v4.new_code_cell(text.strip("\n")))
 
 
-def patch_for_github(nb):
-    """nbformat fields GitHub's strict renderer requires; Fabric is lenient."""
-    for c in nb.cells:
-        if c.cell_type == "code":
-            c["execution_count"] = None
-            c["outputs"]         = []
-            c["metadata"]        = {}
-
-
 def write(nb, path: Path):
-    patch_for_github(nb)
     with open(path, "w", encoding="utf-8") as f:
         nbformat.write(nb, f)
     nbformat.validate(nbformat.read(str(path), as_version=4))
@@ -153,10 +141,12 @@ def build_run():
     > `Deploy-LoadTests.ps1` only updates the original `LoadTest-Main`,
     > so cell-1 edits on saved copies survive redeploys.
 
-    > **Upgrades.** Change `WHEEL_URL` in cell 2 to a newer release
-    > (e.g. `v0.9.0` → `v0.10.0`) and Run All. The .NET LoadGen binaries
-    > ship inside the `fdlt_runtime` wheel, so there is nothing else to
-    > refresh.
+    > **Upgrades.** Each release's notebook is tested with that release's
+    > `fdlt_runtime` wheel. Pointing `WHEEL_URL` (cell 1) at a newer
+    > release — or at `v*.*.*`, which always fetches the latest — usually
+    > works, but it is a convenience, not a guarantee: a newer wheel may
+    > need the matching notebook. To upgrade reliably, import the new
+    > release's notebook and copy your cell-1 settings into it.
 
     ---
 
@@ -164,7 +154,9 @@ def build_run():
     model via the **XMLA endpoint** by launching `LoadGen.dll` as an
     out-of-process subprocess on the Spark driver's bundled .NET 8
     runtime. Per-run forensic artifacts (executions CSV, trace CSV,
-    result.json, `*.log`) stay under `/tmp/fdlt-<RunId>/`.
+    result.json, `*.log`) are written under `/tmp/fdlt-run-<id>/` on
+    the driver; with `LAKEHOUSE_NAME` set, the `*.log` and `*.trace.csv`
+    files are also copied to `Files/run-logs/<RunId>/` in that lakehouse.
     """)
 
     # 1. Configuration
@@ -230,22 +222,22 @@ USERS_INLINE                 = []        # used when USERS_FILE is None
 
 LOG_FOLDER                   = None      # None → /tmp on driver; "abfss://…" or local path supported
 
-# Runtime wheel — to upgrade, bump the version (e.g. v0.9.0 → v0.10.0) and Run-All.
+# Runtime wheel. A newer wheel may need the matching notebook (see Upgrades above).
 WHEEL_URL = "{WHEEL_URL_DEFAULT}"
 """)
 
     # 2. Bootstrap — pip-install the fdlt_runtime wheel and call bootstrap.
     code(nb, r"""
 # ── 2. Bootstrap: pip install the fdlt_runtime wheel and call bootstrap ──────
-# As of v0.5.0 the .NET LoadGen binaries ship inside the wheel, so this
-# is the entire deploy. WHEEL_URL is set in cell 1 — to upgrade, edit
-# the version there and Run-All.
+# The .NET LoadGen binaries ship inside the wheel, so this is the entire
+# deploy. WHEEL_URL is set in cell 1.
 
 import importlib, json, os, subprocess, sys, urllib.request
 import notebookutils
 
-# `*.*.*` is a "always use latest release" opt-in. Resolve it to the
-# current GitHub release tag (e.g. v0.9.2) before any other URL
+# `*.*.*` is an "always use the latest release" opt-in — a convenience,
+# not a guarantee: the latest wheel may need a newer notebook. Resolve
+# it to the current GitHub release tag (e.g. v0.9.2) before any other URL
 # handling. One GET against the public releases API; failures bubble
 # up so the user knows their wildcard didn't resolve (vs. silently
 # falling back to a stale pin).
@@ -307,7 +299,7 @@ boot = fdlt_nb.bootstrap(
 # Thin shim: every parameter from cell 1 is passed by keyword to
 # `fdlt_runtime.notebook.run()`, which loads the scenario, resolves
 # the target, runs a test query as the first user, runs LoadGen,
-# streams progress, and writes 4 Delta tables.
+# streams progress, and (with LAKEHOUSE_NAME) writes the Delta tables.
 # Press the ■ Interrupt Kernel button to cancel.
 outcome = fdlt_nb.run(
     boot,

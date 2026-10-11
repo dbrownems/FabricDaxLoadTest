@@ -49,8 +49,11 @@ The bearer token is read from (in order): `--token` flag → `--token-file` →
 [docs/impersonation.md § token acquisition](impersonation.md#token-acquisition-gotcha-local-cli).
 Empty token works only for local SSAS / Power BI Desktop integrated auth.
 
-The token is redacted from every log line, error envelope, and exception
-message before it leaves the process.
+LoadGen redacts the token (and any `Password=` fragment) from error
+envelopes and, in `--json-progress` mode, from the log lines it echoes to
+stderr. The default console mode echoes log lines unredacted, and the
+run's `.log` file and the `ErrorMessage` column of the executions CSV
+are written as-is — treat them as sensitive.
 
 ## Workload shape
 
@@ -61,7 +64,7 @@ the response, then issues the next. There is no fixed-rate firing.
 | Arg                   | Default | What it does                                                                                            |
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
 | `--users`             | 100     | Number of concurrent virtual users. Each user owns its own ADOMD connection pool and DAX iteration loop. |
-| `--duration`          | 60      | Wall-clock seconds. Each user finishes its current iteration after this elapses; tail can run a few seconds longer. |
+| `--duration`          | 60      | Total run time in seconds, counted from the start of the run — trace setup, warm-up and `--ramp-time` are included. When it elapses, users stop issuing new queries; in-flight queries finish, so the tail can run a few seconds longer. |
 | `--concurrent-queries-per-user` | 1 | In-flight DAX queries per user. Each user has this many ADOMD connections and a **rolling drain** over the iteration's query list — when any connection finishes, the next pending query is dispatched on the freed connection. This matches Power BI Desktop, which fires up to 6 visual queries concurrently and dispatches the next as each finishes (not in batched all-finish-then-fire-next-batch rounds). `1` = strictly serial per user. |
 | `--ramp-time`         | 30      | Seconds over which to stagger the start of all users (linearly). `0` = all start together (cold-cache hammer).        |
 | `--pause-iterations`  | 10000ms | Sleep between iterations (one full pass through the query list). Applied per-user once all queries in the iteration have completed. ~10s approximates human dwell time between page interactions; lower it to stress the engine, raise it to model heavier think time. |
@@ -107,10 +110,10 @@ per pass through the query list.
 | ------------------------- | ------------- | ----------------------------------------------------------------------------- |
 | `--replica`               | (default)     | `readonly` to target the read-replica scale-out path, or empty for primary.   |
 | `--log-dir`               | `./logs`      | Directory for the executions CSV (and trace CSV when tracing is enabled).     |
-| `--log-file`              | auto          | Base filename for the run. Auto: `LoadTest.<users>u.<UTC>.csv`.               |
+| `--log-file`              | auto          | Name of the executions CSV; the `.log` and `.trace.csv` files share its base name. Auto: `LoadTest.<yyyyMMdd-HHmmss>.csv` (UTC). |
 | `--skip-results`          | false         | Issue `EXECUTE` but discard the resultset rows. Reduces client-side cost when measuring engine-side throughput. |
-| `--error-policy`          | `Continue`    | `Continue` (record errors, keep running — recommended) or `Abort` (fail fast on first per-query error). Infrastructure failures still abort regardless. |
-| `--no-trace`              | (tracing on)  | Disable XMLA trace subscription. By default LoadGen subscribes to the model's trace, captures `QueryEnd` / `ExecutionMetrics` / `VertiPaqSEQuery*` events for the run, and writes `<log-file>.trace.csv`. Disable if the principal lacks trace permission or the dataset blocks it. |
+| `--error-policy`          | `Continue`    | `Continue` (record errors, keep running — recommended) or `Abort` (a per-query error stops that user and fails the run; other users keep running until the duration ends). A failed reconnect fails the run under either policy. |
+| `--no-trace`              | (tracing on)  | Disable XMLA trace subscription. By default LoadGen subscribes to the model's trace, captures `CommandBegin` / `CommandEnd` / `Error` / `DirectQueryBegin` / `DirectQueryEnd` / `ExecutionMetrics` events for the run (see [tracing.md](tracing.md)), and writes `<log-file>.trace.csv`. Disable if the principal lacks trace permission or the dataset blocks it. |
 | `--json-progress`         | false         | Emit JSONL envelopes on stdout (used by the notebook) and route human-readable output to stderr. Use when piping into another process. |
 | `--token`                 | –             | Bearer token (else `--token-file` or `$PBI_TOKEN`).                           |
 
@@ -118,12 +121,15 @@ per pass through the query list.
 
 For a run with `--log-dir=./logs --log-file=run.csv`:
 
-- `./logs/run.csv` — one row per query execution. Schema is the same as
-  the `QueryExecutions` Delta table the notebook persists.
+- `./logs/run.csv` — one row per query execution. The notebook loads it
+  into the `QueryExecutions` Delta table, adding engine metrics from the
+  trace.
 - `./logs/run.trace.csv` — one row per captured trace event (when tracing
-  is enabled). Same schema as `TraceEvents`.
+  is enabled). The notebook loads it into `TraceEvents`.
+- `./logs/run.log` — the run's text log.
+- `./logs/result.json` — the full run summary (`--json-progress` mode only).
 
-Both files are also emitted when `--json-progress` is set; the JSONL
+The CSVs are written in both modes; with `--json-progress` the JSONL
 envelopes carry summary stats but the raw per-query rows live in the CSVs.
 
 ## Scheduling model — what's NOT supported
@@ -187,4 +193,4 @@ error is printed).
 | ---- | ---------------------------------------------------------------------- |
 | 0    | Run completed (errors per `--error-policy`).                           |
 | 1    | Bad arguments, file not found, parse error, or fatal exception.        |
-| 130  | SIGINT / Ctrl-C — graceful drain completed.                            |
+| 130  | `--json-progress` mode only: SIGINT / Ctrl-C — graceful drain completed. In the default console mode, Ctrl-C terminates the process immediately. |

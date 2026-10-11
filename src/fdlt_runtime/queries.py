@@ -3,10 +3,10 @@
 Resolution order for a given ``queries_file`` / ``users_file``:
 
   1. ``"abfss://..."`` — OneLake URL (read via the caller-supplied
-     ``read_abfss`` callback; in the notebook that's
-     ``notebookutils.fs.head``). The ``https://...dfs.fabric...`` form
-     is **not** supported — ``notebookutils.fs.head`` cannot
-     authenticate against it (returns HTTP 401). If passed, the
+     ``read_abfss`` callback; the notebook's reader copies the file to the
+     driver with ``notebookutils.fs.cp``). The ``https://...dfs.fabric...``
+     form is **not** supported — notebookutils can't authenticate
+     against it (returns HTTP 401). If passed, the
      resolver raises ``ValueError`` with the abfss equivalent.
   2. An absolute path — read from the driver's local filesystem.
      ``"/lakehouse/default/Files/<name>"`` is the notebook's attached
@@ -44,13 +44,13 @@ from typing import Any, Callable, Iterable, NoReturn
 
 ReadAbfss = Callable[[str], str]
 
-# Schemes we delegate to the `read_abfss` callback (notebookutils.fs.head).
-# Only abfss:// is accepted because that's the only OneLake URL form
-# notebookutils.fs.head authenticates against. The https://...dfs.fabric...
-# form returns HTTP 401 because Hadoop's HttpsFileSystem just does an
-# unauthenticated GET. We accept https in the resolver so we can raise a
-# crisp error with the abfss equivalent, instead of letting py4j surface
-# a stack-traced 401 from the JVM.
+# Schemes we delegate to the `read_abfss` callback (in the notebook, a
+# reader built on notebookutils.fs.cp). Only abfss:// is accepted because
+# that's the only OneLake URL form notebookutils authenticates against.
+# The https://...dfs.fabric... form returns HTTP 401 because Hadoop's
+# HttpsFileSystem just does an unauthenticated GET. We accept https in
+# the resolver so we can raise a crisp error with the abfss equivalent,
+# instead of letting py4j surface a stack-traced 401 from the JVM.
 _REMOTE_PREFIXES = ("abfss://", "https://", "http://")
 
 
@@ -86,7 +86,7 @@ def _read_text(path: str, read_abfss: ReadAbfss | None) -> str:
         hint = _https_to_abfss_hint(path)
         msg = (
             f"OneLake URL {path!r} uses the https:// form, which "
-            "notebookutils.fs.head cannot authenticate against (returns "
+            "notebookutils cannot authenticate against (returns "
             "HTTP 401). Use the abfss:// form instead."
         )
         if hint:
@@ -96,7 +96,9 @@ def _read_text(path: str, read_abfss: ReadAbfss | None) -> str:
         if read_abfss is None:
             raise RuntimeError(
                 f"abfss:// URL {path!r} supplied but no `read_abfss` reader "
-                "provided. Pass notebookutils.fs.head (or a wrapper) into "
+                "provided. Pass a function that returns the file's full text "
+                "(e.g. copy it locally with notebookutils.fs.cp, then read "
+                "it; notebookutils.fs.head truncates large files) into "
                 "load_queries / load_users."
             )
         return read_abfss(path)
@@ -115,7 +117,7 @@ def normalize_queries(raw_json: str) -> list[str]:
     return queries
 
 
-def normalize_queries_with_visuals(
+def normalize_queries_with_visuals(  # noqa: C901
     raw_json: str,
 ) -> tuple[list[str], list[dict[str, str] | None]]:
     """Parse a queries JSON blob into ``(queries, visuals)``.
@@ -484,7 +486,7 @@ def load_queries(
         except ValueError as ex:
             if src.endswith("(auto-discovered)"):
                 name = p[len(_RESOURCES_DIR) + 1:]
-                fix = (f"remove it from Resources or set QUERIES_FILE"
+                fix = ("remove it from Resources or set QUERIES_FILE"
                        if users_file else f"set USERS_FILE = '{name}'")
                 raise ValueError(
                     f"{ex}\nQUERIES_FILE = None picked {p}, the only .json/.jsonl "

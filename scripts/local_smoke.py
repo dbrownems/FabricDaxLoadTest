@@ -1,6 +1,7 @@
 """Local subprocess smoke test for LoadGen.
 
-Mimics the notebook's cell-4 subprocess flow without needing Livy.
+Mimics the notebook's LoadGen subprocess flow
+(fdlt_runtime.runner.run_load_test) on a dev machine.
 Runs: dotnet LoadGen.dll --json-progress ... and parses JSONL stdout.
 
 Usage:
@@ -9,7 +10,7 @@ Usage:
 Reads workspace + dataset from CLI flags or these defaults
 (dbrowne-loadtest workspace, DIAD model from prior smoke runs).
 """
-import argparse, json, os, signal, subprocess, sys, threading, time, uuid
+import argparse, contextlib, json, os, signal, subprocess, sys, threading, uuid
 from collections import deque
 from pathlib import Path
 
@@ -45,7 +46,7 @@ def get_token() -> str:
     return out.strip()
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     ap = argparse.ArgumentParser()
     ap.add_argument("--workspace", default="dbrowne-loadtest")
     ap.add_argument("--dataset",   default="DIAD Final Report with RLS")
@@ -82,8 +83,12 @@ def main() -> int:
     queries_json.write_text(json.dumps(['EVALUATE ROW("x", 1)']), encoding="utf-8")
     users_json.write_text(json.dumps(users_payload), encoding="utf-8")
 
-    token = "bad-token-deliberately-invalid" if args.bad_token else (
-        "" if args.no_token else get_token())
+    if args.no_token:
+        token = ""
+    elif args.bad_token:
+        token = "bad-token-deliberately-invalid"
+    else:
+        token = get_token()
     xmla  = args.xmla or f"powerbi://api.powerbi.com/v1.0/myorg/{args.workspace}"
 
     cmd = [
@@ -104,14 +109,10 @@ def main() -> int:
 
     if args.no_token:
         cmd.append("--no-auth")
-    if not args.no_token:
-        env_token = "bad-token-deliberately-invalid" if args.bad_token else token
-    else:
-        env_token = ""
 
     env = {**os.environ}
-    if env_token:
-        env["PBI_TOKEN"] = env_token
+    if token:
+        env["PBI_TOKEN"] = token
     print(f"Run     : {run_id}  (bad-token={args.bad_token}, no-token={args.no_token})")
     print(f"Cmd     : {' '.join(cmd[:3])} ... ({len(cmd)} args)")
     print(f"Run dir : {run_dir}")
@@ -136,16 +137,9 @@ def main() -> int:
     dash = LiveDashboard() if LiveDashboard is not None else None
     cpu_sampler = _DriverCpuSampler() if _DriverCpuSampler is not None else None
 
-    def _ctx(d):
-        # nullcontext-equivalent that works when dash is None.
-        class _N:
-            def __enter__(self): return None
-            def __exit__(self, *a): return False
-        return d if d is not None else _N()
-
     last_status = ""
     try:
-        with _ctx(dash) as _:
+        with dash if dash is not None else contextlib.nullcontext():
             for line in proc.stdout:
                 line = line.strip()
                 if not line:

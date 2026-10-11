@@ -1,0 +1,47 @@
+name: CI
+
+# Lint gates for pull requests and main: the .NET build must be free of
+# warnings (including the unused-code rules in .editorconfig), ruff must
+# pass (config in pyproject.toml), and the notebook generator must
+# produce a valid notebook.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Build and lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build LoadGen + QueryRunner (warnings as errors)
+        run: dotnet build src/LoadGen/LoadGen.csproj -c Release --nologo -p:TreatWarningsAsErrors=true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python tools
+        run: pip install ruff==0.16.10 nbformat
+
+      - name: Ruff
+        run: ruff check src scripts
+
+      - name: Generate notebook
+        env:
+          FDLT_RELEASE_VERSION: 0.0.0
+        run: python scripts/build_notebooks.py

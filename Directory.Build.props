@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <!-- Report the code-style rules configured in .editorconfig (unused
+         code) during build, not only in the IDE. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- IDE0005 (unnecessary using) only runs when XML documentation is
+         generated. Missing XML comments (CS1591) aren't enforced, and no
+         .xml documentation files are published into the wheel. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <PublishDocumentationFile>false</PublishDocumentationFile>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
+    <!-- CI builds with TreatWarningsAsErrors=true; keep NuGet security
+         advisories as warnings so a newly published advisory doesn't
+         break unrelated builds. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>

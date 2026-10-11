@@ -83,8 +83,11 @@ PAUSE_BETWEEN_ITERATIONS_MS  = 10000  # think-time between iterations per user (
 PAUSE_BETWEEN_QUERIES_MS     = 0      # think-time between queries inside an iteration
 ```
 
-- `DURATION_SECONDS` is steady-state duration **after** the ramp completes.
-  Total wall time ≈ `USER_RAMP_TIME_SEC + DURATION_SECONDS`.
+- `DURATION_SECONDS` is the total run time, measured from the start of the
+  run: trace setup, the warm-up connection and the ramp all count toward
+  it, so the time at full concurrency is roughly
+  `DURATION_SECONDS − USER_RAMP_TIME_SEC` (minus a few seconds of setup).
+  Size `DURATION_SECONDS` with that in mind.
 - `USER_RAMP_TIME_SEC = 0` adds all users at once. The ramp is linear.
 - `CONCURRENT_QUERIES_PER_USER` controls how many ADOMD connections each
   virtual user opens. Each user rolls through the iteration's queries:
@@ -231,7 +234,7 @@ only affects the raw forensic files.
 |---|---|
 | `None` | `/tmp/fdlt-run-<id>/` on the Spark driver. Fast (local SSD) but discarded when the kernel cycles. After the run, `*.log` and `*.trace.csv` are copied to `{LAKEHOUSE}/Files/run-logs/<RunId>/` so they survive (only when a lakehouse is set). |
 | `"/lakehouse/default/Files/<folder>"` | LoadGen writes directly there — files are visible in OneLake LIVE as the run progresses. No post-run copy. Use this when you want to tail logs in real time or when the run might be killed before completion. |
-| `"abfss://…"` | LoadGen still writes to `/tmp` (the .NET process can't target OneLake directly), but the post-run copy lands under `<LOG_FOLDER>/<RunId>/` instead of the default. Use this to redirect to a different lakehouse / folder for long-term retention or shared review. |
+| `"abfss://…"` | LoadGen still writes to `/tmp` (the .NET process can't target OneLake directly), but the post-run copy lands under `<LOG_FOLDER>/<RunId>/` instead of the default — only when a lakehouse is set (without `LAKEHOUSE_NAME` no copy is made). Use this to redirect to a different lakehouse / folder for long-term retention or shared review. |
 
 ## Runtime wheel (advanced)
 
@@ -239,9 +242,8 @@ only affects the raw forensic files.
 WHEEL_URL = "https://github.com/dbrownems/FabricDaxLoadTest/releases/download/vX.Y.Z/fdlt_runtime-X.Y.Z-py3-none-any.whl"
 ```
 
-`WHEEL_URL` points at the `fdlt_runtime` wheel that cell 2 pip-installs.
-The .NET LoadGen binaries ship inside the wheel — there's nothing else to
-refresh on upgrade.
+`WHEEL_URL` (cell 1) points at the `fdlt_runtime` wheel that cell 2
+pip-installs. The .NET LoadGen binaries ship inside the wheel.
 
 Forms supported:
 
@@ -249,16 +251,27 @@ Forms supported:
   — direct from GitHub; needs outbound internet from Spark.
 - `https://github.com/dbrownems/FabricDaxLoadTest/releases/download/v*.*.*/fdlt_runtime-*.*.*-py3-none-any.whl`
   — wildcard form. `*.*.*` is resolved at run time to the latest GitHub
-  release tag (one unauthenticated GET against the public releases API).
-  Use this to opt INTO auto-upgrade on every Run-All; pin a specific
-  version to opt out.
+  release tag (one unauthenticated GET against the public releases API),
+  so every Run-All picks up the newest wheel. That is a convenience, not
+  a guarantee — see [Compatibility](#compatibility) below.
 - `abfss://<wsid>@onelake.dfs.fabric.microsoft.com/<lhid>/Files/<file>.whl`
-  — offline-friendly; what `scripts/Deploy-LoadTests.ps1` patches in.
+  — offline-friendly; what `scripts/Deploy-LoadTests.ps1 -LocalWheel`
+  patches in.
 - `/lakehouse/default/Files/<file>.whl` — already-attached lakehouse,
   manual upload.
 
-To upgrade: bump the version in the URL (e.g. `v0.9.0` → `v0.10.0`) and
-Run-All.
+### Compatibility
+
+Each release's notebook is tested with that release's wheel. **A newer
+wheel may not work with an older notebook** — for example, when a
+`run()` keyword is renamed or removed, the older notebook fails with a
+`TypeError`. Running the latest wheel (the `v*.*.*` wildcard, or bumping
+the version in `WHEEL_URL`) without updating the notebook usually works,
+but it's a convenience, not a guarantee.
+
+- **To upgrade reliably:** import the new release's `LoadTest-Main.ipynb`
+  and copy your cell-1 settings into it.
+- **For reproducible runs:** pin `WHEEL_URL` to a specific release.
 
 ---
 

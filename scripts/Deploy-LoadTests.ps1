@@ -10,20 +10,22 @@
       * LoadTests.Lakehouse  — holds Files/fdlt_runtime-<ver>.whl
                                 (the fat wheel: LoadGen.dll + ADOMD
                                 assemblies bundled inside the Python
-                                wheel as of v0.5.0) and
-                                Tables/dbo/LoadTest{s,Runs,Queries,QueryExecutions,TraceEvents}.
-                                Per-run forensic CSVs stay on the driver's
-                                local /tmp — only Delta tables go to OneLake.
+                                wheel) when deploying with -LocalWheel,
+                                and the six Delta tables under
+                                Tables[/dbo]/ (LoadTests, LoadTestRuns,
+                                Queries, QueryVisuals, QueryExecutions,
+                                TraceEvents) once a notebook run with
+                                LAKEHOUSE_NAME set writes them.
       * LoadTest-Main      — the runner notebook; users edit cell 1 and
-                                Run All directly. Save As (in the portal)
-                                to make *additional* Load Tests in the
-                                same workspace. Redeploys refresh the
-                                wheel and rebake cell 2 (WHEEL_URL +
-                                wheel filename) on the existing notebook
-                                so it stays in sync with what's in
-                                Files/. User edits to cell 1 are
-                                preserved (cell 1 is a parameters cell;
-                                rebake only touches cell 2).
+                                Run All. Every deploy REPLACES this
+                                notebook with a freshly generated one
+                                whose WHEEL_URL (cell 1) points at the
+                                deployed wheel — any edits made to
+                                LoadTest-Main itself, including cell 1,
+                                are overwritten (use -SkipNotebookUpdate
+                                to keep it). Save As (in the portal) to
+                                make additional Load Tests; the deploy
+                                never touches those copies.
 
     Everything else is idempotent — re-run any time to refresh the wheel.
     Folder and lakehouse names are always `LoadTests`; the notebook
@@ -58,12 +60,10 @@
 .PARAMETER SkipNotebookUpdate
     Leave an existing `LoadTest-Main` notebook in the workspace
     untouched, even if its embedded WHEEL_URL points at an older wheel.
-    Default behavior is to redeploy the notebook with the freshly
-    baked WHEEL_URL so it stays in sync with the wheel that was just
-    uploaded to Files/. Use this only when you've made manual edits to
-    cells 2-onwards in the portal that you don't want clobbered (cell
-    1 is the parameters cell — those edits live in `LoadTest-<name>`
-    Save-As copies, never in `LoadTest-Main`).
+    Default behavior is to replace the notebook with a freshly
+    generated one whose WHEEL_URL matches the wheel just deployed. Use
+    this to keep edits you've made to `LoadTest-Main` itself (keeping
+    your settings in a `LoadTest-<name>` Save-As copy avoids the need).
 
 .EXAMPLE
     # Standard deploy from the latest GitHub Release:
@@ -196,7 +196,7 @@ if ($LocalWheel) {
         Step "dotnet publish LoadGen (Release, linux-x64, framework-dependent)"
         # Notebook deployment runs `dotnet LoadGen.dll` on Fabric Spark
         # nodes — Linux only, .NET 8 runtime already present via sempy.
-        # Framework-dependent (no SC) keeps the zip payload at ~3.5 MB
+        # Framework-dependent (no SC) keeps the bundled payload at ~3.5 MB
         # instead of ~67 MB; UseAppHost=false skips the apphost binary so we
         # don't need a chmod step after OneLake stages the files (and
         # cross-platform the same DLLs run unchanged).
@@ -214,7 +214,7 @@ if ($LocalWheel) {
     Info "Publish output: $($published.Count) files, $totalKb KiB"
 
     Step "Staging .NET LoadGen binaries into the wheel source tree"
-    # As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime wheel
+    # The LoadGen DLLs ship inside the fdlt_runtime wheel
     # (under fdlt_runtime/loadgen/). Pre-populate that folder from the
     # fresh `dotnet publish` output so the next `python -m build` picks
     # them up via [tool.setuptools.package-data]. The folder is gitignored
@@ -469,8 +469,8 @@ if ($LocalWheel) {
     # Patch the generated notebook's WHEEL_URL to point at the freshly
     # uploaded wheel. build_notebooks.py emits the sentinel
     # `REPLACE_ME_WITH_WHEEL_URL`; we swap it for the abfss:// URL here so
-    # every redeploy lines up cell 2 with whatever filename setuptools-scm
-    # minted for this build.
+    # every redeploy lines up WHEEL_URL (cell 1) with whatever filename
+    # setuptools-scm minted for this build.
     Step "Patching notebook WHEEL_URL"
     $NotebookPath = Join-Path $NotebooksDir "LoadTest-Main.ipynb"
     $nbText = Get-Content $NotebookPath -Raw
@@ -530,10 +530,10 @@ function Deploy-Notebook {
         }
     } elseif ($SkipNotebookUpdate) {
         Info "Found existing notebook id=$($existing.id) — leaving in place (-SkipNotebookUpdate)"
-        Warn "  Cell 2 still points at whatever WHEEL_URL was embedded the last time the notebook was deployed."
+        Warn "  Its WHEEL_URL (cell 1) still points at whatever wheel was embedded the last time the notebook was deployed."
         Warn "  If that wheel is no longer in Files/, the notebook will fail at the pip-install step."
     } else {
-        Info "Reusing notebook id=$($existing.id) — updating definition (WHEEL_URL is rebaked each deploy)"
+        Info "Reusing notebook id=$($existing.id) — replacing its definition (edits to LoadTest-Main are overwritten)"
         $body = @{ definition = $definition }
         $url = "$ApiBase/v1/workspaces/$wsId/notebooks/$($existing.id)/updateDefinition"
         $r = Invoke-FabricRaw -Method POST -Url $url -Body $body

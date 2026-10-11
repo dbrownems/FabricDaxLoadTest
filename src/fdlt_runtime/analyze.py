@@ -29,8 +29,7 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
              trace_csv_path: str | Path | None = None):
     """Plot bucketed query-duration band + QPS + active-user count from a LoadGen CSV.
 
-    Mirrors the chart that used to live in notebook cell 6: a 3-panel
-    figure where the top panel shows the per-bucket min/max query-duration
+    A 3-panel figure where the top panel shows the per-bucket min/max query-duration
     band + mean line, the middle stacks success vs error QPS, and the
     bottom plots active users over time. When ``trace_csv_path`` is
     supplied and contains ``ExecutionMetrics`` events with CPU data, an
@@ -169,14 +168,13 @@ def plot_run(csv_path: str | Path, *, title: str | None = None,
     return fig
 
 
-def _cpu_per_second(trace_csv_path, df, duration_s):
+def _cpu_per_second(trace_csv_path, df, duration_s):  # noqa: C901
     """Bucket engine-side CPU into seconds-of-CPU-per-second-of-wallclock.
 
     Reads the trace CSV (best-effort; returns empty if missing/empty),
     filters to ``ExecutionMetrics`` events and parses ``totalCpuTimeMs``
-    and ``durationMs`` from the JSON ``TextData`` payload (v0.10.2+;
-    previously read ``QueryEnd`` rows' ``CpuMs`` and ``DurationMs``
-    columns directly). Computes each event's wallclock interval relative
+    and ``durationMs`` from the JSON ``TextData`` payload. Computes each
+    event's wallclock interval relative
     to test start (T0 derived from the executions CSV's ``StartUtc`` −
     ``StartTimeMs`` alignment), then **distributes CpuMs uniformly over
     its [start, end] interval** so events that span multiple buckets

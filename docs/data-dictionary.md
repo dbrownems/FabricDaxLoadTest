@@ -63,18 +63,17 @@ serial).
 
 ### Walk-through of one query's life
 
-1. Client sends DAX over the XMLA endpoint.
-2. AS assigns an `ActivityId` (one per query) and a `RequestId`
-   (one per request — typically same as ActivityId for one-shot
-   queries).
-3. **FE** parses, builds a logical plan, then a physical plan.
-4. Plan executes: FE drives, calling **SE** for each scan needed.
+1. Client sends DAX over the XMLA endpoint. LoadGen stamps each query
+   with its own `ActivityId` (see [`tracing.md`](tracing.md#correlation));
+   AS assigns a `RequestId`.
+2. **FE** parses, builds a logical plan, then a physical plan.
+3. Plan executes: FE drives, calling **SE** for each scan needed.
    Each SE call is one **VertiPaq scan** or **DirectQuery** push-down.
-5. FE assembles SE results, applies remaining DAX, materializes the
+4. FE assembles SE results, applies remaining DAX, materializes the
    final rowset.
-6. AS emits an **`ExecutionMetrics`** trace event summarizing CPU and
+5. AS emits an **`ExecutionMetrics`** trace event summarizing CPU and
    duration totals across FE + SE.
-7. Result streamed back to the client.
+6. Result streamed back to the client.
 
 ### Where the load-test columns come from
 
@@ -84,12 +83,14 @@ events onto the per-execution row:
 
 | Trace event | Populates |
 |---|---|
-| `ExecutionMetrics` | `EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, `ExecutionDelayMs`, `CapacityThrottlingMs`, `PeakMemoryKB`, `ExecutionMetricsJson` |
+| `ExecutionMetrics` | `RequestId`, `EngineDurationMs`, `EngineCpuMs`, `SECpuMs`, `FECpuMs`, `ExecutionDelayMs`, `CapacityThrottlingMs`, `PeakMemoryKB`, `ExecutionMetricsJson` |
 | `DirectQueryEnd` | `DirectQueryCount`, `DirectQueryDurationMs`, `DirectQueryCpuMs` |
-| *(optional)* `VertiPaqSEQueryEnd` | `VertiPaqQueryCount`, `VertiPaqDurationMs` — only populated by external Trace Capture flows; load tests don't subscribe to this high-volume event class anymore (its SE CPU is covered by `SECpuMs` from `ExecutionMetrics`). |
 
-Correlation key is `(RequestId, ActivityId)` — the same `ActivityId` the
-client saw when issuing the query.
+`ExecutionMetrics` rows are matched to executions by the `ActivityId`
+LoadGen sent with each query (its last 4 bytes encode `QuerySeq`).
+`DirectQueryEnd` rows carry only the `RequestId`, so they're matched
+through the `ExecutionMetrics` row with the same `RequestId`. See
+[`tracing.md`](tracing.md) for the captured events and their limits.
 
 ### Wall-clock budget
 
@@ -124,14 +125,14 @@ also reports CPU-seconds consumed, not wall-clock).
 
 ## `LoadTests`
 
-One row per logical test (e.g. `"Main"`, `"DIAD 5u baseline"`). Identity is
-keyed by `LoadTestId` (a hash of the name). `MERGE` semantics — re-running
-the same notebook upserts this row in place.
+One row per logical test — in practice one per notebook. Keyed by
+`LoadTestId`, built from the workspace and notebook names. `MERGE`
+semantics — re-running the same notebook upserts this row in place.
 
 | Column | Type | Description |
 |---|---|---|
-| `LoadTestId` | string | Hash of `Name`. Primary key. Joins to `LoadTestRuns.LoadTestId` and `QueryExecutions.LoadTestId`. |
-| `Name` | string | Human label set by `LOAD_TEST_NAME` in cell 1, or derived from the notebook filename (`LoadTest-Main` → `Main`). |
+| `LoadTestId` | string | `lt-<workspace-slug>-<notebook-slug>` (lower-case, non-alphanumerics → `-`). Stable across runs of the same notebook in the same workspace; changes if either is renamed. Primary key. Joins to `LoadTestRuns.LoadTestId` and `QueryExecutions.LoadTestId`. |
+| `Name` | string | The notebook's display name (e.g. `LoadTest-Main`). |
 | `WorkspaceId` | string | GUID of the **driver** workspace (the one hosting the notebook). |
 | `WorkspaceName` | string | Friendly name of the driver workspace. |
 | `NotebookId` | string | GUID of the notebook that ran the test. |
@@ -155,7 +156,7 @@ One row per execution. **Append-only** in practice (each run mints a fresh
 
 | Column | Type | Description |
 |---|---|---|
-| `RunId` | string | Primary key. Timestamp-based GUID minted at run start. |
+| `RunId` | string | Primary key. `run-yyyyMMdd-HHmmss` (UTC) minted by LoadGen at run start. |
 | `LoadTestId` | string | FK → `LoadTests.LoadTestId`. |
 | `RunName` | string | `<LoadTestName>-NN` where NN is the 1-based run sequence within this LoadTest, computed at write time. |
 | `OwnerType` | string | Always `"LoadTestRun"` here; the column exists so `TraceCapture`-originated rows in `QueryExecutions` / `TraceEvents` can share the schema (`OwnerType="TraceCapture"`). |
@@ -178,9 +179,9 @@ One row per execution. **Append-only** in practice (each run mints a fresh
 | `TotalQueries` | int | All execution attempts. |
 | `SuccessfulQueries` | int | Attempts with `Outcome="Success"`. |
 | `FailedQueries` | int | Attempts with `Outcome="Error"`. |
-| `Qps` | double | `TotalQueries / DurationSec` averaged over the steady-state window. |
-| `Status` | string | `Completed`, `Aborted`, `Failed`. |
-| `AbortReason` | string | Free-text if `Status != Completed`. |
+| `Qps` | double | `SuccessfulQueries` ÷ the run's elapsed seconds as measured by LoadGen — trace setup, warm-up and ramp included, so it understates the steady-state rate. `0.0` if LoadGen produced no summary. |
+| `Status` | string | `Completed`, or `Cancelled` (the run was interrupted; LoadGen exit code 130). `Aborted` is reserved for runs persisted with an error — the notebook doesn't persist failed runs today. |
+| `AbortReason` | string | LoadGen's error message when `Status = Aborted`; NULL otherwise. |
 | `P50Ms` | double | 50th percentile of `ClientDurationMs` across this run's successful executions. |
 | `P95Ms` | double | 95th percentile. |
 | `P99Ms` | double | 99th percentile. |
@@ -245,11 +246,11 @@ implementation detail.)
 | `SourceId` | string | `RunId` for load tests. |
 | `LoadTestId` | string | FK → `LoadTests.LoadTestId`. |
 | `UserIndex` | int | Virtual-user ordinal within the run (0..`UserCount-1`). |
-| `UserEmail` | string | Impersonated user (`EffectiveUserName`) — see [docs/impersonation.md](impersonation.md). Empty when no impersonation. |
+| `UserEmail` | string | Impersonated user (`EffectiveUserName`) — see [docs/impersonation.md](impersonation.md) — or `cd:<CustomData>` when only `CustomData` is set; NULL without impersonation. |
 | `QueryIndex` | int | Position in the scenario's query list. |
 | `QueryHash` | string | FK → `Queries.QueryHash`. |
 | `Iteration` | int | Pass through the query list this virtual user is on. |
-| `QuerySeq` | int | Monotonic per-user query sequence. Last 4 hex bytes of `ActivityId`. |
+| `QuerySeq` | int | Sequence number of the execution attempt within the run (shared counter across all users; a retry after a reconnect gets a new number). Encoded in the last 4 bytes of the `ActivityId` LoadGen sends with the query. |
 | `RequestId` | string | AS-server request ID (back-filled from the `ExecutionMetrics` trace via `(SourceId, QuerySeq)`). Joins to `TraceEvents.RequestId`. |
 | `LogicalSessionId` | string | `<LoadTestId>:<UserIndex>` pseudo-id. One logical session per virtual user (the AS-server `SessionId` is not emitted on `ExecutionMetrics`). |
 
@@ -298,14 +299,16 @@ multi-core scans, CPU can exceed wall-clock. They line up 1:1 with what
 
 ### Storage Engine breakdown
 
-VertiPaq and DirectQuery columns are mutually exclusive in practice:
-import/Direct Lake models populate the VertiPaq columns; DirectQuery
-composite models populate the DirectQuery columns.
+Only the DirectQuery columns are populated: they're aggregated from
+`DirectQueryEnd` events, which appear for DirectQuery and composite
+models (and for Direct Lake queries that fall back to DirectQuery). The
+VertiPaq columns are reserved and always NULL — the high-volume
+`VertiPaqSEQueryEnd` event isn't captured; `SECpuMs` covers VertiPaq CPU.
 
 | Column | Type | Description |
 |---|---|---|
-| `VertiPaqQueryCount` | int | Number of VertiPaq SE scans the query issued. NULL for load tests (this tool no longer subscribes to event 83 `VertiPaqSEQueryEnd` because it's high-volume and `SECpuMs` already covers the CPU). |
-| `VertiPaqDurationMs` | long | Sum of VertiPaq scan durations. Same NULL caveat. |
+| `VertiPaqQueryCount` | int | Reserved; always NULL. |
+| `VertiPaqDurationMs` | long | Reserved; always NULL. |
 | `DirectQueryCount` | int | Number of DirectQuery push-downs (rowsets the engine asked the source for). |
 | `DirectQueryDurationMs` | long | Sum of DQ wall-clock durations. Dominates `EngineDurationMs` for DQ-heavy queries. |
 | `DirectQueryCpuMs` | long | CPU AS itself spent processing DQ results (not the SQL source's CPU). |
@@ -321,9 +324,9 @@ composite models populate the DirectQuery columns.
 | Column | Type | Description |
 |---|---|---|
 | `Outcome` | string | `Success` or `Error`. |
-| `RowCount` | int | Rows in the result set. |
-| `ResponseBytes` | long | Approximate response payload size in bytes. |
-| `ErrorMessage` | string | ADOMD exception text on `Outcome=Error`, else empty. |
+| `RowCount` | int | Rows in the result set (0 when `SKIP_RESULTS = True`). |
+| `ResponseBytes` | long | Reserved; always NULL (rows written by older versions contain `-1`). Response size isn't measured. |
+| `ErrorMessage` | string | ADOMD exception text on `Outcome=Error` (first 500 characters), else NULL. |
 | `ActiveUsersAtStart` | int | How many virtual users were running when this query started. Lets you compute "duration as a function of concurrency". |
 
 ---
@@ -343,12 +346,12 @@ trace events (e.g. inspecting `TextData` on `ExecutionMetrics` or
 | `LoadTestId` | string | FK → `LoadTests.LoadTestId`. |
 | `UtcTimestamp` | timestamp | When AS emitted the event. |
 | `EventClass` | string | AS event class name (`ExecutionMetrics`, `DirectQueryEnd`, etc.). See [Microsoft Learn — Analysis Services trace events](https://learn.microsoft.com/en-us/analysis-services/trace-events/analysis-services-trace-events). |
-| `DurationMs` | long | Event-class-specific. For `ExecutionMetrics` it's the query wall-clock; for `DirectQueryEnd` it's the single push-down's duration. |
-| `CpuMs` | long | Event-class-specific CPU. |
-| `ApplicationName` | string | Client `ApplicationName` connection property (LoadGen sets a distinct value). |
+| `DurationMs` | long | The event's `Duration` column — set on `CommandEnd` and `DirectQueryEnd`; `0` on events that don't carry it (including `ExecutionMetrics`, whose duration is `durationMs` in `TextData`). |
+| `CpuMs` | long | The event's `CPUTime` column; `0` on events that don't carry it (including `ExecutionMetrics` — see `totalCpuTimeMs` in `TextData`). |
+| `ApplicationName` | string | Client `Application Name` connection property: `FabricDaxLoadTest/<RunId>` for the load-test connections. |
 | `UserName` | string | AS-reported caller user. |
-| `SessionId` | string | AS-server session GUID. |
+| `SessionId` | string | AS-server session GUID. Requested on `Command*` and `DirectQuery*` events; not available on `ExecutionMetrics` or `Error`. |
 | `RequestId` | string | AS-server request GUID. Joins to `QueryExecutions.RequestId`. |
-| `ActivityId` | string | AS-server activity GUID. Last 4 hex bytes decoded big-endian = `QuerySeq`. |
+| `ActivityId` | string | The `ActivityID` LoadGen sent with the query. Last 4 bytes decoded big-endian = `QuerySeq`. |
 | `DatabaseName` | string | Semantic-model name on the server. |
-| `TextData` | string | Event payload — JSON for `ExecutionMetrics`, SQL for `DirectQueryEnd`, etc. |
+| `TextData` | string | Event payload — JSON for `ExecutionMetrics`, the source query for `DirectQueryEnd`, etc. **Truncated to 500 characters** in this version (a known limitation; see [`tracing.md`](tracing.md#known-limitations)). |

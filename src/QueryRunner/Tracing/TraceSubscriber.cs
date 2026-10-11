@@ -15,7 +15,7 @@
 // <ID>/<Name> nodes per-run so each load test gets its own trace
 // (no cross-run interference). The embedded XMLA ships WITHOUT a
 // <Filter> clause — PBI Service rejects most filter forms on
-// subscription traces (see .copilot/tracing-notes.md §3). Filtering by
+// subscription traces (see docs/tracing.md). Filtering by
 // ApplicationName=FabricDaxLoadTest/<RunId> happens client-side in
 // ProcessRow.
 //
@@ -35,7 +35,6 @@ using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -102,18 +101,21 @@ public sealed class TraceSubscriber : IAsyncDisposable
         try { _log("FATAL: " + msg); } catch { }
     }
 
-    /// <summary>
-    /// Fires for every event that survives the application filter, BEFORE
-    /// it is written to the channel. Used for side-effect-free observation
-    /// (CSV recording, perf-data file). Exceptions are caught.
-    /// </summary>
-    public event Action<AsTraceEvent>? OnRawEvent;
-
+    /// <param name="xmlaEndpoint">XMLA endpoint of the workspace
+    /// (<c>powerbi://…</c>), optionally with a <c>?readonly</c> replica
+    /// suffix.</param>
+    /// <param name="token">Bearer token; null or empty for integrated
+    /// auth (local SSAS).</param>
+    /// <param name="database">Semantic model to trace. Power BI only
+    /// allows database-scoped traces.</param>
     /// <param name="applicationFilter">If non-null, drop rows whose
-    /// ApplicationName column does not match exactly. The load test
+    /// ApplicationName is set and doesn't match exactly (rows without an
+    /// ApplicationName are kept). The load test
     /// driver sets ApplicationName = "FabricDaxLoadTest/&lt;RunId&gt;" on
     /// its query connections; the trace is unfiltered server-side and
     /// this is the only way to isolate the run's events.</param>
+    /// <param name="log">Log sink; falls back to <c>Console.Error</c> if
+    /// it throws.</param>
     /// <param name="onFatalError">Invoked from the reader loop when the
     /// trace subscription fails non-recoverably (subscribe/read exception,
     /// not a clean stream-end during shutdown). The host should treat this
@@ -145,12 +147,11 @@ public sealed class TraceSubscriber : IAsyncDisposable
         _onFatalError = onFatalError;
         _channel = Channel.CreateBounded<AsTraceEvent>(new BoundedChannelOptions(10_000)
         {
-            // Wait would back-pressure the row pump and let ADOMD time out;
-            // DropOldest would silently lose QueryEnd/ExecutionMetrics rows
-            // and break correlation. DropWrite drops the NEWEST event when
-            // the consumer is too slow, exposed via EventsDroppedByBackpressure
-            // so analysis can flag suspect runs. The 10k buffer is ample for
-            // a fast Delta-table sink.
+            // When the CSV writer falls 10k events behind, new events are
+            // discarded so the reader keeps draining the server cursor (a
+            // stalled cursor makes AS stop emitting). Note: in DropWrite
+            // mode TryWrite returns true even for a discarded item, so
+            // EventsDroppedByBackpressure does not count these drops today.
             FullMode = BoundedChannelFullMode.DropWrite,
             SingleReader = true,
             SingleWriter = true,
@@ -159,7 +160,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
 
     public async Task StartAsync(CancellationToken ct)
     {
-        // Open + Delete + Create on the CALLER thread. Doing these on a
+        // Open + Create on the CALLER thread. Doing these on a
         // background Task.Run thread caused PBI to return a non-rowset
         // XMLA response for the subsequent Subscribe (AdomdUnknownResponse­
         // Exception "The result set returned by the server is not a
@@ -173,25 +174,6 @@ public sealed class TraceSubscriber : IAsyncDisposable
 
             _traceId = "FDLT-" + Guid.NewGuid().ToString("N").Substring(0, 12);
             LogSafe($"Trace id: {_traceId}");
-
-            // Pre-emptively delete any existing trace with this id (left
-            // over from a crashed run). Server returns "does not exist"
-            // when there's nothing to delete — swallow that.
-            try
-            {
-                using var del = (AdomdCommand)_connection.CreateCommand();
-                del.Properties.Add(new AdomdProperty("Catalog", _database));
-                del.CommandText = BuildDeleteXmla(_traceId);
-                del.ExecuteNonQuery();
-            }
-            catch (Exception ex) when (ex.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
-            {
-                // expected
-            }
-            catch (Exception ex)
-            {
-                LogSafe("Pre-delete returned: " + Flatten(ex));
-            }
 
             // Load the XMLA template from the embedded resource and
             // substitute the per-run trace ID/Name. Then issue Create
@@ -214,7 +196,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
             LogSafe("StartAsync FAILED: " + LastError);
             try { _connection?.Close(); } catch { }
             throw new InvalidOperationException(
-                "Trace subscription failed and the load test cannot continue: " + LastError, ex);
+                "Trace subscription failed: " + LastError, ex);
         }
 
         // Subscribe runs on a background thread — ExecuteReader on a
@@ -337,16 +319,10 @@ public sealed class TraceSubscriber : IAsyncDisposable
             // Application-name filter (client-side: PBI Service rejects
             // server-side <Filter> clauses on subscription traces).
             //
-            // IMPORTANT: when ApplicationName is NULL on the row, the
-            // event class either doesn't emit ApplicationName (e.g.
-            // Event 85 VertiPaqSEQueryCacheMatch — which is restricted
-            // to a small column set per .copilot/tracing-notes.md §4)
-            // or AS chose not to populate it. We admit those rows
-            // unconditionally and rely on downstream RequestID
-            // correlation to drop non-load-test cache events. Without
-            // this carve-out, every Event 85 would be filtered away —
-            // a real measurement loss because cache hit-rate is one of
-            // the load-test signals.
+            // Rows whose ApplicationName is NULL are admitted, not dropped.
+            // The carve-out was added for an event class that didn't emit
+            // the column; every event in the current FilteredTrace.xmla
+            // requests it (see docs/tracing.md).
             dict.TryGetValue(TraceColumn.ApplicationName, out var appName);
             if (_applicationFilter != null
                 && appName != null
@@ -396,12 +372,9 @@ public sealed class TraceSubscriber : IAsyncDisposable
                 RequestId: dict.GetValueOrDefault(TraceColumn.RequestID),
                 ActivityID: dict.GetValueOrDefault(TraceColumn.ActivityID));
 
-            // Channel write FIRST so a slow OnRawEvent observer can't
-            // drop events from the live aggregator pipeline. TryWrite
-            // returns false when the bounded channel is full under
-            // DropWrite mode (consumer slower than producer); we count
-            // those as backpressure drops rather than letting them
-            // silently corrupt the QueryEnd/ExecutionMetrics correlator.
+            // TryWrite never blocks. With DropWrite it returns true even
+            // when the full channel discards the event, so the else branch
+            // only runs after the channel has been completed.
             if (_channel.Writer.TryWrite(ev))
             {
                 EventsSeen++;
@@ -410,8 +383,6 @@ public sealed class TraceSubscriber : IAsyncDisposable
             {
                 EventsDroppedByBackpressure++;
             }
-
-            try { OnRawEvent?.Invoke(ev); } catch { /* never let observer crash trace */ }
         }
         catch (Exception ex)
         {
@@ -437,21 +408,9 @@ public sealed class TraceSubscriber : IAsyncDisposable
     }
 
     private static TraceColumn? MapColumnName(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return null;
-        if (Enum.TryParse<TraceColumn>(name, ignoreCase: true, out var col)) return col;
-        return name.ToUpperInvariant() switch
-        {
-            "CPUTIME" => TraceColumn.CpuTime,
-            "SESSIONID" => TraceColumn.SessionID,
-            "REQUESTID" => TraceColumn.RequestID,
-            "NTUSERNAME" => TraceColumn.NTUserName,
-            "SPID" => TraceColumn.Spid,
-            "CONNECTIONID" => TraceColumn.ConnectionID,
-            "OBJECTID" => TraceColumn.ObjectID,
-            _ => null,
-        };
-    }
+        => !string.IsNullOrEmpty(name) && Enum.TryParse<TraceColumn>(name, ignoreCase: true, out var col)
+            ? col
+            : null;
 
     private static DateTime? ParseDate(string? s)
         => DateTime.TryParse(s, CultureInfo.InvariantCulture,
@@ -493,7 +452,7 @@ public sealed class TraceSubscriber : IAsyncDisposable
     // Server may reject individual columns on individual events with
     // "The event Id=N does not contain the column Id=M". Self-heal by
     // removing the offending <ColumnID> from the request and retrying.
-    // Capped at 32 attempts. See .copilot/tracing-notes.md §4.
+    // Capped at 32 attempts. See docs/tracing.md.
     private static readonly Regex ColumnRejectRegex =
         new(@"event\s+Id=(\d+)\s+does not contain the column\s+Id=(\d+)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
