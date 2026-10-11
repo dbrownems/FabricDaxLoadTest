@@ -1,0 +1,10 @@
+root = true
+
+[*.cs]
+# Unused code. Reported at build time (EnforceCodeStyleInBuild in
+# Directory.Build.props) and fails CI, so dead code doesn't creep back.
+dotnet_diagnostic.IDE0005.severity = warning  # unnecessary using directive
+dotnet_diagnostic.IDE0051.severity = warning  # unused private member
+dotnet_diagnostic.IDE0052.severity = warning  # private member is never read
+dotnet_diagnostic.IDE0059.severity = warning  # value assigned is never used
+dotnet_diagnostic.IDE0060.severity = warning  # unused parameter

@@ -11,7 +11,7 @@ namespace FabricDaxLoadTest
     /// All user threads call RecordQuery() after each execution; the periodic
     /// reporter reads the window and resets it via SnapshotAndReset().
     /// </summary>
-    public class QueryRunnerStatus
+    internal sealed class QueryRunnerStatus
     {
         public static readonly QueryRunnerStatus Instance = new();
 
@@ -20,12 +20,11 @@ namespace FabricDaxLoadTest
         private long _totalErrors;
         private int _activeUsers;
         private int _inFlightQueries;
-        private int _totalConnections;
-        private int _distinctUsers;
 
-        // Ring of (timestampTicks, durationMs) for successful queries within
-        // the last DURATION_WINDOW_SECONDS. Single-thread (snapshot loop)
-        // trims the head; producers (user threads) only enqueue. Lock-free.
+        // Queue of (timestampTicks, durationMs) for successful queries.
+        // ComputeDurationPercentiles (called by the 1 Hz snapshot loop)
+        // trims entries older than DURATION_WINDOW_SECONDS; producers
+        // (user threads) only enqueue. Lock-free.
         private const int DURATION_WINDOW_SECONDS = 5;
         private readonly ConcurrentQueue<(long Ticks, double DurationMs)> _recentDurations = new();
 
@@ -49,8 +48,6 @@ namespace FabricDaxLoadTest
             _totalErrors = 0;
             _activeUsers = 0;
             _inFlightQueries = 0;
-            _totalConnections = 0;
-            _distinctUsers = 0;
             ResetWindow();
             while (_allResults.TryTake(out _)) { }
             while (_recentDurations.TryDequeue(out _)) { }
@@ -65,12 +62,6 @@ namespace FabricDaxLoadTest
             Interlocked.Exchange(ref _windowSumTicks, 0);
             _windowActiveUsers.Clear();
             _windowActiveQueries.Clear();
-        }
-
-        public void SetConnectionInfo(int totalConnections, int distinctUsers)
-        {
-            _totalConnections = totalConnections;
-            _distinctUsers = distinctUsers;
         }
 
         public void IncrementActiveUsers() => Interlocked.Increment(ref _activeUsers);
@@ -99,7 +90,7 @@ namespace FabricDaxLoadTest
                 _windowActiveUsers.TryAdd(result.UserIndex, 0);
                 _windowActiveQueries.TryAdd(result.QueryIndex, 0);
 
-                // Push successful duration into the rolling-percentile ring.
+                // Push successful duration into the rolling-percentile queue.
                 // Bounded implicitly by the snapshot-loop trimming to ~5s.
                 _recentDurations.Enqueue((DateTime.UtcNow.Ticks, result.DurationMs));
 
@@ -117,7 +108,7 @@ namespace FabricDaxLoadTest
 
         /// <summary>
         /// Drain entries older than <see cref="DURATION_WINDOW_SECONDS"/> from
-        /// the rolling-duration ring and return p50/p95/p99 over what remains.
+        /// the rolling-duration queue and return p50/p95/p99 over what remains.
         /// Called once per second from the snapshot loop. Returns
         /// (0,0,0,0) when the window is empty.
         /// </summary>

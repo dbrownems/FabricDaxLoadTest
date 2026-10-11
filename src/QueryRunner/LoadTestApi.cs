@@ -6,21 +6,23 @@ namespace FabricDaxLoadTest
 {
     /// <summary>
     /// Behavior when a query returns an error (DAX semantic error, query
-    /// timeout reported by AS, etc.). Infrastructure failures
-    /// (unrecoverable connection loss) always abort regardless of policy.
+    /// timeout reported by AS, etc.). Independently of this policy, a
+    /// failed reconnect after a lost connection stops that user and
+    /// fails the run, and the run fails if no user can connect at all.
     /// </summary>
     public enum ErrorPolicy
     {
         /// <summary>Record the error and keep running. Default.</summary>
         Continue = 0,
-        /// <summary>Throw on the first per-query error and fail the run.</summary>
+        /// <summary>Stop the user whose query failed and report the run
+        /// as failed when it ends. Other users keep running until the
+        /// duration elapses.</summary>
         Abort = 1,
     }
 
     /// <summary>
     /// All inputs to <see cref="QueryRunner.StartLoadTest(LoadTestConfig)"/>.
-    /// Plain class with mutable properties so pythonnet callers can populate
-    /// it field-by-field without dealing with positional record constructors.
+    /// Populated by the LoadGen CLI from its command-line options.
     /// </summary>
     public sealed class LoadTestConfig
     {
@@ -60,8 +62,8 @@ namespace FabricDaxLoadTest
         /// <summary>
         /// How to handle per-query errors. Default <see cref="ErrorPolicy.Continue"/>
         /// so the run completes and the per-execution telemetry shows the
-        /// failure rate under load. Infrastructure failures (connect-then-fail,
-        /// reconnect-then-fail) still abort the run regardless of this setting.
+        /// failure rate under load. A failed reconnect still fails the run
+        /// regardless of this setting (see <see cref="FabricDaxLoadTest.ErrorPolicy"/>).
         /// </summary>
         public ErrorPolicy ErrorPolicy { get; set; } = ErrorPolicy.Continue;
 
@@ -77,12 +79,9 @@ namespace FabricDaxLoadTest
         public bool EnableTracing { get; set; } = true;
 
         /// <summary>
-        /// Optional sink invoked from the .NET logger thread for every log
-        /// line. Embedded callers (Livy / Jupyter notebooks) should leave
-        /// this null and read the file log + <see cref="LoadTestHandle.LatestSnapshot"/>;
-        /// the LoadGen CLI sets it to <c>Console.WriteLine</c>. Callbacks
-        /// must be lightweight and must not call back into the .NET layer
-        /// (pythonnet GIL re-entrancy hazard).
+        /// Optional sink invoked from the logger's background thread for
+        /// every log line. The LoadGen CLI uses it to echo log lines to
+        /// stderr. Keep it lightweight; exceptions it throws are swallowed.
         /// </summary>
         public Action<string>? LogCallback { get; set; }
     }
@@ -91,16 +90,15 @@ namespace FabricDaxLoadTest
     /// Immutable point-in-time view of a running load test. Updated ~1 Hz
     /// by the driver thread and exposed through
     /// <see cref="LoadTestHandle.LatestSnapshot"/>. Safe to read from any
-    /// thread (including pythonnet); reads are lock-free.
+    /// thread; reads are lock-free.
     /// </summary>
     public sealed class LoadTestProgressSnapshot
     {
-        public DateTime UtcNow { get; init; }
         public TimeSpan Elapsed { get; init; }
 
         /// <summary>
-        /// One of: "Pending", "Connecting", "Steady", "Cancelling",
-        /// "Done", "Cancelled", "Failed".
+        /// One of: "Pending", "Connecting", "Steady", "Done", "Cancelled",
+        /// "Failed".
         /// </summary>
         public string Phase { get; init; } = "Pending";
 
@@ -117,17 +115,16 @@ namespace FabricDaxLoadTest
         public long Failed { get; init; }
 
         /// <summary>
-        /// Queries-per-second over the last ~5 seconds. Computed by
-        /// the snapshot loop from the cumulative success counter; 0 until
-        /// at least one full sample interval has elapsed.
+        /// Successful queries per second over the last snapshot interval
+        /// (~1 second). Computed by the snapshot loop from the cumulative
+        /// success counter; 0 until the first interval has elapsed.
         /// </summary>
         public double RollingQps { get; init; }
 
         /// <summary>
-        /// Number of successful queries currently executing (incremented
-        /// before <c>ExecuteCommand</c>, decremented in finally). Includes
-        /// queries blocked on a connection but not those waiting on a
-        /// per-user iteration semaphore.
+        /// Number of queries currently executing (incremented when
+        /// <c>ExecuteQuery</c> starts, decremented in its finally block),
+        /// regardless of eventual outcome.
         /// </summary>
         public int InFlight { get; init; }
 
@@ -211,20 +208,6 @@ namespace FabricDaxLoadTest
         {
             // GetAwaiter().GetResult() preserves the original exception's
             // stack trace better than catching AggregateException.
-            return _task.GetAwaiter().GetResult();
-        }
-
-        /// <summary>
-        /// Block up to <paramref name="timeoutMs"/> milliseconds for
-        /// completion. Throws <see cref="TimeoutException"/> if the run
-        /// has not finished. Does NOT request cancellation — the caller
-        /// must invoke <see cref="Cancel"/> separately if desired.
-        /// </summary>
-        public string WaitOrThrow(int timeoutMs)
-        {
-            if (!_task.Wait(timeoutMs))
-                throw new TimeoutException(
-                    $"Load test {RunId} did not complete within {timeoutMs} ms.");
             return _task.GetAwaiter().GetResult();
         }
 

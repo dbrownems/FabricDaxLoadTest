@@ -8,37 +8,32 @@
           Server-side trace definition for FabricDaxLoadTest.
 
           The <ID> and <Name> nodes above are placeholders rewritten at
-          runtime by TraceSubscriber.LoadCreateTemplate to FDLT-<RunId>.
+          runtime by TraceSubscriber.LoadCreateTemplate to a per-run
+          FDLT-<random id>.
 
           Event/column matrix curated from PbiLoadTester's
           LiveTraceCapture.EventColumns dictionary, which has been tested
-          against the live PBI Service and Fabric XMLA endpoints. Three
-          rules below carry over:
+          against the live PBI Service and Fabric XMLA endpoints. Rules
+          (details and history in docs/tracing.md):
 
           1. ColumnID 0 (EventClass) is included on EVERY event. ADOMD's
              Subscribe reader returns rows with the union of all
              requested columns; without EventClass we cannot map a row
              back to its event class and the row is dropped. PBI's own
              Profiler-export trace definitions OMIT EventClass per
-             event — copying those breaks the row dispatcher. See
-             .copilot/tracing-notes.md §6.
+             event — copying those breaks the row dispatcher.
           2. Never include ColumnID 44 (RequestParameters) or 45
              (RequestProperties) on any event. PBI Service emits these
              as list-shaped BinaryXml that the ADOMD reader rejects
              mid-stream with "Lists of BinaryXml value tokens not
              supported." — kills the whole subscription.
-          3. Event 85 (VertiPaqSEQueryCacheMatch) is restricted to a
-             small confirmed-accepted column set per
-             .copilot/tracing-notes.md §4. The PBI Service rejects
-             any other column on event 85 with a generic schema error
-             that fails the entire <Create><Trace>.
+          3. Keep the event set small. Under heavy load the server-side
+             trace buffer can overflow, after which AS silently stops
+             emitting events for the rest of the run.
 
-          NO <Filter> clause. PBI Service can accept some Create-side
-          filters but the safe portable choice is to filter
-          client-side in TraceSubscriber.ProcessRow on
-          ApplicationName=FabricDaxLoadTest/<RunId>. Event 85 has no
-          ApplicationName column and is admitted by RequestID match
-          downstream. See .copilot/tracing-notes.md §3.
+          NO <Filter> clause: PBI Service rejects server-side filters on
+          subscription traces. TraceSubscriber.ProcessRow filters
+          client-side on ApplicationName=FabricDaxLoadTest/<RunId>.
         -->
         <Events>
 
@@ -105,23 +100,12 @@
             </Columns>
           </Event>
 
-          <!-- NOTE: Events 82 (VertiPaqSEQueryBegin), 85
-               (VertiPaqSEQueryCacheMatch), 112 (DAXQueryPlan), and 134
-               (JobGraph) were removed in v0.9.4. Event 83
-               (VertiPaqSEQueryEnd) removed in v0.9.12. Events 9
-               (QueryBegin) and 10 (QueryEnd) removed in v0.10.2: 9 was
-               never consumed; 10's three pieces of data
-               (Duration → EngineDurationMs, CpuTime → EngineCpuMs,
-               ActivityID → QuerySeq) are now sourced from
-               ExecutionMetrics (totalCpuTimeMs / durationMs in the
-               JSON, ActivityID on the trace row itself).
-               With 200-user load we observed the AS server-side trace
-               buffer overflowing after ~3.5 minutes (the engine
-               silently stops emitting new events, losing ~25% of
-               late-run queries; see .copilot/tracing-notes §).
-               Trace volume per query was ~14 events pre-v0.9.4,
-               ~5 events in v0.9.4-v0.9.11, ~3 events in v0.9.12, and
-               ~1 event from v0.10.2 onwards. -->
+          <!-- Events 9/10 (QueryBegin/End), 82/83/85 (VertiPaq SE
+               query events), 112 (DAXQueryPlan) and 134 (JobGraph) are
+               intentionally NOT captured: they multiplied per-query
+               trace volume and overflowed the server-side trace buffer
+               under load. ExecutionMetrics (136) supplies engine
+               duration and CPU instead. See docs/tracing.md. -->
 
           <!-- 98: DirectQueryBegin -->
           <Event>
@@ -173,19 +157,14 @@
             </Columns>
           </Event>
 
-          <!-- 112 (DAXQueryPlan) and 134 (JobGraph) removed in v0.9.4 —
-               see note above about per-query trace volume reduction. -->
-
-          <!-- 136: ExecutionMetrics — JSON CPU/memory/throttling metrics
-               (parsed by correlator). One per query — the *only* event
-               class persist.py / analyze.py consume now that QueryBegin
-               (event 9) and QueryEnd (event 10) are dropped (v0.10.2).
-               ExecutionMetrics carries totalCpuTimeMs + durationMs in
-               its JSON which replace QueryEnd.CpuTime + Duration, and
-               ColumnID 46 (ActivityID) lets us derive QuerySeq the
-               same way. NOTE: SessionID (ColumnID 39) is NOT
-               populated by AS on event 136 — only session-scoped
-               events (Command*, Audit*) carry it. -->
+          <!-- 136: ExecutionMetrics — JSON CPU/memory/throttling metrics,
+               one per query. persist.py reads engine duration
+               (durationMs) and CPU (totalCpuTimeMs) from its JSON;
+               analyze.py reads the CPU. ColumnID 46 (ActivityID) links
+               it back to the client-side execution (QuerySeq). NOTE:
+               SessionID (ColumnID 39) is NOT populated by AS on event
+               136 — only session-scoped events (Command*, Audit*)
+               carry it. -->
           <Event>
             <EventID>136</EventID>
             <Columns>
@@ -195,7 +174,7 @@
               <ColumnID>37</ColumnID>
               <ColumnID>41</ColumnID>
               <ColumnID>42</ColumnID>
-              <ColumnID>46</ColumnID>  <!-- ActivityID — replaces QueryEnd's role -->
+              <ColumnID>46</ColumnID>  <!-- ActivityID — links to QuerySeq -->
               <ColumnID>47</ColumnID>
             </Columns>
           </Event>

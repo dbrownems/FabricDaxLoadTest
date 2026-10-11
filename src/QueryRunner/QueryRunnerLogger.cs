@@ -8,33 +8,27 @@ using System.Threading.Tasks;
 namespace FabricDaxLoadTest
 {
     /// <summary>
-    /// Lock-free logger that enqueues all output to a single background
-    /// consumer thread via BlockingCollection. The consumer writes to
-    /// the on-disk log file and (optionally) invokes <see cref="OnLogLine"/>
-    /// for each line.
+    /// Logger that enqueues lines to a single background writer task via
+    /// a bounded <see cref="BlockingCollection{T}"/> (lines are dropped if
+    /// 4096 are already queued). The writer appends to the on-disk log
+    /// file and (optionally) invokes <see cref="OnLogLine"/> for each line.
     /// <para>
     /// IMPORTANT: this logger MUST NOT write to <c>Console.Out</c>
-    /// directly. When QueryRunner is hosted inside a Livy or Jupyter
-    /// kernel, .NET writes to fd 1 / stderr leak into the kernel's
-    /// JSON-RPC framing and corrupt every subsequent statement with
-    /// JSON-parse errors. The caller (e.g. LoadGen Program.cs) opts in
-    /// to console echo by setting <see cref="OnLogLine"/> to
-    /// <c>Console.WriteLine</c>; embedded callers leave it null and
-    /// rely on the file log + the <c>RunLoadTest</c> return string.
+    /// directly. In <c>--json-progress</c> mode LoadGen's stdout carries
+    /// only JSONL envelopes that runner.py parses; stray text corrupts
+    /// that stream. LoadGen opts in to console echo by setting
+    /// <see cref="OnLogLine"/> (it writes redacted lines to stderr).
     /// </para>
     /// </summary>
-    public sealed class QueryRunnerLogger : IDisposable
+    internal sealed class QueryRunnerLogger : IDisposable
     {
         private readonly BlockingCollection<string> _queue = new(boundedCapacity: 4096);
         private readonly Task _writerTask;
         private readonly string? _logFilePath;
 
         /// <summary>
-        /// Optional sink invoked for every log line. Set to
-        /// <c>Console.WriteLine</c> for an interactive console host;
-        /// leave null for embedded callers (Livy, notebooks) so the
-        /// kernel's stdout stays clean. Exceptions thrown by the
-        /// callback are swallowed so a misbehaving sink can never
+        /// Optional sink invoked for every log line. Exceptions thrown by
+        /// the callback are swallowed so a misbehaving sink can never
         /// stall the writer.
         /// </summary>
         public Action<string>? OnLogLine { get; set; }

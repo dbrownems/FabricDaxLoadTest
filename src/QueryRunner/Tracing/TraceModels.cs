@@ -1,11 +1,10 @@
 // Trace event models for the FabricDaxLoadTest XMLA-over-ADOMD subscriber.
 //
-// Two record types:
-//   AsTraceEvent — narrow shape consumed by the load-test correlator
-//   (downstream code pairs QueryEnd + ExecutionMetrics rows by RequestID
-//   to produce per-query telemetry). Adapted from PbiLoadTester's record
-//   of the same name; payload-bearing event-specific data lives in
-//   TextData (e.g. ExecutionMetrics carries CPU/memory JSON there).
+// AsTraceEvent — the narrow row shape written to the trace CSV.
+// Adapted from PbiLoadTester's record of the same name; event-specific
+// payloads live in TextData (e.g. ExecutionMetrics carries CPU/memory
+// JSON there). persist.py links ExecutionMetrics rows to executions by
+// ActivityID and DirectQueryEnd rows by RequestID (see docs/tracing.md).
 //
 // Plus minimal local enums TraceColumn and TraceEventClass so we don't
 // have to drag in the full Microsoft.AnalysisServices (AMO) NuGet
@@ -38,8 +37,10 @@ public sealed record AsTraceEvent(
     string? ActivityID);
 
 /// <summary>
-/// Subset of AMO's TraceColumn enum we actually consume. Values match
-/// the AS trace ColumnID schema. Authoritative source: Microsoft.
+/// Subset of AMO's TraceColumn enum: the columns FilteredTrace.xmla
+/// requests plus other AS trace columns (TraceSubscriber.ProcessRow
+/// reads only some of them). Values match the AS trace ColumnID
+/// schema. Authoritative source: Microsoft.
 /// AnalysisServices.TraceColumn (Microsoft.AnalysisServices.Core
 /// v19.114.0). Keep additions ordered by ColumnID for easy
 /// reconciliation against the Analysis Services trace documentation.
@@ -81,8 +82,11 @@ internal enum TraceColumn
 }
 
 /// <summary>
-/// Subset of AMO's TraceEventClass enum we actually subscribe to.
-/// Values match the AS trace EventID schema. Authoritative source:
+/// Subset of AMO's TraceEventClass enum, used to turn the numeric
+/// EventClass into a name. FilteredTrace.xmla subscribes to only some
+/// of these (see docs/tracing.md); the rest are kept so names stay
+/// readable if an event is re-enabled. Values match the AS trace
+/// EventID schema. Authoritative source:
 /// Microsoft.AnalysisServices.TraceEventClass (Microsoft.AnalysisServices.
 /// Core v19.114.0). Verified against MS Learn docs 2026-06-04.
 /// </summary>

@@ -1,9 +1,10 @@
 """Out-of-process LoadGen runner.
 
-Pulled from notebook cell 4. Spawns `dotnet LoadGen.dll --json-progress`,
-parses JSONL envelopes from stdout, surfaces live progress via an
-`on_status` callback, and returns a RunResult with everything cell 5 /
-5b need to persist.
+Spawns `dotnet LoadGen.dll --json-progress`, parses JSONL envelopes from
+stdout, surfaces live progress via an `on_status` callback, and returns a
+RunResult that `persist.write_run` and `analyze` consume. Also runs
+`LoadGen probe` for the first-user identity check (`probe_user`) and
+hosts the console progress helpers.
 """
 from __future__ import annotations
 
@@ -24,10 +25,9 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 class RunConfig:
     """Inputs to a single LoadGen run.
 
-    Mirrors the cell-1 parameter block plus the artifacts cell 3 used to
-    materialize on disk. The notebook still owns scenario loading
-    (via `fdlt_runtime.load_queries`) and token acquisition; everything
-    that talks to LoadGen lives here.
+    The notebook's cell-1 settings plus the loaded queries, users and
+    token. `notebook.run()` builds it after loading the scenario and
+    acquiring the token; everything that talks to LoadGen lives here.
     """
 
     # Identity / human labels
@@ -55,8 +55,8 @@ class RunConfig:
     queries: Sequence[str] = field(default_factory=list)
     users: Sequence[Mapping[str, str]] = field(default_factory=list)
 
-    # Auth
-    token: str = ""
+    # Auth. repr=False keeps the bearer token out of printed/logged objects.
+    token: str = field(default="", repr=False)
 
     @property
     def xmla(self) -> str:
@@ -86,7 +86,7 @@ class RunResult:
     stderr_tail: List[str]
 
 
-def run_load_test(
+def run_load_test(  # noqa: C901
     cfg: RunConfig,
     *,
     dotnet: str,
@@ -98,8 +98,9 @@ def run_load_test(
 
     `on_status` is called for every envelope (progress / started / result /
     error / unknown). The notebook's live status line is just the
-    progress envelope formatted; this lets cell 3 own the IPython
-    `update_display` calls without burying the formatting in here.
+    progress envelope formatted; this lets the caller
+    (`notebook._make_on_status`) own the IPython `update_display` calls
+    without burying the formatting in here.
 
     `log_folder` controls where the LoadGen subprocess writes its
     artifacts (executions CSV, trace CSV, *.log). When None (default),
@@ -194,8 +195,8 @@ def run_load_test(
 
     try:
         assert proc.stdout is not None
-        # Driver-CPU sampler. psutil is optional; if missing, the decorator
-        # is a no-op and the envelope passes through unchanged.
+        # Driver-CPU sampler (stdlib only): adds driverCpuPct /
+        # driverMemPct to progress envelopes when the OS supports it.
         cpu_sampler = _DriverCpuSampler()
         for raw in proc.stdout:
             line = raw.strip()
@@ -576,7 +577,7 @@ class LiveDashboard:
                 handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
                 mode = ctypes.c_ulong()
                 if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                    # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+                    # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING.
                     kernel32.SetConsoleMode(handle, mode.value | 0x0004)
             except Exception:
                 pass
@@ -652,7 +653,6 @@ class LiveDashboard:
             "Pending": 90,      # bright black / grey
             "Connecting": 33,   # yellow
             "Steady": 32,       # green
-            "Cancelling": 35,   # magenta
             "Done": 36,         # cyan
             "Cancelled": 35,    # magenta
             "Failed": 31,       # red
@@ -686,7 +686,6 @@ class LiveDashboard:
         bold = _ansi(1)
         reset = _ANSI_RESET
         col = _ansi(color)
-        col_bold = _ansi(1, color)
         green = _ansi(32)
         red = _ansi(31)
         yellow = _ansi(33)

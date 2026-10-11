@@ -1,6 +1,6 @@
 """Delta-table writer for FabricDaxLoadTest runs.
 
-Pulled from notebook cell 5b. Writes 6 tables:
+Writes 6 tables:
 
   LoadTests        — 1 row per logical test (MERGE on LoadTestId)
   LoadTestRuns     — 1 row per run (MERGE on RunId)
@@ -21,22 +21,17 @@ Pulled from notebook cell 5b. Writes 6 tables:
                      scheme as QueryExecutions so a future Trace Capture
                      workflow appends here without schema churn.
 
-Per-run snapshots: each notebook execution mints a fresh RunId and the
-queries DataFrame is keyed by (LoadTestId, RunId, QueryHash). Re-runs
-where the scenario changed retain the prior snapshot intact, so the
-LoadTestRuns row's `ScenarioHash` always resolves to a fully captured
-set of queries.
-
-Schema is forward-compatible with §1.6 unified-trace: every row carries
-OwnerType/OwnerId/OwnerKey for the eventual TraceOwners-driven slicer.
+Each notebook execution mints a fresh RunId. A run's QueryExecutions and
+TraceEvents rows are replaced as a unit (DELETE + INSERT on
+(Source, SourceId)), so persisting the same run again is idempotent.
+LoadTestRuns rows also carry OwnerType/OwnerId/OwnerKey so other data
+origins can share these tables later.
 """
 from __future__ import annotations
 
 import hashlib
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -108,7 +103,7 @@ def _scenario_hash(query_hashes: Iterable[str]) -> str:
     ).hexdigest()
 
 
-def write_run(
+def write_run(  # noqa: C901
     spark,
     *,
     table_base: str,
@@ -133,7 +128,7 @@ def write_run(
     run: RunResult,
     runtime_version: str,
 ) -> WriteSummary:
-    """Persist the 4 lakehouse tables for a single run."""
+    """Persist a single run to the 6 lakehouse Delta tables."""
     from pyspark.sql import Row
     from pyspark.sql.types import (
         StructType, StructField, StringType, IntegerType, LongType,
@@ -181,7 +176,7 @@ def write_run(
 
     def _upsert(df_, name: str, merge_keys):
         path = _path(name)
-        # All four tables are tiny per run (≤ ~10 MB raw for executions,
+        # All tables are tiny per run (≤ ~10 MB raw for executions,
         # ≤ ~50 MB for traces). Coalesce to 1 partition before write so
         # each Delta commit appends one Parquet file rather than N tiny
         # ones (Spark's post-shuffle default is 200). Keeps file count
@@ -221,18 +216,6 @@ def write_run(
         else:
             df_.write.format("delta").mode("overwrite").save(path)
 
-    def _replace_for_run(df_, name: str, run_id_: str):
-        path = _path(name)
-        # See _upsert: single-file writes for tiny per-run tables.
-        df_ = df_.coalesce(1)
-        if DeltaTable.isDeltaTable(spark, path):
-            DeltaTable.forPath(spark, path).delete(f"RunId = '{run_id_}'")
-            (df_.write.format("delta").mode("append")
-                .option("mergeSchema", "true").save(path))
-        else:
-            (df_.write.format("delta").mode("overwrite")
-                .option("mergeSchema", "true").save(path))
-
     def _replace_for_source(df_, name: str, source: str, source_id: str):
         """Generic delete-and-append for tables keyed by (Source, SourceId).
 
@@ -251,12 +234,12 @@ def write_run(
             (df_.write.format("delta").mode("overwrite")
                 .option("mergeSchema", "true").save(path))
 
-    # Build all 4 DataFrames first, then issue the writes concurrently
+    # Build all DataFrames first, then issue the writes concurrently
     # via a ThreadPoolExecutor. Spark sessions are thread-safe and the
     # JVM driver schedules jobs from different Python threads in
     # parallel; the writes are tiny and most of their wall-clock cost
     # is the Delta-log + commit overhead, not data shuffling. Doing
-    # them in parallel cuts cell-3 write latency from ~4× a single
+    # them in parallel cuts write latency from ~N× a single
     # write to roughly 1× the slowest write.
     # Ref: https://milescole.dev/data-engineering/2024/04/26/Fabric-Concurrency-Showdown-RunMultiple-vs-ThreadPool.html
 
@@ -297,8 +280,8 @@ def write_run(
     # LoadTestRuns -----------------------------------------------------------
     # RunName = "<LoadTestName>-NN" where NN = ROW_NUMBER() OVER
     # (PARTITION BY LoadTestId ORDER BY StartedAtUtc, RunId). We compute
-    # the sequence number by counting prior rows in LoadTestRuns; on a
-    # re-run of cell 3 the row for this RunId is MERGE-replaced, and the
+    # the sequence number by counting prior rows in LoadTestRuns; when
+    # the same RunId is persisted again its row is MERGE-replaced, and the
     # strict-less-than filter on (StartedAtUtc, RunId) excludes it so the
     # number stays stable.
     run_seq = 1
@@ -460,8 +443,8 @@ def write_run(
             StructField("Iteration",            IntegerType(),   True),
             StructField("QuerySeq",             IntegerType(),   True),
             # Session identity. RequestId is back-filled from the
-            # ExecutionMetrics trace row via (SourceId, QuerySeq) →
-            # ActivityId (v0.10.2+). The AS-server SessionID is not
+            # ExecutionMetrics trace row matched on (SourceId, QuerySeq).
+            # The AS-server SessionID is not
             # populated on event 136 so it's not tracked here — use
             # LogicalSessionId instead, which is a {LoadTestId}:{UserIndex}
             # pseudo-id (one logical session per virtual user) for load
@@ -478,11 +461,11 @@ def write_run(
             StructField("StartTime10Sec",       IntegerType(),   True),
             StructField("StartTime30Sec",       IntegerType(),   True),
             StructField("ClientDurationMs",     DoubleType(),    True),
-            # Engine totals from ExecutionMetrics (v0.10.2+):
+            # Engine totals from ExecutionMetrics:
             # totalCpuTimeMs → EngineCpuMs, durationMs → EngineDurationMs.
             StructField("EngineDurationMs",     LongType(),      True),
             StructField("EngineCpuMs",          LongType(),      True),
-            # ExecutionMetrics breakdown — back-filled via RequestId map.
+            # ExecutionMetrics breakdown — from the same ExecutionMetrics row.
             StructField("SECpuMs",              LongType(),      True),
             StructField("FECpuMs",              LongType(),      True),
             StructField("ExecutionDelayMs",     LongType(),      True),
@@ -502,15 +485,10 @@ def write_run(
             #     + ExecutionDelayMs                              queueing for an engine worker slot
             #     + (throttle fields, TBD)                        capacity-router throttling, if any
             StructField("ExecutionMetricsJson", StringType(),    True),
-            # VertiPaq SE aggregates per query. NOTE (v0.9.12+): the
-            # LoadTest QueryRunner trace no longer subscribes to event 83
-            # (VertiPaqSEQueryEnd) — it was the highest-volume event class
-            # and the SE CPU it gave us is already covered by
-            # ExecutionMetrics.vertipaqJobCpuTimeMs (-> SECpuMs). These
-            # columns are kept in the schema so external TraceCapture
-            # flows that DO capture event 83 can still populate them via
-            # the same back-fill code below; for LoadTest runs they will
-            # always be NULL.
+            # Reserved, always NULL: the VertiPaqSEQueryEnd event isn't
+            # captured (too high-volume; ExecutionMetrics supplies SE CPU
+            # as SECpuMs). Kept so existing tables and the report model
+            # keep their schema.
             StructField("VertiPaqQueryCount",   IntegerType(),   True),
             StructField("VertiPaqDurationMs",   LongType(),      True),
             # DirectQuery aggregates per query (DirectLake/DQ models).
@@ -519,6 +497,7 @@ def write_run(
             StructField("DirectQueryCpuMs",     LongType(),      True),
             StructField("Outcome",              StringType(),    False),
             StructField("RowCount",             IntegerType(),   True),
+            # Reserved, always NULL: LoadGen doesn't measure response size.
             StructField("ResponseBytes",        LongType(),      True),
             StructField("ErrorMessage",         StringType(),    True),
             StructField("ActiveUsersAtStart",   IntegerType(),   True),
@@ -533,8 +512,8 @@ def write_run(
             QueryHash=r["QueryHash"],
             Iteration=int(r["Iteration"]),
             QuerySeq=int(r["QuerySeq"]) if "QuerySeq" in r and pd.notna(r["QuerySeq"]) else None,
-            # RequestId back-filled from ExecutionMetrics trace below
-            # (v0.10.2+). LogicalSessionId is deterministic for load tests:
+            # RequestId back-filled from ExecutionMetrics trace below.
+            # LogicalSessionId is deterministic for load tests:
             # one logical session per (LoadTest, virtual user).
             RequestId=None,
             LogicalSessionId=(f"{load_test_id}:{int(r['UserIndex'])}"
@@ -557,7 +536,7 @@ def write_run(
             DirectQueryCpuMs=None,
             Outcome=str(r["Outcome"]),
             RowCount=int(r["RowCount"]) if pd.notna(r["RowCount"]) else None,
-            ResponseBytes=int(r["ResponseBytes"]) if pd.notna(r["ResponseBytes"]) else None,
+            ResponseBytes=None,
             ErrorMessage=_nstr(r.get("ErrorMessage")),
             ActiveUsersAtStart=int(r["ActiveUsersAtStart"])
                               if pd.notna(r["ActiveUsersAtStart"]) else None,
@@ -616,29 +595,23 @@ def write_run(
             trace_df = spark.createDataFrame(trace_rows, schema=trace_schema)
             trace_events_written = len(trace_rows)
 
-    # Engine-side back-fill: JOIN executions to several trace events on
-    # (SourceId, RequestId). From v0.10.2 onwards QueryBegin (event 9)
-    # and QueryEnd (event 10) are no longer subscribed — every field we
-    # used to pull from QueryEnd (EngineCpuMs, EngineDurationMs,
-    # ActivityID → QuerySeq) is now sourced from ExecutionMetrics, which
-    # carries ColumnID 46 (ActivityID) and durationMs / totalCpuTimeMs
-    # in its JSON payload. We build a (SourceId, QuerySeq) row from the
-    # EM event, then LEFT JOIN downstream event-class aggregates (DQ) on
-    # (SourceId, RequestId). LEFT JOINs so a missing event class
-    # (e.g. no DQ on import models) just leaves its columns NULL.
+    # Engine-side back-fill. ExecutionMetrics rows carry the ActivityID
+    # LoadGen stamped on each query (its last 4 bytes encode QuerySeq)
+    # plus engine duration/CPU in their JSON, so they join to executions
+    # on (SourceId, QuerySeq). DirectQueryEnd rows share only the
+    # RequestId, so they are aggregated per RequestId and mapped to
+    # QuerySeq through the ExecutionMetrics rows. LEFT JOINs leave the
+    # columns NULL when an event class is absent (e.g. no DQ on import
+    # models). See docs/tracing.md.
     if exec_df is not None and trace_df is not None:
         from pyspark.sql import functions as F
         from pyspark.sql.types import (
             StructType as _ST, StructField as _SF, LongType as _LT,
-            StringType as _StrT,
         )
 
-        # 1. ExecutionMetrics is now the sole back-fill source for
-        #    (SourceId, QuerySeq, RequestId, EngineCpuMs,
-        #    EngineDurationMs) plus the parsed EM JSON fields.
-        #    QuerySeq is the last 4 hex bytes of ActivityId, decoded
-        #    big-endian. EM JSON keys: totalCpuTimeMs (≈ what QueryEnd's
-        #    CpuTime column reported) and durationMs.
+        # 1. ExecutionMetrics → (SourceId, QuerySeq, RequestId) plus the
+        #    parsed EM JSON fields. QuerySeq is the last 4 bytes (8 hex
+        #    chars) of ActivityId, decoded big-endian.
         em_schema = _ST([
             _SF("vertipaqJobCpuTimeMs",            _LT(), True),
             _SF("queryProcessingCpuTimeMs",        _LT(), True),
@@ -647,7 +620,6 @@ def write_run(
             _SF("executionDelayMs",                _LT(), True),
             _SF("capacityThrottlingMs",            _LT(), True),
             _SF("approximatePeakMemConsumptionKB", _LT(), True),
-            _SF("queryResultRows",                 _LT(), True),
         ])
         trace_em = (trace_df
             .where((F.col("EventClass") == F.lit("ExecutionMetrics")) &
@@ -681,24 +653,7 @@ def write_run(
         # (SourceId, RequestId) → QuerySeq map for joining DQ aggregates.
         qe_map = trace_em.select("SourceId", "RequestId", "QuerySeq")
 
-        # 2. VertiPaqSEQueryEnd aggregates — count + sum(duration) per query.
-        trace_vpq = (trace_df
-            .where((F.col("EventClass") == F.lit("VertiPaqSEQueryEnd")) &
-                   F.col("RequestId").isNotNull())
-            .groupBy("SourceId", "RequestId")
-            .agg(
-                F.count(F.lit(1)).cast("int").alias("VertiPaqQueryCount"),
-                F.sum(F.col("DurationMs")).cast("long").alias("VertiPaqDurationMs"))
-            .join(qe_map, on=["SourceId", "RequestId"], how="inner")
-            .drop("RequestId"))
-
-        # 4. (VertiPaqSEQueryCacheMatch dropped from XMLA in v0.9.4 to
-        #    reduce trace volume — engine silently stops emitting events
-        #    once its rowset buffer fills under high event-rate load.
-        #    The VertiPaqCacheHits column was removed from QueryExecutions
-        #    schema in the same release.)
-
-        # 5. DirectQueryEnd aggregates (Direct Lake / DQ models only).
+        # 2. DirectQueryEnd aggregates (Direct Lake / DQ models only).
         trace_dq = (trace_df
             .where((F.col("EventClass") == F.lit("DirectQueryEnd")) &
                    F.col("RequestId").isNotNull())
@@ -711,20 +666,18 @@ def write_run(
             .drop("RequestId"))
 
         # Drop the placeholder NULL columns and LEFT JOIN each aggregate
-        # back onto exec_df by (SourceId, QuerySeq).
-        # RequestId/Engine*/SE*/FE*/EM JSON fields all come from the
-        # ExecutionMetrics row (trace_em) since v0.10.2.
+        # back onto exec_df by (SourceId, QuerySeq). The reserved
+        # VertiPaq* columns keep their NULL placeholders.
         backfill_drop = [
             "RequestId",
             "EngineCpuMs", "EngineDurationMs",
             "SECpuMs", "FECpuMs", "ExecutionDelayMs",
             "CapacityThrottlingMs",
             "PeakMemoryKB", "ExecutionMetricsJson",
-            "VertiPaqQueryCount", "VertiPaqDurationMs",
             "DirectQueryCount", "DirectQueryDurationMs", "DirectQueryCpuMs",
         ]
         exec_df = exec_df.drop(*backfill_drop)
-        for side in (trace_em, trace_vpq, trace_dq):
+        for side in (trace_em, trace_dq):
             exec_df = exec_df.join(side, on=["SourceId", "QuerySeq"], how="left")
 
         # Reassert column order so the final DataFrame matches exec_schema.

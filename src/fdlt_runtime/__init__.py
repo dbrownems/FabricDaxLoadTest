@@ -1,7 +1,7 @@
 """Runtime helpers for the FabricDaxLoadTest LoadGen notebook.
 
 Importable from the LoadTest notebook after cell 2 pip-installs the
-`fdlt_runtime` wheel. As of v0.5.0 the wheel embeds the `LoadGen.dll`
+`fdlt_runtime` wheel. The wheel embeds the `LoadGen.dll`
 binary tree under `fdlt_runtime/loadgen/`, so a single
 `pip install fdlt_runtime-X.Y.Z-py3-none-any.whl` is the entire
 deploy. This module is the supported boundary between the notebook

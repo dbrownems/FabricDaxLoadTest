@@ -3,24 +3,22 @@
 This is a navigation aid for contributors changing the .NET load-driver
 library at `src/QueryRunner/`. It describes the code as it exists today
 (not a target). Read it before you edit `QueryRunner.cs` so you can
-jump to the right region of the file instead of scrolling 1400 lines.
+jump to the right region of the file instead of scrolling 1,250 lines.
 
 > Consumer-facing docs live in [`docs/load-testing-overview.md`](load-testing-overview.md)
-> and [`docs/loadgen-main.md`](loadgen-main.md). For the wire trace
-> subscription, see comments in `src/QueryRunner/Tracing/TraceSubscriber.cs`.
+> and [`docs/loadgen-main.md`](loadgen-main.md). For the trace
+> subscription, see [`docs/tracing.md`](tracing.md).
 
 ## What QueryRunner is
 
 A .NET 8 class library that drives a synthetic DAX workload against a
 Microsoft Fabric / Power BI XMLA endpoint via ADOMD.NET, captures
 per-iteration timings to a CSV, optionally subscribes to a server-side
-XMLA trace for engine CPU/duration, and returns a JSON summary. It is
-consumed by:
-
-- `src/LoadGen/` — a thin CLI front-end (this repo).
-- `python/fdlt_runtime/` — a `pythonnet` wrapper packaged as a Python
-  wheel for Fabric notebook use.
-- (planned) `PbiLoadTester` from the public Fabric toolbox.
+XMLA trace for engine CPU/duration, and returns a JSON summary. Its only
+consumer is `src/LoadGen/`, a thin CLI front-end. The notebook runtime
+(`src/fdlt_runtime/`) doesn't load QueryRunner; it runs
+`dotnet LoadGen.dll --json-progress` as a subprocess and reads JSONL from
+its stdout.
 
 The public surface is intentionally small: one entry point
 (`QueryRunner.StartLoadTest`) returning a `LoadTestHandle` that the
@@ -30,56 +28,52 @@ caller polls and joins.
 
 ```
 src/QueryRunner/
-├── QueryRunner.cs        ── ~1240 lines ── StartLoadTest + RunLoadTestCore engine, TelemetryRecord
-├── QueryRunnerLogger.cs  ──   115 lines ── public sealed class QueryRunnerLogger
-├── QueryResult.cs        ──    22 lines ── public class QueryResult
-├── QueryRunnerStatus.cs  ──   190 lines ── public class QueryRunnerStatus + nested WindowSnapshot
-├── LoadTestApi.cs        ──   225 lines ── public DTOs + LoadTestHandle
-├── QueryRunner.csproj    ──    48 lines ── net8.0, nullable enabled, ADOMD.NET ref
+├── QueryRunner.cs        ── ~1250 lines ── StartLoadTest + RunLoadTestCore engine, TelemetryRecord
+├── QueryRunnerLogger.cs  ──   110 lines ── internal sealed class QueryRunnerLogger
+├── QueryResult.cs        ──    20 lines ── internal sealed class QueryResult
+├── QueryRunnerStatus.cs  ──   185 lines ── internal sealed class QueryRunnerStatus + nested WindowSnapshot
+├── LoadTestApi.cs        ──   230 lines ── public DTOs + LoadTestHandle
+├── IdentityProbe.cs      ──   200 lines ── connects as one user for `LoadGen probe`
+├── QueryRunner.csproj    ──    32 lines ── net8.0, nullable enabled, ADOMD.NET ref
 └── Tracing/
-    ├── TraceModels.cs        ── 103 lines  ── AS rowset → CSV-shaped events
-    └── TraceSubscriber.cs    ── 649 lines  ── XMLA trace subscription
+    ├── FilteredTrace.xmla    ── 186 lines  ── embedded trace definition (events + columns)
+    ├── TraceModels.cs        ── 113 lines  ── AsTraceEvent record + TraceColumn/TraceEventClass enums
+    └── TraceSubscriber.cs    ── 659 lines  ── XMLA trace subscription
 ```
 
-`QueryRunner.cs` is still the largest file in the project. The 3 public
-helper types previously inlined in it (`QueryRunnerLogger`,
-`QueryResult`, `QueryRunnerStatus`/`WindowSnapshot`) now each live in
-their own file at the project root — same `FabricDaxLoadTest`
-namespace, no visibility changes. `TelemetryRecord` (internal) stays
-in `QueryRunner.cs` because the only consumer is the executions-CSV
-writer that lives there.
+`QueryRunner.cs` is still the largest file in the project. The helper
+types `QueryRunnerLogger`, `QueryResult` and
+`QueryRunnerStatus`/`WindowSnapshot` each live in their own file at the
+project root, in the same `FabricDaxLoadTest` namespace, and are
+`internal`. `TelemetryRecord` (internal) stays in `QueryRunner.cs`
+because the only consumer is the executions-CSV writer that lives there.
 
 ## Public types (LoadTestApi.cs)
 
-| Type | Lines | Purpose |
-|---|---|---|
-| `LoadTestConfig` | 23-79 | Input record. Endpoint, dataset, token, queries, slot arrays, durations, error policy, `EnableTracing`. |
-| `ErrorPolicy` | 81-86 | `Continue` (default) or `Abort` per-iteration query failure. |
-| `LoadTestProgressSnapshot` | 92-145 | Read-only counters + sliding-window stats. Single value the caller polls. |
-| `SnapshotBox` | 151-159 | `internal`. Volatile reference cell holding the latest snapshot. |
-| `LoadTestHandle` | 173-244 | Returned by `StartLoadTest`. `IsCompleted`, `LatestSnapshot`, `Cancel`, `Wait`, `WaitOrThrow`, `Dispose`. |
+| Type | Purpose |
+|---|---|
+| `LoadTestConfig` | Input. Endpoint, dataset, token, queries, slot arrays, durations, error policy, `EnableTracing`. |
+| `ErrorPolicy` | `Continue` (default) or `Abort` per-iteration query failure. |
+| `LoadTestProgressSnapshot` | Read-only counters + sliding-window stats. Single value the caller polls. |
+| `SnapshotBox` | `internal`. Volatile reference cell holding the latest snapshot. |
+| `LoadTestHandle` | Returned by `StartLoadTest`. `IsCompleted`, `LatestSnapshot`, `Cancel`, `Wait`, `Dispose`. |
 
-These five types, plus `QueryRunner.StartLoadTest`, are the entire
-contract `LoadGen` and `fdlt_runtime` rely on. Anything else in the
-project should be considered an implementation detail even if its
-declared visibility is `public`.
+These types, plus `QueryRunner.StartLoadTest`, are the load-test
+contract `LoadGen` relies on. `IdentityProbe`/`IdentityProbeResult`
+(public, in `IdentityProbe.cs`) back LoadGen's `probe` command.
+`TraceSubscriber`/`AsTraceEvent` are also `public` but are used only
+inside QueryRunner.
 
 ## QueryRunner.cs — sections
 
-`QueryRunner.cs` holds the engine itself plus one internal helper.
-Use these line ranges as bookmarks:
-
-| Lines | Section | Notes |
-|---|---|---|
-| 1-13 | usings + `namespace FabricDaxLoadTest` | |
-| 17-22 | move-comments | Pointers to the three sibling files. |
-| 24-41 | `internal class TelemetryRecord` | What gets serialized into the executions CSV (one row per query attempt, including retries on reconnect). Stays here because the executions-CSV writer is the only consumer. |
-| 44-end | `public static class QueryRunner` | The engine. Sub-sections below. |
+`QueryRunner.cs` holds the engine itself plus one internal helper:
+`internal class TelemetryRecord` (one executions-CSV row per query
+attempt, including retries on reconnect) followed by
+`public static class QueryRunner`, the engine.
 
 ### Inside `static class QueryRunner`
 
-(All line numbers below are approximate — they shifted by ~290 after
-the public-type split. Search for the symbol names if precision matters.)
+Search for the symbol names; they're listed in file order.
 
 | Section | What it does |
 |---|---|
@@ -94,22 +88,25 @@ the public-type split. Search for the symbol names if precision matters.)
 | `RunIteration` | Per-iteration query fan-out. `SemaphoreSlim` gate sized to `concurrentQueriesPerUser`, slot-index queue tracks which connection a task uses, transparent reconnect on "connection lost" with a single retry. |
 | `SubmitTelemetry` | `QueryResult` → `TelemetryRecord` → enqueue into the CSV writer queue. |
 | `ExecuteQuery` | The hot path: open `AdomdCommand`, set `ActivityID`, run the query, drain rows (or skip with `--skip-results`), build `QueryResult`. ADOMD calls are synchronous. |
+| `RedactToken` | Strips the bearer token and `Password=` fragments from exception text (used for connect-failure samples and by `IdentityProbe`). |
 | `BuildConnectionString` | Assembles the ADOMD connection string (token, EUN, CustomData, Roles, ApplicationName=run-id for trace filtering). |
-| Slot-array helpers (`SlotCount`, `ThrowIfMismatched`, `NormalizeSlotArray`, `UserLabel`) | Normalize the three impersonation arrays to a common length. |
-| `BuildStats` + redaction helpers | Final JSON summary; redacts the bearer token from any captured exception text. |
+| Slot-array helpers (`SlotCount`, `ThrowIfMismatched`, `NormalizeSlotArray`, `UserLabel`, `UserEmail`) | Normalize the three impersonation arrays to a common length and label slots. |
+| `BuildStats` | Final JSON summary returned by `LoadTestHandle.Wait()`. |
 
 ### What `RunLoadTestCore` does, in order
 
 1. **Setup**: destructure config, normalize slot arrays, init the
-   linked `CancellationTokenSource` (caller cancel ⨯ duration timer),
-   create `_logger`, seed the initial snapshot, open the executions CSV +
-   start `LogWriterLoop`.
+   linked `CancellationTokenSource` (caller cancel ⨯ duration timer —
+   the timer starts here, so trace setup, warm-up and ramp count toward
+   `DurationSeconds`), create `_logger`, seed the initial snapshot, open
+   the executions CSV + start `LogWriterLoop`.
 2. **Trace subscription**: if `EnableTracing && logDirectory`,
-   create a `TraceSubscriber` (filters server-side trace rows by
-   `ApplicationName=FabricDaxLoadTest/<runId>`), open the trace CSV, and
-   start a writer task draining `subscriber.Events` into the file.
-   Failures here are warnings, not fatal — except the `OnFatalError`
-   callback, which sets `traceFatalError` and cancels the run.
+   create a `TraceSubscriber` (keeps only trace rows whose
+   `ApplicationName` is `FabricDaxLoadTest/<runId>`, filtering
+   client-side), open the trace CSV, and start a writer task draining
+   `subscriber.Events` into the file. Failures here are warnings, not
+   fatal — except the `OnFatalError` callback, which sets
+   `traceFatalError` and cancels the run. See [tracing.md](tracing.md).
 3. **Threadpool warmup**: `ThreadPool.SetMinThreads` sized for
    `users × concurrentQueriesPerUser` so the .NET injection rate does
    not serialize ramp-up on small Fabric notebook hosts.
@@ -122,9 +119,10 @@ the public-type split. Search for the symbol names if precision matters.)
    into `SimulateUserWithConnections`. The main thread loops printing
    ramp progress every `nUsers/10` connections.
 6. **Snapshot publisher**: 1 Hz background task that reads
-   `QueryRunnerStatus`, computes a 5 s rolling QPS and the duration
-   percentiles, and writes the result into `SnapshotBox` so polling
-   callers (LoadGen's chart, `fdlt_runtime`) see live progress.
+   `QueryRunnerStatus`, computes QPS over the last ~1 s sample and
+   duration percentiles over the last 5 s, and writes the result into
+   `SnapshotBox` so polling callers see live progress (LoadGen emits each
+   snapshot as a JSONL `progress` envelope).
 7. **Steady-state**: `Task.WaitAll(userTasks)`. The 60 s
    periodic reporter runs in parallel.
 8. **Drain & shutdown**: cancel the snapshot publisher, wait
@@ -138,20 +136,20 @@ the public-type split. Search for the symbol names if precision matters.)
 
 ## Tracing/
 
-`TraceModels.cs` (103 lines) defines `TraceEventRow` — the rowset shape
-the trace subscriber emits — and helper methods for converting the
-ADOMD rowset row to a CSV-friendly record. It depends only on the
-ADOMD client package, not AMO, so the `fdlt_runtime` payload stays
-small.
+`TraceModels.cs` defines `AsTraceEvent` — the row shape the trace
+subscriber emits and the trace CSV stores — plus local copies of the
+`TraceColumn` and `TraceEventClass` enums, so the project depends only
+on the ADOMD client package, not AMO.
 
-`TraceSubscriber.cs` (649 lines) wires up a server-side
-`AS_Server_Trace` via the AMO API (`Microsoft.AnalysisServices`),
-filters server-side where possible, filters client-side by
-`ApplicationName` (PBI Service rejects most server-side filters),
-batches rows through a `Channel<TraceEventRow>`, and surfaces them via
-`Events.ReadAllAsync()`. `OnFatalError` is invoked when the trace
-reader fails non-recoverably mid-run; the run aborts cleanly. Drain
-semantics live in `DisposeAsync`.
+`TraceSubscriber.cs` creates a database-scoped trace by sending XMLA
+`<Create>` / `<Subscribe>` / `<Delete>` commands over ADOMD (no AMO),
+using the embedded `FilteredTrace.xmla` definition. It filters rows
+client-side by `ApplicationName` (the PBI Service rejects server-side
+filters on subscription traces), passes them through a bounded
+`Channel<AsTraceEvent>`, and surfaces them via `Events`. `OnFatalError`
+is invoked when the trace reader fails non-recoverably mid-run; the run
+aborts cleanly. Drain semantics live in `DisposeAsync`. The constraints
+behind this design are in [tracing.md](tracing.md).
 
 ## Lifetime, threading, cancellation
 
@@ -171,11 +169,12 @@ Caller
   linked with the duration `CancellationTokenSource`, threaded into ramp
   delays, per-iteration delays, and the snapshot/reporter loops. ADOMD
   calls are synchronous and not cancellable mid-call; cancellation
-  takes effect at the next iteration boundary.
+  takes effect before the next query starts, and in-flight queries run
+  to completion.
 - **Async surface:** the engine is fundamentally synchronous. Async only
   appears at the trace subscription boundary (`TraceSubscriber.StartAsync`,
   `DisposeAsync`, `Channel<T>` reader). `LoadTestHandle.Wait` is a
-  blocking join — Python and the CLI both want that.
+  blocking join, which is what the CLI wants.
 - **Run gate:** the static `_activeRun` interlock ensures only one run
   per process. The static `QueryRunnerStatus.Instance` and `_logger`
   are only safe because of this. Concurrent runs would interleave
@@ -186,11 +185,11 @@ Caller
 ```
 user driver task
   └── RunIteration → SemaphoreSlim.Wait → ExecuteQuery
-        ├── ActivityIdFactory: Interlocked.Increment(_querySeq) → MakeActivityId(runId, seq)
+        ├── Interlocked.Increment(_querySeq) → MakeActivityId(runId, seq)
         ├── new AdomdCommand / set ActivityID property / ExecuteReader
         ├── drain rows (or skip with --skip-results)
         └── return QueryResult
-  → status.RecordQuery(r)                              (in-memory counters + percentile reservoir)
+  → status.RecordQuery(r)                              (in-memory counters + rolling duration queue)
   → SubmitTelemetry → telemetryQueue.TryAdd(record)    (unblocks LogWriterLoop)
   → LogWriterLoop: batch drain → StreamWriter         (executions CSV)
 
@@ -200,20 +199,19 @@ user driver task
         → trace writer task → trace CSV
 ```
 
-`persist.py` later JOINs the two CSVs on `(RunId, ActivityID)` to
-attach engine CPU/duration to each execution.
+`persist.py` later decodes `QuerySeq` from each `ExecutionMetrics`
+row's ActivityID and joins on `(RunId, QuerySeq)` to attach engine
+CPU/duration to each execution.
 
 ## .csproj summary
 
 `net8.0`, `Nullable=enable`, `ImplicitUsings` not enabled (file-by-file
-`using`s). One package reference: `Microsoft.AnalysisServices.AdomdClient`.
-The heavier `Microsoft.AnalysisServices` (AMO) package is referenced
-only by `TraceSubscriber.cs`, but currently lives at the project level —
-`TraceModels.cs`'s no-AMO comment is aspirational, not enforced.
+`using`s). One package reference: `Microsoft.AnalysisServices.AdomdClient`
+(no AMO). `FilteredTrace.xmla` is an embedded resource.
 
 ## When to split QueryRunner.cs further
 
-The 3 public helper types (`QueryRunnerLogger`, `QueryResult`,
+The helper types (`QueryRunnerLogger`, `QueryResult`,
 `QueryRunnerStatus`+`WindowSnapshot`) have already been moved to
 sibling files. A future refactor could carve the engine itself:
 

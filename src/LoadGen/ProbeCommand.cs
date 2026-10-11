@@ -60,11 +60,10 @@ partial class Program
     {
         try
         {
-            TextWriter info = json ? Console.Error : Console.Out;
             string token = "";
             if (!noAuth)
             {
-                var resolved = ResolveToken(tokenDirect, tokenFile, info);
+                var resolved = ResolveToken(tokenDirect, tokenFile);
                 if (resolved == null)
                 {
                     EmitError(json, "no_token",

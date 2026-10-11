@@ -34,7 +34,6 @@ namespace FabricDaxLoadTest
         public double DurationMs { get; set; }
         public string Outcome { get; set; } = "";
         public int RowCount { get; set; }
-        public long ResponseBytes { get; set; }
         public string ErrorMessage { get; set; } = "";
         public int ActiveUsersAtStart { get; set; }
     }
@@ -106,7 +105,6 @@ namespace FabricDaxLoadTest
             var externalCts = new CancellationTokenSource();
             var box = new SnapshotBox(new LoadTestProgressSnapshot
             {
-                UtcNow = DateTime.UtcNow,
                 Phase = "Pending",
                 TargetUsers = SlotCount(config),
             });
@@ -214,17 +212,17 @@ namespace FabricDaxLoadTest
                 textLogPath = Path.Combine(logDirectory, baseName + ".log");
             }
             // Belt-and-braces: dispose any prior logger before replacing.
-            // Normal flow disposes _logger at line ~819 after each run, but
-            // this guards against partial runs that bypassed cleanup.
+            // Normal flow disposes _logger at the end of this method's
+            // finally block; this guards against partial runs that
+            // bypassed cleanup.
             try { _logger?.Dispose(); } catch { }
             _logger = new QueryRunnerLogger(textLogPath) { OnLogLine = logCallback };
 
-            // Seed the initial snapshot so pythonnet callers polling
-            // LatestSnapshot see a coherent "Pending" record before the
-            // first user driver starts.
+            // Seed the initial snapshot so callers polling LatestSnapshot
+            // see a coherent "Pending" record before the first user driver
+            // starts.
             snapshotBox.Set(new LoadTestProgressSnapshot
             {
-                UtcNow = DateTime.UtcNow,
                 Elapsed = TimeSpan.Zero,
                 Phase = Volatile.Read(ref phase),
                 TargetUsers = nUsers,
@@ -249,10 +247,10 @@ namespace FabricDaxLoadTest
 
                 // Write CSV header
                 File.WriteAllText(logFilePath,
-                    "RunId,UserIndex,UserEmail,QueryIndex,Iteration,QuerySeq,StartUtc,EndUtc,StartTimeMs,DurationMs,Outcome,RowCount,ResponseBytes,ErrorMessage,ActiveUsersAtStart\n");
+                    "RunId,UserIndex,UserEmail,QueryIndex,Iteration,QuerySeq,StartUtc,EndUtc,StartTimeMs,DurationMs,Outcome,RowCount,ErrorMessage,ActiveUsersAtStart\n");
 
                 telemetryQueue = new BlockingCollection<TelemetryRecord>(boundedCapacity: 10000);
-                logWriterTask = Task.Run(() => LogWriterLoop(telemetryQueue, logFilePath, cts.Token));
+                logWriterTask = Task.Run(() => LogWriterLoop(telemetryQueue, logFilePath));
             }
 
             Task? periodicReporter = null;
@@ -374,7 +372,7 @@ namespace FabricDaxLoadTest
             // hit the ThreadPool's slow injection rate (~1 thread per 500ms-1s) and ramp serializes.
             // Setting MinThreads up-front makes the pool eagerly create workers on demand
             // instead of throttling injection.
-            int targetWorkers = Math.Max(nUsers * Math.Max(1, concurrentQueriesPerUser) + 32, 64);
+            int targetWorkers = Math.Max(nUsers * concurrentQueriesPerUser + 32, 64);
             ThreadPool.GetMinThreads(out int minWorker0, out int minIo0);
             ThreadPool.GetMaxThreads(out int maxWorker, out int maxIo);
             int newMinWorker = Math.Min(targetWorkers, maxWorker);
@@ -468,7 +466,7 @@ namespace FabricDaxLoadTest
                     }
 
                     SimulateUserWithConnections(userIdx, queries, UserEmail(userEffectiveNames, userCustomData, userIdx),
-                        concurrentQueriesPerUser, pauseBetweenIterationsMs, pauseBetweenQueriesMs,
+                        pauseBetweenIterationsMs, pauseBetweenQueriesMs,
                         connections, connStrings[userIdx], skipResults,
                         testStart, runId, testStartTime, telemetryQueue,
                         config.ErrorPolicy, cts.Token);
@@ -478,9 +476,9 @@ namespace FabricDaxLoadTest
             SetPhase("Connecting");
 
             // 1Hz snapshot publisher. Reads cumulative counters from the
-            // status singleton, computes a 5s rolling QPS from the
-            // success delta, and writes into snapshotBox so pythonnet
-            // callers see live progress without a callback.
+            // status singleton, computes QPS from the success delta since
+            // the previous sample (~1 s), and publishes into snapshotBox
+            // for callers polling LatestSnapshot.
             snapshotTask = Task.Run(async () =>
             {
                 long lastSuccessful = 0;
@@ -502,7 +500,6 @@ namespace FabricDaxLoadTest
 
                     snapshotBox.Set(new LoadTestProgressSnapshot
                     {
-                        UtcNow = DateTime.UtcNow,
                         Elapsed = testStart.Elapsed,
                         Phase = Volatile.Read(ref phase),
                         ActiveUsers = status.ActiveUsers,
@@ -587,7 +584,6 @@ namespace FabricDaxLoadTest
                 .Where(e => !string.IsNullOrEmpty(e))
                 .Distinct().Count();
             var distinctRoles = userRoles.Distinct().Count();
-            status.SetConnectionInfo(totalConns, distinctEmails);
             double avgConnMs = connectedUsers > 0 ? Volatile.Read(ref totalConnectTimeMs[0]) / (double)connectedUsers : 0;
             Log("Ramp-up complete");
             Log("┌──────────────────────────────────────────┐");
@@ -697,9 +693,9 @@ namespace FabricDaxLoadTest
                 }
 
                 // If the trace reader failed mid-run, abort with a hard
-                // error so the load test exits non-zero. The .NET shim's
-                // top-level handler converts this into an "error" envelope
-                // that runner.py surfaces via stderr_tail in the notebook.
+                // error so the load test exits non-zero. LoadGen turns
+                // this into a "run_failed" error envelope that runner.py
+                // raises in the notebook.
                 if (traceFatalError != null)
                 {
                     SetPhase("Failed");
@@ -726,7 +722,6 @@ namespace FabricDaxLoadTest
                 // the IsCompleted flip.
                 snapshotBox.Set(new LoadTestProgressSnapshot
                 {
-                    UtcNow = DateTime.UtcNow,
                     Elapsed = testStart.Elapsed,
                     Phase = Volatile.Read(ref phase),
                     ActiveUsers = status.ActiveUsers,
@@ -744,13 +739,11 @@ namespace FabricDaxLoadTest
         }
 
         private static void LogWriterLoop(BlockingCollection<TelemetryRecord> queue,
-            string logFilePath, CancellationToken ct)
+            string logFilePath)
         {
-            // Buffered streaming writer: same pattern as the trace writer
-            // — keep one file handle open for the life of the run instead
-            // of opening/appending/closing per batch (the old
-            // File.AppendAllText path). FileShare.Read so external tools
-            // (and blobfuse-mounted readers) can tail the file mid-run.
+            // Buffered streaming writer: keep one file handle open for the
+            // life of the run. FileShare.Read so external tools (and
+            // blobfuse-mounted readers) can tail the file mid-run.
             // 256 KB buffer ≈ a few thousand executions rows.
             const int bufBytes = 256 * 1024;
             StreamWriter? sw = null;
@@ -794,7 +787,7 @@ namespace FabricDaxLoadTest
                             continue;
                         }
                     }
-                    catch (InvalidOperationException) { break; } // CompleteAdding was called
+                    catch (InvalidOperationException) { break; } // defensive: only thrown if the underlying collection is modified externally
 
                     // Drain any remaining items without blocking
                     while (queue.TryTake(out var item))
@@ -820,7 +813,6 @@ namespace FabricDaxLoadTest
                             sw.Write(r.DurationMs.ToString("F1")); sw.Write(',');
                             sw.Write(r.Outcome); sw.Write(',');
                             sw.Write(r.RowCount); sw.Write(',');
-                            sw.Write(r.ResponseBytes); sw.Write(',');
                             sw.Write(err); sw.Write(',');
                             sw.Write(r.ActiveUsersAtStart);
                             sw.Write('\n');
@@ -859,7 +851,7 @@ namespace FabricDaxLoadTest
 
         private static void SimulateUserWithConnections(
             int userIndex, string[] queries, string email,
-            int concurrentQueriesPerUser, int pauseMs, int pauseBetweenQueriesMs,
+            int pauseMs, int pauseBetweenQueriesMs,
             IDbConnection[] connections, string connStr,
             bool skipResults,
             Stopwatch testStart,
@@ -1008,7 +1000,6 @@ namespace FabricDaxLoadTest
                     DurationMs = r.DurationMs,
                     Outcome = r.Error == null ? "Success" : "Error",
                     RowCount = r.RowCount,
-                    ResponseBytes = r.ResponseBytes,
                     ErrorMessage = r.Error ?? "",
                     ActiveUsersAtStart = r.ActiveUsersAtStart,
                 };
@@ -1052,8 +1043,9 @@ namespace FabricDaxLoadTest
                 var sw = Stopwatch.StartNew();
                 if (skipResults)
                 {
-                    // SkipResults path: must not load Apache.Arrow.
-                    // ExecuteNonQuery drains the response stream into a byte counter.
+                    // ExecuteNonQuery: the server still produces the full
+                    // result; ADOMD discards it instead of exposing rows,
+                    // so RowCount stays 0.
                     cmd.ExecuteNonQuery();
                     sw.Stop();
                     result.DurationMs = sw.Elapsed.TotalMilliseconds;
@@ -1213,8 +1205,8 @@ namespace FabricDaxLoadTest
                     ["iterations"] = g.Max(r => r.Iteration),
                     ["executions"] = g.Count(),
                     ["errors"] = g.Count(r => r.Error != null),
-                    ["meanDurationMs"] = g.Where(r => r.Error == null).Select(r => r.DurationMs)
-                        .DefaultIfEmpty(0).Average() is var avg ? Math.Round(avg) : 0,
+                    ["meanDurationMs"] = Math.Round(g.Where(r => r.Error == null).Select(r => r.DurationMs)
+                        .DefaultIfEmpty(0).Average()),
                 }).ToList();
             stats["perUser"] = perUser;
 

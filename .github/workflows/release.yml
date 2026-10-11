@@ -70,7 +70,7 @@ jobs:
             --nologo
 
       - name: Stage LoadGen binaries into wheel source tree
-        # As of v0.5.0 the LoadGen DLLs ship inside the fdlt_runtime
+        # The LoadGen DLLs ship inside the fdlt_runtime
         # wheel. pyproject.toml's [tool.setuptools.package-data] picks
         # up everything under src/fdlt_runtime/loadgen/ — so we copy
         # the publish output there before `python -m build`.
@@ -110,7 +110,7 @@ jobs:
           echo "✅ Wheel content verified"
 
       - name: Regenerate notebooks
-        # FDLT_RELEASE_VERSION drives the WHEEL_URL embedded in cell 2.
+        # FDLT_RELEASE_VERSION drives the WHEEL_URL embedded in cell 1.
         # Using the bare version (without the leading `v`) so the URL
         # matches the wheel filename: fdlt_runtime-X.Y.Z-py3-none-any.whl.
         env:
@@ -139,8 +139,8 @@ jobs:
 
             | Asset | Where it goes |
             |---|---|
-            | `fdlt_runtime-${{ steps.tag.outputs.version }}-py3-none-any.whl` | Bundles `LoadGen.dll` + ADOMD assemblies. Cell 2 of the notebook `pip install`s this wheel directly from the GitHub release URL — no manual upload required (set `WHEEL_URL` in cell 2 to the asset URL). For offline / locked-down tenants, upload to `LoadTests.Lakehouse/Files/` and point `WHEEL_URL` at the `abfss://…` path instead. |
-            | `LoadTest-Main.ipynb` | Import to the `LoadTests` workspace folder. The display name imports as **`LoadTest - Main`** automatically. Cell 2's `WHEEL_URL` is pre-baked to this release. |
+            | `fdlt_runtime-${{ steps.tag.outputs.version }}-py3-none-any.whl` | Bundles `LoadGen.dll` + ADOMD assemblies. Cell 2 of the notebook `pip install`s this wheel directly from the GitHub release URL (`WHEEL_URL` in cell 1 is pre-baked to it) — no manual upload required. For offline / locked-down tenants, upload to `LoadTests.Lakehouse/Files/` and point `WHEEL_URL` at the `abfss://…` path instead. |
+            | `LoadTest-Main.ipynb` | Import to the `LoadTests` workspace folder; it imports as **`LoadTest-Main`**. `WHEEL_URL` (cell 1) is pre-baked to this release. Notebooks from older releases may not work with this wheel: to upgrade, import this notebook and copy your cell-1 settings into it. |
             | `THIRD-PARTY-NOTICES.md` | License terms for the Microsoft AnalysisServices client + identity DLLs bundled inside the wheel. |
 
             For a scripted deploy (Option A), clone the repo at this tag and run `scripts/Deploy-LoadTests.ps1 -Workspace <name>`.

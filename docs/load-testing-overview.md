@@ -127,10 +127,14 @@ toggling between the report and another app).
 
 ### Duration
 
-After the ramp completes, the test runs at steady state for
-`DURATION_SECONDS`. The system typically reaches steady state within a few
-seconds; running for longer gives you more data points but doesn't change
-the conclusion. **One to ten minutes is the useful range**; tests longer
+`DURATION_SECONDS` is the total run time, measured from the start of the
+run — trace setup, the warm-up connection and the ramp count toward it.
+The time at full concurrency (steady state) is therefore roughly
+`DURATION_SECONDS − USER_RAMP_TIME_SEC`; for example, a 60-second run with
+a 15-second ramp has about 43 seconds at full concurrency. The system
+typically reaches steady state within a few seconds after the ramp;
+running for longer gives you more data points but doesn't change the
+conclusion. **One to ten minutes is the useful range**; tests longer
 than ~15 minutes rarely add information and just complicate the post-run
 analysis.
 

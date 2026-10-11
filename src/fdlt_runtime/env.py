@@ -1,9 +1,9 @@
-"""Fabric environment discovery + LoadGen staging.
+"""Fabric environment discovery: workspace, lakehouse, target dataset,
+and the `dotnet` host on the Spark driver.
 
-Pulled out of notebook cell 2. The notebook keeps the small amount of
-glue that needs `notebookutils` (which is only available inside Fabric
-Spark kernels); everything else lives here so it can be unit-tested and
-upgraded as part of the wheel.
+The notebook keeps the small amount of glue that needs `notebookutils`
+(which is only available inside Fabric Spark kernels); everything else
+lives here so it can be unit-tested and upgraded as part of the wheel.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ _DOTNET_CANDIDATES = (
 
 @dataclass
 class LakehouseInfo:
-    """The handful of identifiers cell-2 used to compute by hand."""
+    """Identifiers of the lakehouse the run's Delta tables are written to."""
 
     workspace_id: str
     workspace_name: str

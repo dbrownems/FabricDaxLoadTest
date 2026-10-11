@@ -1,23 +1,26 @@
 """Thin orchestrator API for saved LoadTest notebooks.
 
-Saved `LoadTest-<name>.ipynb` files are near-immutable shims that
-import this module and call `bootstrap()` → `run()` → `analyze()`.
-That way a `Deploy-LoadTests.ps1` redeploy can ship behavior changes
-in the wheel without users having to re-save their notebooks.
+Saved `LoadTest-<name>.ipynb` notebooks import this module and call
+`bootstrap()` → `run()` → `analyze()`, so most behavior changes ship in
+the wheel rather than in the notebook.
 
-Forward-compatibility contract:
-- `bootstrap()` and `run()` accept all options as keyword arguments
-  with safe defaults. New parameters MUST default to a value that
-  preserves prior behavior so older saved notebooks keep working.
-- `BootstrapResult` and `RunOutcome` are dataclasses; new fields MUST
-  be appended (never reorder, never rename) so attribute access from
-  older notebooks remains valid.
+Compatibility: each release's notebook is tested with that release's
+wheel. A notebook whose WHEEL_URL uses the `v*.*.*` wildcard picks up
+the latest release automatically; that is a convenience, not a
+guarantee — a newer wheel may require the matching notebook (for
+example when a `run()` keyword is renamed or removed). Pin WHEEL_URL to
+a specific release for reproducible runs.
+
+When changing this API, prefer keyword arguments whose defaults keep
+the previous behavior, and append dataclass fields instead of
+reordering or renaming them, so older notebooks keep working where
+practical.
 """
 from __future__ import annotations
 
 import glob
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from typing import Any, Mapping, Optional, Sequence
 
@@ -41,7 +44,7 @@ class BootstrapResult:
     workspace_id: str
     workspace_name: str
     notebook_name: str
-    token: str
+    token: str = field(repr=False)  # keep the bearer token out of reprs
     lakehouse: Optional[LakehouseInfo]
     dotnet: str
     loadgen_dll: str
@@ -134,7 +137,7 @@ def bootstrap(
         dotnet=dotnet, loadgen_dll=loadgen_dll, runtime_version=__version__)
 
 
-def run(
+def run(  # noqa: C901
     boot: BootstrapResult,
     *,
     # Target
@@ -169,16 +172,16 @@ def run(
 
     ``log_folder`` controls where the LoadGen subprocess writes its
     artifacts:
-      * ``None`` (default) → ``/tmp/fdlt-run-<id>`` on the Spark driver;
-        a post-run copy of ``*.log`` / ``*.trace.csv`` lands under
-        ``{default_lakehouse}/Files/run-logs/<run_id>/``.
+      * ``None`` (default) → ``/tmp/fdlt-run-<id>`` on the Spark driver.
+        When ``LAKEHOUSE_NAME`` is set, ``*.log`` / ``*.trace.csv`` are
+        copied after the run to ``Files/run-logs/<run_id>/`` in that
+        lakehouse.
       * Local path (e.g. ``/lakehouse/default/Files/loadtest-logs``) →
-        LoadGen writes there directly. No post-run copy needed; the
-        artifacts already live in OneLake.
+        LoadGen writes there directly and no copy is made (a
+        ``/lakehouse/...`` mount path lands in OneLake as it's written).
       * ``abfss://...`` URL → LoadGen still writes to /tmp (the .NET
-        process can't target OneLake directly), but the post-run copy
-        targets ``<abfss>/<run_id>/`` instead of the default
-        Files/run-logs/ location.
+        process can't target OneLake directly); when ``LAKEHOUSE_NAME``
+        is set, the post-run copy goes to ``<abfss>/<run_id>/``.
     """
     import notebookutils  # type: ignore[import-not-found]
 
@@ -285,11 +288,10 @@ def run(
         on_status=on_status, log_folder=runner_log_folder)
 
     # Forensic artifacts (executions CSV, trace CSV, result.json, *.log)
-    # stay on the Spark driver's local disk under run_local_dir. We
-    # deliberately do NOT copy them to OneLake — everything the analytics
-    # layer needs already lives in the 6 Delta tables. Run the load test
-    # again and you'll get a fresh /tmp dir; if you need the raw artifacts
-    # for forensics, grab them from `run_dest` before the kernel cycles.
+    # are written under run_local_dir. When a lakehouse is configured,
+    # *.log and *.trace.csv are copied to OneLake after the Delta write
+    # (_persist_run_logs); the executions CSV and result.json are not
+    # copied, since their content is in the Delta tables.
     run_dest = rr.run_local_dir
 
     _print_run_banner(rr, run_dest)
@@ -354,7 +356,7 @@ def run(
 
         # Persist LoadGen *.log + *.trace.csv so they survive kernel
         # cycles. Routing depends on log_folder:
-        #   None              → copy to {default_lh}/Files/run-logs/<run_id>/
+        #   None              → copy to <LAKEHOUSE_NAME>/Files/run-logs/<run_id>/
         #   "abfss://..."     → copy to <log_folder>/<run_id>/
         #   local path        → SKIP (LoadGen already wrote them there)
         if log_folder and not log_folder.startswith("abfss://"):
@@ -466,13 +468,12 @@ def _persist_run_logs(rr: RunResult, lh, run_id: str,
     Default destination: ``{lakehouse-abfss}/Files/run-logs/{run_id}/``.
     Pass ``dest_override="abfss://.../some/folder"`` to redirect to an
     arbitrary lakehouse folder; the run_id is appended as a
-    subdirectory. Uses ``notebookutils.fs.cp`` when available (the
-    standard Fabric notebook path); falls back to the
-    ``/lakehouse/default/Files/...`` mount when it's the configured
-    default lakehouse. Caller wraps in try/except.
+    subdirectory. Copies with ``notebookutils.fs.cp``, which
+    authenticates to OneLake from the Spark driver without an explicit
+    token. Caller wraps in try/except.
     """
-    import glob
-    import os
+    import notebookutils  # type: ignore[import-not-found]
+
     src_dir = rr.run_local_dir
     if not src_dir or not os.path.isdir(src_dir):
         return
@@ -487,36 +488,19 @@ def _persist_run_logs(rr: RunResult, lh, run_id: str,
     else:
         dest_dir_abfss = f"{lh.abfss}/Files/run-logs/{run_id}"
 
-    # Prefer notebookutils.fs.cp — it knows how to authenticate against
-    # OneLake from the running Spark driver without an explicit token.
-    try:
-        import notebookutils  # type: ignore
-        fs = notebookutils.fs
-    except Exception:
-        fs = None
-
+    fs = notebookutils.fs
     copied = 0
-    if fs is not None:
+    try:
+        fs.mkdirs(dest_dir_abfss)
+    except Exception:
+        pass  # mkdirs may not exist or may fail if dir already exists
+    for src in files:
+        name = os.path.basename(src)
         try:
-            fs.mkdirs(dest_dir_abfss)
-        except Exception:
-            pass  # mkdirs may not exist or may fail if dir already exists
-        for src in files:
-            name = os.path.basename(src)
-            try:
-                fs.cp(f"file://{src}", f"{dest_dir_abfss}/{name}", True)
-                copied += 1
-            except Exception as ex:  # noqa: BLE001
-                print(f"  Log copy   : (warning copying {name}: {ex})")
-    else:
-        # Fallback: write through the /lakehouse/default mount when the
-        # current default lakehouse matches the destination.
-        mount = f"/lakehouse/default/Files/run-logs/{run_id}"
-        os.makedirs(mount, exist_ok=True)
-        import shutil
-        for src in files:
-            shutil.copy2(src, os.path.join(mount, os.path.basename(src)))
+            fs.cp(f"file://{src}", f"{dest_dir_abfss}/{name}", True)
             copied += 1
+        except Exception as ex:  # noqa: BLE001
+            print(f"  Log copy   : (warning copying {name}: {ex})")
 
     if copied:
         print(f"  Log copy   : {copied} file(s) -> Files/run-logs/{run_id}/")
@@ -549,7 +533,7 @@ def _make_on_status():
     return _on_status
 
 
-def _print_run_banner(rr: RunResult, run_dest: str) -> None:
+def _print_run_banner(rr: RunResult, run_dest: str) -> None:  # noqa: C901
     def _print_log_tail():
         try:
             logs = sorted(glob.glob(os.path.join(rr.run_local_dir, "*.log")))

@@ -6,7 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
-using FabricDaxLoadTest;
 
 namespace FabricDaxLoadTest;
 
@@ -68,7 +67,7 @@ partial class Program
             "'abort': throw on the first per-query error and fail the run. Infrastructure failures always abort regardless.");
         var noTraceOption = new Option<bool>("--no-trace", () => false,
             "Disable XMLA trace subscription. By default, the run subscribes to engine trace events " +
-            "(QueryEnd, ExecutionMetrics, VertiPaq SE) for the dataset and writes them to a *.trace.csv. " +
+            "(Command, Error, DirectQuery and ExecutionMetrics) for the dataset and writes them to a *.trace.csv. " +
             "Use --no-trace if the principal lacks Build/Read trace permissions or the run is sensitive.");
 
         var rootCommand = new RootCommand("LoadGen — DAX load test runner for Power BI / Fabric semantic models")
@@ -178,7 +177,7 @@ partial class Program
         }
         else
         {
-            var resolved = ResolveToken(tokenDirect, tokenFile, info);
+            var resolved = ResolveToken(tokenDirect, tokenFile);
             if (resolved == null)
             {
                 EmitError(jsonProgress, "no_token",
@@ -286,7 +285,7 @@ partial class Program
         return jsonProgress
             ? RunJsonProgress(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
                 duration, concurrentQueriesPerUser, pauseIter, pauseQuery, rampTime,
-                logDir, logFile, skipResults, errorPolicy, enableTracing, users)
+                logDir, logFile, skipResults, errorPolicy, enableTracing)
             : RunHumanReadable(queries, xmlaEndpoint, dataset, token, emailArr, customDataArr, roleArr,
                 duration, concurrentQueriesPerUser, pauseIter, pauseQuery, rampTime,
                 logDir, logFile, skipResults, errorPolicy, enableTracing, users);
@@ -353,8 +352,7 @@ partial class Program
         string token, string[] emailArr, string[] customDataArr, string[] roleArr,
         int duration, int concurrentQueriesPerUser, int pauseIter, int pauseQuery, int rampTime,
         string logDir, string logFile, bool skipResults, ErrorPolicy errorPolicy,
-        bool enableTracing,
-        VirtualUser[] users)
+        bool enableTracing)
     {
         var config = new LoadTestConfig
         {
@@ -557,7 +555,7 @@ partial class Program
     // gets one via notebookutils.credentials.getToken("pbi"); local
     // smoke gets one via Az CLI in scripts/local_smoke.py. This keeps
     // the Azure.Identity dependency tree out of the staged bundle.
-    static string? ResolveToken(string? direct, FileInfo? file, TextWriter info)
+    static string? ResolveToken(string? direct, FileInfo? file)
     {
         if (!string.IsNullOrWhiteSpace(direct)) return direct.Trim();
         if (file != null && file.Exists) return File.ReadAllText(file.FullName).Trim();
