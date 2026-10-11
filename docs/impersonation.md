@@ -8,7 +8,7 @@ supported, in any combination:
 | Property            | Effect                                                                 |
 | ------------------- | ---------------------------------------------------------------------- |
 | `EffectiveUserName` | Sets the connecting identity. `USERPRINCIPALNAME()` reflects this.     |
-| `CustomData`        | Sets the value `CUSTOMDATA()` returns. Independent of identity / RLS.  |
+| `CustomData`        | Sets the value `CUSTOMDATA()` returns. Applies no role by itself: pair it with `Roles` for `CUSTOMDATA()`-based RLS. |
 | `Roles`             | Comma-separated list of role names to apply (subset of effective set). |
 
 ## `users.json` v2 schema
@@ -41,9 +41,10 @@ same array:
     "roles":             ["Sales East", "Sales West"]
   },
 
-  // 3. CustomData-only — useful for testing CUSTOMDATA()-driven RLS
-  //    without granting real users access to the model.
-  { "customData": "USA" }
+  // 3. CustomData + Roles — CUSTOMDATA()-driven RLS without granting real
+  //    users access to the model. customData on its own only sets
+  //    CUSTOMDATA(); without roles no role, and so no RLS, is applied.
+  { "customData": "USA", "roles": "CustomData Role" }
 ]
 ```
 
@@ -93,7 +94,7 @@ for any entry of a users file.
 | –   | –     | –          | Connecting principal (your token). Admin sees everything.               |
 | ✓   | –     | –          | Identity = EUN. RLS = EUN's actual role membership. **Caveat:** if EUN equals the connecting admin's own UPN, admin bypass still applies and RLS is NOT triggered (see below). |
 | –   | ✓     | –          | Identity = connecting principal. Workspace admins can pick any role; non-admins must be members. |
-| –   | –     | ✓          | `CUSTOMDATA()` returns the value. Identity / RLS unchanged.             |
+| –   | –     | ✓          | `CUSTOMDATA()` returns the value. Identity / RLS unchanged: no role is applied, so `CUSTOMDATA()`-based role filters don't run. Add `Roles=`. |
 | ✓   | ✓     | –          | Identity = EUN. **EUN must be a member of every named role** — non-member roles are rejected at connect time with `user does not have access to the database`. Use this to *narrow* RLS to a subset of EUN's real roles. **This rule applies even when EUN = the connecting admin's own UPN — admin bypass is dropped once `Roles=` is set with EUN.** |
 | ✓   | –     | ✓          | Identity = EUN; `CUSTOMDATA()` set independently.                       |
 | –   | ✓     | ✓          | Roles applied to connecting principal; `CUSTOMDATA()` set.              |
