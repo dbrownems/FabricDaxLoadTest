@@ -9,6 +9,9 @@ dotnet path/to/LoadGen.dll --xmla <endpoint> --dataset <name> \
   --queries-file queries.json --users-file users.json [options]
 ```
 
+To check one user's identity and roles without running a load test, use
+[`LoadGen probe`](#probe--check-a-users-identity-and-roles).
+
 ## Required arguments
 
 | Arg              | Description                                                                                            |
@@ -134,6 +137,49 @@ above, not at their original recorded pace. This is intentional: replaying
 one user's exact timing measures "can the engine keep up with one historical
 user?" (almost always yes), not "how many concurrent users can this engine
 support?", which is the question load testing should answer.
+
+## `probe` — check a user's identity and roles
+
+`LoadGen probe` connects as one entry of a users file — with the same
+connection string a load-test user gets — runs a test query, and prints
+what the model sees. The notebook runs it for the first user before every
+load test.
+
+```pwsh
+dotnet path/to/LoadGen.dll probe --xmla <endpoint> --dataset <name> \
+  --users-file users.json [--user-index 0] [options]
+```
+
+| Arg              | Default      | What it does                                                                   |
+| ---------------- | ------------ | ------------------------------------------------------------------------------ |
+| `--xmla`         | *(required)* | XMLA endpoint, as for a load test.                                             |
+| `--dataset`      | *(required)* | Semantic-model display name.                                                   |
+| `--users-file`   | –            | `users.json` to take the identity from. Omit to connect without impersonation. |
+| `--user-index`   | 0            | Zero-based entry of `--users-file` to connect as.                              |
+| `--replica`      | (default)    | `readonly` to probe the read-replica scale-out path.                           |
+| `--token` / `--token-file` | –  | Same as for a load test (else `$PBI_TOKEN`); `--no-auth` for local SSAS.       |
+| `--json`         | false        | Print one JSON envelope (`"type":"probe"`) on stdout instead of text.          |
+
+```text
+Model               : My Semantic Model @ powerbi://api.powerbi.com/v1.0/myorg/MyWorkspace
+Users file [0]      : EffectiveUserName=user1@contoso.com  CustomData=(not set)  Roles=(not set)
+Connected in        : 1184 ms
+USERPRINCIPALNAME() : user1@contoso.com
+CUSTOMDATA()        : (blank)
+Active roles        : Sales East
+Model roles         : Sales East, Sales West, USA  (3)
+```
+
+`Active roles` is the `ROLES` column of `$SYSTEM.DBSCHEMA_CATALOGS` on the
+impersonated connection; `*` means the connection has admin rights on the
+model, so RLS isn't applied. `Model roles` is `$SYSTEM.TMSCHEMA_ROLES`, read
+on a connection without impersonation, and needs write/admin permission on
+the model. See
+[Checking a user before the run](impersonation.md#checking-a-user-before-the-run).
+
+Exit code is 0 when the user connected and the test query ran, and 1
+otherwise (bad arguments, or the connection was rejected — the engine's
+error is printed).
 
 ## Exit codes
 

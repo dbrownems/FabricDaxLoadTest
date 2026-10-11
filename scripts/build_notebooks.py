@@ -25,6 +25,7 @@ Run from repo root:
 """
 import json
 import os
+import textwrap
 import nbformat
 from pathlib import Path
 
@@ -66,7 +67,8 @@ def new_notebook():
 
 
 def md(nb, text):
-    nb.cells.append(nbformat.v4.new_markdown_cell(text.strip("\n")))
+    # Dedent: 4-space-indented lines are a code block in Markdown.
+    nb.cells.append(nbformat.v4.new_markdown_cell(textwrap.dedent(text).strip("\n")))
 
 
 def code(nb, text):
@@ -124,6 +126,23 @@ def build_run():
     forensic artifacts (CSVs, `*.log`, `*.trace.csv`) live only on the
     driver and disappear at session end.
 
+    ### Where to put your queries / users files
+
+    `QUERIES_FILE` and `USERS_FILE` (cell 1) are loaded from a place that
+    depends on the form of the value:
+
+    | Value in cell 1 | Loaded from |
+    |---|---|
+    | `"users.json"` (plain file name) | this notebook's **Resources** panel (left sidebar) — `builtin/users.json` |
+    | `"/lakehouse/default/Files/users.json"` | this notebook's **attached (default) lakehouse** — upload under *Files* in the Lakehouse explorer. This is the lakehouse pinned to the notebook, not necessarily `LAKEHOUSE_NAME`. |
+    | `"abfss://…"` | any OneLake path |
+
+    `QUERIES_FILE = None` auto-picks the single `.json` / `.jsonl` in
+    Resources; `USERS_FILE` is never auto-picked. Cell 3 prints where each
+    file was loaded from, then runs a test query as the first user and
+    shows its `USERPRINCIPALNAME()`, `CUSTOMDATA()`, configured roles,
+    roles in effect, and the roles defined in the model.
+
     > **Detailed parameter reference.** Cell 1 ships with one-line comments;
     > the full explanation of every knob (semantics, defaults, examples) is
     > in [`docs/loadgen-main.md`](../docs/loadgen-main.md).
@@ -177,6 +196,10 @@ LAKEHOUSE_NAME = None
 # single .json or .jsonl attached to the notebook's *Resources* panel
 # (e.g. a Power BI Performance Analyzer export, or a Profiler trace
 # JSONL with QueryEnd events). QUERIES_INLINE is the fallback.
+# QUERIES_FILE and USERS_FILE are loaded from:
+#   "name.json"                          → this notebook's Resources panel
+#   "/lakehouse/default/Files/name.json" → this notebook's attached (default) lakehouse
+#   "abfss://…"                          → any OneLake path
 QUERIES_FILE   = None
 QUERIES_INLINE = [
     "EVALUATE ROW(\"ping\", 1)",
@@ -196,8 +219,12 @@ PAUSE_BETWEEN_QUERIES_MS     = 0         # think-time between queries in an iter
 ENABLE_TRACING               = True      # capture engine events to TraceEvents
 SKIP_RESULTS                 = False     # True → drain rows without parsing
 
-USERS_FILE                   = None      # RLS / impersonation list
-USERS_INLINE                 = []        # see docs/impersonation.md
+# RLS / impersonation (docs/impersonation.md). Never auto-picked — name it:
+#   "users.json"                          → upload to this notebook's Resources panel
+#   "/lakehouse/default/Files/users.json" → upload to Files/ in the attached lakehouse
+# Cell 3 runs a test query as the first user and prints what the model sees.
+USERS_FILE                   = None
+USERS_INLINE                 = []        # used when USERS_FILE is None
 
 LOG_FOLDER                   = None      # None → /tmp on driver; "abfss://…" or local path supported
 
@@ -277,7 +304,8 @@ boot = fdlt_nb.bootstrap(
 # ── 3. Run the load test and persist results ─────────────────────────────────
 # Thin shim: every parameter from cell 1 is passed by keyword to
 # `fdlt_runtime.notebook.run()`, which loads the scenario, resolves
-# the target, runs LoadGen, streams progress, and writes 4 Delta tables.
+# the target, runs a test query as the first user, runs LoadGen,
+# streams progress, and writes 4 Delta tables.
 # Press the ■ Interrupt Kernel button to cancel.
 outcome = fdlt_nb.run(
     boot,

@@ -178,11 +178,12 @@ If you point the notebook at a BYO lakehouse (by changing `LAKEHOUSE_NAME` in ce
 The runner loads queries from one of these sources, in order:
 
 1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` or `*.jsonl` is attached to the notebook's **Resources** panel — that file is auto-discovered.
-2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — loads `builtin/<name>` from Resources.
-3. `QUERIES_FILE = "abfss://…"` — point at any OneLake file directly (cross-lakehouse / cross-workspace escape hatch). The notebook reads it via `notebookutils.fs.head`. The `https://…dfs.fabric…` form is **not** supported (raises a clear error with the abfss equivalent) — `notebookutils.fs.head` returns HTTP 401 against https URLs.
-4. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the notebook ships with).
+2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` (a plain file name) — loads `builtin/<name>` from the notebook's **Resources** panel.
+3. `QUERIES_FILE = "/lakehouse/default/Files/name.json"` — loads from **Files/** of the notebook's attached (default) lakehouse — the lakehouse pinned in the notebook's Lakehouse explorer, which need not be `LAKEHOUSE_NAME`.
+4. `QUERIES_FILE = "abfss://…"` — point at any OneLake file directly (cross-lakehouse / cross-workspace escape hatch). The notebook reads it via `notebookutils.fs.head`. The `https://…dfs.fabric…` form is **not** supported (raises a clear error with the abfss equivalent) — `notebookutils.fs.head` returns HTTP 401 against https URLs.
+5. Otherwise → `QUERIES_INLINE` in cell 1 (the 3-query model-agnostic warm-up the notebook ships with).
 
-A non-empty `QUERIES_FILE` that doesn't resolve raises `FileNotFoundError` rather than silently falling through to `QUERIES_INLINE`, so a typo'd URL or an unattached resource fails loud.
+A non-empty `QUERIES_FILE` that doesn't resolve raises `FileNotFoundError` (saying where it looked) rather than silently falling through to `QUERIES_INLINE`, so a typo'd path or an un-uploaded file fails loud.
 
 Per-Run Scenarios travel with the notebook in Resources, so every Load Test is reproducible without coupling to shared state.
 
@@ -227,7 +228,15 @@ The notebook accepts any of these shapes for `queries.json`:
 
 #### User list formats
 
-`USERS_FILE` (Resources panel) or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation).
+`USERS_FILE` or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation).
+
+`USERS_FILE` is **never** auto-discovered (a single `.json` in Resources always goes to `QUERIES_FILE`), so name it explicitly. Where the file has to be depends on the value:
+
+| `USERS_FILE` value | Put the file in |
+|---|---|
+| `"users.json"` (plain file name) | the notebook's **Resources** panel (left sidebar) — loaded as `builtin/users.json` |
+| `"/lakehouse/default/Files/users.json"` | **Files/** of the notebook's attached (default) lakehouse — the one pinned in the notebook's Lakehouse explorer, not necessarily `LAKEHOUSE_NAME` |
+| `"abfss://…"` | any OneLake path |
 
 ```json
 [
@@ -239,7 +248,7 @@ The notebook accepts any of these shapes for `queries.json`:
 
 Each entry can be a string (sets `EffectiveUserName=` only) or an object with any of `effectiveUserName` / `customData` / `roles`. Roles can be a string or an array. See [docs/impersonation.md](docs/impersonation.md) for the full schema, combination semantics, model permissions, and a token-acquisition gotcha when running locally.
 
-`USERS_FILE` is **not** auto-discovered — pass an explicit filename. (Auto-discovery of a single `.json` in Resources always goes to `QUERIES_FILE`.)
+Before LoadGen starts, cell 3 prints where the users came from and the pool size, then runs a test query as the **first** user and shows its `USERPRINCIPALNAME()`, `CUSTOMDATA()`, configured roles, the roles in effect for that connection, and the roles defined in the model — see [Checking a user before the run](docs/impersonation.md#checking-a-user-before-the-run).
 
 ---
 
@@ -288,6 +297,16 @@ az account get-access-token --resource "https://analysis.windows.net/powerbi/api
 | `--token` | — | Inline bearer token (avoid; prefer `--token-file`) |
 
 The token must be scoped for `https://analysis.windows.net/powerbi/api`.
+
+To see what the model applies for one entry of your users file before a run — `USERPRINCIPALNAME()`, `CUSTOMDATA()`, the roles in effect, and the model's roles — use the `probe` subcommand ([details](docs/loadgen-cli.md#probe--check-a-users-identity-and-roles)):
+
+```bash
+dotnet run --project src/LoadGen -c Release -- probe \
+  --xmla    "powerbi://api.powerbi.com/v1.0/myorg/MyWorkspace" \
+  --dataset "My Semantic Model" \
+  --users-file samples/users.json --user-index 0 \
+  --token-file samples/token.txt
+```
 
 ---
 
@@ -372,7 +391,7 @@ Pure-Python REST-based tools (e.g. the [Fabric Toolbox `FabricLoadTestTool`](htt
 - **Real XMLA wire path.** Each simulated user is a real ADOMD.NET connection — same TCP/TLS handshake, model attach, and session lifetime as Power BI Desktop, Excel, and Tabular Editor. REST tools only exercise the REST gateway path.
 - **Real thread parallelism, not notebook fan-out.** N users = N native threads in one .NET process. No `notebookutils.notebooks.runMultiple` per-user spin-up, no GIL, no Spark notebook concurrency cap. A 25-user / 60-second test on a starter pool drove 6,336 queries (≈105 qps from one driver pod) in smoke testing.
 - **Coordinated engine-trace capture.** An XMLA trace runs alongside the load test and stamps every command with a per-query `ActivityID`. After the run, `QueryExecutions` has `ClientDurationMs`, `EngineDurationMs`, `EngineCpuMs`, SE/FE CPU split, peak memory, etc. on the same row — no post-hoc log correlation. The raw trace lands in `TraceEvents` for forensics.
-- **First-class RLS impersonation.** `EffectiveUsername` / `Roles` per simulated user via a `users.json` on the Resources panel.
+- **First-class RLS impersonation.** `EffectiveUsername` / `Roles` per simulated user via a `users.json` on the Resources panel or in the notebook's attached lakehouse, with a pre-run test query that shows the identity and roles the model actually applies.
 
 ## License
 

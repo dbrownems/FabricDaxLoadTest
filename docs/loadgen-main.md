@@ -124,16 +124,19 @@ The runner resolves the scenario in this order:
 
 1. `QUERIES_FILE = None` **and** exactly one `*.json` or `*.jsonl` is attached
    to the notebook's *Resources* panel — that file is auto-discovered.
-2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` — load `builtin/<name>` from
-   Resources.
-3. `QUERIES_FILE = "abfss://…"` — cross-lakehouse / cross-workspace
+2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` (a plain file name) — load
+   `builtin/<name>` from the notebook's *Resources* panel.
+3. `QUERIES_FILE = "/lakehouse/default/Files/name.json"` — load from
+   *Files/* of the notebook's attached (default) lakehouse (see
+   [Where files are loaded from](#where-files-are-loaded-from)).
+4. `QUERIES_FILE = "abfss://…"` — cross-lakehouse / cross-workspace
    escape hatch. The `https://…dfs.fabric…` form is **not** supported
    (raises with the abfss equivalent).
-4. Nothing matches → fall back to `QUERIES_INLINE`.
+5. Nothing matches → fall back to `QUERIES_INLINE`.
 
 A non-empty `QUERIES_FILE` that doesn't resolve raises
-`FileNotFoundError` rather than silently falling through to
-`QUERIES_INLINE`.
+`FileNotFoundError` — saying where it looked — rather than silently
+falling through to `QUERIES_INLINE`.
 
 Accepted shapes (full list in [`README.md` § Scenario formats](../README.md)):
 
@@ -156,9 +159,16 @@ USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 ```
 
-Resolution order is the same as `QUERIES_FILE`, except auto-discovery does
-**not** pick up a stray `.json` for users — single-`.json` Resources always
-go to `QUERIES_FILE`. Users must be named explicitly via `USERS_FILE`.
+`USERS_FILE` is **never** auto-discovered — a single `.json` on Resources
+always goes to `QUERIES_FILE` — so name it explicitly. The form of the
+value decides where the file is loaded from (see
+[Where files are loaded from](#where-files-are-loaded-from)):
+
+- `USERS_FILE = "users.json"` → upload `users.json` to the notebook's
+  **Resources** panel.
+- `USERS_FILE = "/lakehouse/default/Files/users.json"` → upload it to
+  **Files/** of the notebook's **attached (default) lakehouse**.
+- `USERS_FILE = "abfss://…"` → any OneLake path.
 
 Three entry shapes (see [`docs/impersonation.md`](impersonation.md) for the
 full schema and EffectiveUserName / CustomData / Roles semantics):
@@ -166,6 +176,42 @@ full schema and EffectiveUserName / CustomData / Roles semantics):
 - `"alice@contoso.com"` → `EffectiveUserName`
 - `{"effectiveUserName":"a","customData":"…","roles":["R1"]}`
 - `{"customData":"USA"}` → `CUSTOMDATA()` only
+
+### First-user test query
+
+Before LoadGen starts, cell 3 prints where the users came from and the
+pool size, then connects as the **first** user — with exactly the
+connection string a virtual user gets — and prints what the model sees:
+
+```text
+Users     : pool=3  from notebook Resources: builtin/users.json
+          Test query as the first user (connected in 1.2s):
+            configured          : effectiveUserName=user1@contoso.com  customData=(not set)  roles=(not set)
+            USERPRINCIPALNAME() : user1@contoso.com
+            CUSTOMDATA()        : (blank)
+            active roles        : Sales East
+            model roles (3)     : Sales East, Sales West, USA
+```
+
+`active roles` are the roles in effect for that connection; `*` means it
+has admin rights on the model, so RLS is **not** applied. `model roles`
+needs write/admin permission on the model. A failed test query is
+reported (with the engine's error) but doesn't stop the run. See
+[Checking a user before the run](impersonation.md#checking-a-user-before-the-run)
+for how to read each line.
+
+## Where files are loaded from
+
+`QUERIES_FILE` and `USERS_FILE` follow the same rules:
+
+| Value | Loaded from |
+|---|---|
+| `"name.json"` — a plain file name (`"builtin/name.json"` also works) | the notebook's **Resources** panel (left sidebar), mounted at `builtin/` |
+| `"/lakehouse/default/Files/name.json"` | the notebook's **attached (default) lakehouse**, which Fabric mounts at `/lakehouse/default`. Upload the file under *Files* in the notebook's Lakehouse explorer. This is the lakehouse pinned to the notebook — not necessarily `LAKEHOUSE_NAME`. Any other absolute path is read from the Spark driver's local disk. |
+| `"abfss://…"` | any OneLake path, in any workspace you can read |
+
+A value that doesn't resolve raises `FileNotFoundError` saying where it
+looked (e.g. *"no lakehouse is attached to this notebook"*).
 
 ## Log folder (raw forensic files)
 

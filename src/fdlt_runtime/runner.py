@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import uuid
 from collections import deque
@@ -253,6 +254,77 @@ def run_load_test(
         error_envelope=error_envelope,
         stderr_tail=list(stderr_buf),
     )
+
+
+def probe_user(
+    *,
+    dotnet: str,
+    loadgen_dll: str,
+    xmla: str,
+    dataset: str,
+    token: str,
+    user: Mapping[str, str],
+    replica: str = "",
+    timeout_sec: float = 600,
+) -> Dict[str, Any]:
+    """Connect as one virtual user via ``LoadGen.dll probe`` and report
+    what the semantic model sees.
+
+    Uses the same connection string a load-test user gets. Returns the
+    ``probe`` envelope: ``userPrincipalName`` / ``customData`` (DAX
+    ``USERPRINCIPALNAME()`` / ``CUSTOMDATA()``), ``activeRoles`` (roles
+    in effect for the connection; ``"*"`` = administrator, so RLS is not
+    applied), ``modelRoles`` (every role in the model; needs write/admin
+    permission), and ``configured`` (the user's impersonation settings).
+    ``ok`` is False when the user could not connect; ``error`` then
+    carries the engine's message.
+
+    Raises ``RuntimeError`` when LoadGen itself fails (bad arguments,
+    timeout, no envelope on stdout).
+    """
+    fd, users_json = tempfile.mkstemp(prefix="fdlt-probe-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump([{
+                "effectiveUserName": user.get("effectiveUserName") or "",
+                "customData": user.get("customData") or "",
+                "roles": user.get("roles") or "",
+            }], f)
+        cmd = [dotnet, loadgen_dll, "probe", "--json",
+               "--xmla", xmla, "--dataset", dataset, "--users-file", users_json]
+        if replica:
+            cmd += ["--replica", replica]
+        try:
+            # Token via env, NOT argv (see run_load_test).
+            proc = subprocess.run(
+                cmd, env={**os.environ, "PBI_TOKEN": token},
+                capture_output=True, text=True, timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"LoadGen probe did not finish within {timeout_sec:.0f}s") from None
+    finally:
+        try:
+            os.remove(users_json)
+        except OSError:
+            pass
+
+    envelope: Optional[Dict[str, Any]] = None
+    for line in (proc.stdout or "").splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") in ("probe", "error"):
+            envelope = obj
+    if envelope is None:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
+        raise RuntimeError(
+            f"LoadGen probe exited with code {proc.returncode} without a result"
+            + (f":\n{tail}" if tail else "."))
+    if envelope["type"] == "error":
+        raise RuntimeError(
+            f"LoadGen probe failed ({envelope.get('code')}): {envelope.get('message')}")
+    return envelope
 
 
 def render_progress(env_obj: Mapping[str, Any]) -> str:

@@ -30,7 +30,7 @@ from .env import (
 )
 from .persist import WriteSummary, write_run
 from .queries import load_queries, load_users
-from .runner import RunConfig, RunResult, render_progress, run_load_test
+from .runner import RunConfig, RunResult, probe_user, render_progress, run_load_test
 
 
 @dataclass
@@ -162,6 +162,11 @@ def run(
 ) -> RunOutcome:
     """Resolve target + run LoadGen + persist Delta tables. One-shot.
 
+    Before LoadGen starts, a test query runs as the first virtual user
+    and prints what the model sees for it: ``USERPRINCIPALNAME()``,
+    ``CUSTOMDATA()``, the configured roles, the roles in effect, and the
+    roles defined in the model. A failure there is reported, not raised.
+
     ``log_folder`` controls where the LoadGen subprocess writes its
     artifacts:
       * ``None`` (default) → ``/tmp/fdlt-run-<id>`` on the Spark driver;
@@ -217,9 +222,11 @@ def run(
     bound_visuals = sum(1 for v in query_visuals if v is not None)
     if bound_visuals:
         print(f"Visuals   : {bound_visuals}/{len(queries)} queries bound to a Power BI visual")
+    # Load users now so a bad USERS_FILE fails before any network calls;
+    # they're printed after the target resolves because the first-user
+    # test query needs it.
     base, u_src = load_users(
         users_file, users_inline or [], read_abfss=_read_abfss)
-    print(f"Users     : pool={len(base)}  from {u_src}")
     users = [base[i % len(base)] for i in range(concurrent_users)]
 
     # Resolve TARGET_WORKSPACE → (id, name); default is the notebook's workspace.
@@ -233,7 +240,6 @@ def run(
     print(f"Target    : {ds.workspace_name} / {ds.dataset_name}")
 
     resolved_name = boot.notebook_name or "my-load-test"
-    print(f"LoadTest  : {resolved_name}")
 
     cfg = RunConfig(
         load_test_name=resolved_name,
@@ -251,6 +257,11 @@ def run(
         queries=queries, users=users,
         token=boot.token,
     )
+
+    print(f"Users     : pool={len(base)}  from {u_src}")
+    _print_first_user_probe(boot, cfg, base[0])
+
+    print(f"LoadTest  : {resolved_name}")
     print(f"Endpoint  : {cfg.xmla}"
           f"{('?' + target_replica) if target_replica else ''}")
     print(f"Shape     : {len(users)} users, ramp {user_ramp_time_sec}s, "
@@ -364,6 +375,85 @@ def run(
     return RunOutcome(
         result=rr, write_summary=write_summary,
         load_test_name=resolved_name, cfg=cfg, run_dest=run_dest)
+
+
+_PROBE_PAD = " " * 12
+_PROBE_MAX_MODEL_ROLES = 15
+
+
+def _print_first_user_probe(boot: BootstrapResult, cfg: RunConfig,
+                            user: Mapping[str, str]) -> None:
+    """Run a test query as the first virtual user and print what the model
+    sees: USERPRINCIPALNAME(), CUSTOMDATA(), the configured roles, the
+    roles in effect, and the roles defined in the model.
+
+    Diagnostic only: problems are printed as warnings and the load test
+    proceeds (KeyboardInterrupt still cancels the cell).
+    """
+    def row(label: str, value: Any) -> None:
+        lines = [ln.strip() for ln in str(value).splitlines() if ln.strip()] or [""]
+        cont = "\n" + _PROBE_PAD + " " * 22
+        print(f"{_PROBE_PAD}{label:<20}: {cont.join(lines)}")
+
+    def first_line(text: Any) -> str:
+        return next((ln.strip() for ln in str(text).splitlines() if ln.strip()), "")
+
+    try:
+        env = probe_user(
+            dotnet=boot.dotnet, loadgen_dll=boot.loadgen_dll, xmla=cfg.xmla,
+            dataset=cfg.target_dataset, token=cfg.token, user=user,
+            replica=cfg.target_replica)
+    except Exception as ex:  # noqa: BLE001 — diagnostic only
+        print("          ⚠ test query as the first user skipped: "
+              + ("\n" + _PROBE_PAD).join(
+                  ln.strip() for ln in str(ex).splitlines() if ln.strip()))
+        return
+
+    if env.get("ok"):
+        print("          Test query as the first user "
+              f"(connected in {(env.get('connectMs') or 0) / 1000:.1f}s):")
+    else:
+        print("          ⚠ Test query as the first user FAILED — virtual users "
+              "with this identity will fail to connect:")
+    row("configured", "  ".join(
+        f"{k}={user.get(k) or '(not set)'}"
+        for k in ("effectiveUserName", "customData", "roles")))
+
+    active = env.get("activeRoles")
+    if env.get("ok"):
+        row("USERPRINCIPALNAME()", env.get("userPrincipalName") or "(blank)")
+        row("CUSTOMDATA()", env.get("customData") or "(blank)")
+        if active is None:
+            row("active roles", f"(unavailable: {first_line(env.get('activeRolesError'))})")
+        else:
+            row("active roles", ", ".join(
+                "* (administrator: RLS not applied)" if r == "*" else r
+                for r in active) or "(none)")
+    else:
+        row("error", env.get("error") or "(no message)")
+
+    model_roles = env.get("modelRoles")
+    if model_roles is None:
+        row("model roles", f"(unavailable: {first_line(env.get('modelRolesError'))})")
+    elif not model_roles:
+        row("model roles", "(none defined)")
+    else:
+        shown = ", ".join(model_roles[:_PROBE_MAX_MODEL_ROLES])
+        if len(model_roles) > _PROBE_MAX_MODEL_ROLES:
+            shown += f", … (+{len(model_roles) - _PROBE_MAX_MODEL_ROLES} more)"
+        row(f"model roles ({len(model_roles)})", shown)
+        configured = [r.strip() for r in (user.get("roles") or "").split(",") if r.strip()]
+        known = {r.lower() for r in model_roles}
+        missing = [r for r in configured if r.lower() not in known]
+        if missing:
+            print(f"{_PROBE_PAD}⚠ configured role(s) not defined in the model: "
+                  f"{', '.join(missing)}")
+
+    if active and "*" in active and not user.get("roles") and (
+            user.get("effectiveUserName") or user.get("customData")):
+        print(f"{_PROBE_PAD}⚠ RLS is not applied: this identity has admin rights on the "
+              "model. Set 'roles' to apply a role's filters (see "
+              "docs/impersonation.md for the rules with effectiveUserName).")
 
 
 def _persist_run_logs(rr: RunResult, lh, run_id: str,
