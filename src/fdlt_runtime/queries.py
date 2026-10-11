@@ -15,8 +15,9 @@ Resolution order for a given ``queries_file`` / ``users_file``:
      ``"builtin/name.json"`` form) — load ``builtin/<name>`` from the
      kernel CWD (the Fabric notebook Resources panel is mounted there).
   4. ``None`` — auto-discover: if exactly one ``*.json`` or ``*.jsonl``
-     file is present under ``builtin/``, use it. Auto-discovery applies
-     to **queries only**; users must always be named explicitly.
+     file is present under ``builtin/`` (not counting the file named by
+     ``users_file``), use it. Auto-discovery applies to **queries
+     only**; users must always be named explicitly.
   5. None of the above and ``queries_file`` / ``users_file`` is empty
      → caller falls back to its inline default.
 
@@ -398,11 +399,13 @@ def _resolve_local_path(path: str) -> tuple[str | None, str]:
     return None, "local path does not exist on the Spark driver."
 
 
-def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[str | None, str]:
+def _resolve_resource(name: str | None, *, allow_auto_discover: bool,
+                      exclude: str | None = None) -> tuple[str | None, str]:
     """Map a ``QUERIES_FILE`` / ``USERS_FILE`` value to a readable path.
 
     Returns ``(path, label)``. When ``path`` is None and ``name`` was a
     non-empty string, ``label`` explains why it didn't resolve.
+    ``exclude`` is a resolved path that auto-discovery must skip.
     """
     if isinstance(name, str) and _is_remote_url(name.strip()):
         name = name.strip()
@@ -422,13 +425,19 @@ def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[s
             "notebook's attached lakehouse, use the full mount path, e.g. "
             f"'{_DEFAULT_LAKEHOUSE_MOUNT}/Files/{os.path.basename(name)}'.")
     if allow_auto_discover and os.path.isdir(_RESOURCES_DIR):
+        skip = os.path.normpath(exclude) if exclude else None
         candidates = sorted(
             f for f in os.listdir(_RESOURCES_DIR)
             if f.lower().endswith((".json", ".jsonl"))
+            and os.path.normpath(f"{_RESOURCES_DIR}/{f}") != skip
         )
         if len(candidates) == 1:
             p = f"{_RESOURCES_DIR}/{candidates[0]}"
             return p, f"notebook Resources: {p} (auto-discovered)"
+        if candidates:
+            return None, (
+                f"{len(candidates)} .json/.jsonl files on the notebook's Resources "
+                f"panel ({', '.join(candidates)}); set QUERIES_FILE to pick one")
     return None, "(no resource)"
 
 
@@ -443,6 +452,7 @@ def load_queries(
     queries_inline: Iterable[str],
     *,
     read_abfss: ReadAbfss | None = None,
+    users_file: str | None = None,
 ) -> tuple[list[str], list[dict[str, str] | None], str]:
     """Resolve and load the Load Test Scenario query list.
 
@@ -453,22 +463,38 @@ def load_queries(
     ``source_label`` is a short human-readable description suitable for
     printing in the notebook.
 
+    ``users_file`` (the ``USERS_FILE`` value) is never auto-discovered
+    as the queries file, so a ``users.json`` can sit on the Resources
+    panel next to the scenario file.
+
     Raises ``FileNotFoundError`` when ``queries_file`` is a non-empty
     string that doesn't resolve to a readable path — the inline fallback
     only kicks in when no ``queries_file`` was supplied.
     """
-    p, src = _resolve_resource(queries_file, allow_auto_discover=True)
+    users_path = (_resolve_resource(users_file, allow_auto_discover=False)[0]
+                  if users_file else None)
+    p, src = _resolve_resource(queries_file, allow_auto_discover=True, exclude=users_path)
     if p is not None:
         text = _read_text(p, read_abfss)
-        if p.lower().endswith(".jsonl"):
-            queries, visuals = normalize_queries_jsonl(text)
-        else:
-            queries, visuals = normalize_queries_with_visuals(text)
+        try:
+            if p.lower().endswith(".jsonl"):
+                queries, visuals = normalize_queries_jsonl(text)
+            else:
+                queries, visuals = normalize_queries_with_visuals(text)
+        except ValueError as ex:
+            if src.endswith("(auto-discovered)"):
+                raise ValueError(
+                    f"{ex}\nQUERIES_FILE = None picked {p}, the only .json/.jsonl "
+                    "on the notebook's Resources panel. If that's your users "
+                    f"file, set USERS_FILE = '{p[len(_RESOURCES_DIR) + 1:]}'.") from ex
+            raise
         return queries, visuals, src
     if isinstance(queries_file, str) and queries_file.strip():
         _raise_unresolved("queries", queries_file, src)
     qs = [str(q) for q in queries_inline]
-    return qs, [None] * len(qs), "(QUERIES_INLINE fallback)"
+    label = ("(QUERIES_INLINE fallback)" if src == "(no resource)"
+             else f"(QUERIES_INLINE fallback: {src})")
+    return qs, [None] * len(qs), label
 
 
 def load_users(

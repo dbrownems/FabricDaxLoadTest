@@ -123,7 +123,9 @@ QUERIES_INLINE = ["EVALUATE …", …]  # fallback if no file resolves
 The runner resolves the scenario in this order:
 
 1. `QUERIES_FILE = None` **and** exactly one `*.json` or `*.jsonl` is attached
-   to the notebook's *Resources* panel — that file is auto-discovered.
+   to the notebook's *Resources* panel, not counting the file named by
+   `USERS_FILE` — that file is auto-discovered. With several candidates
+   nothing is picked (the `Queries` line lists them); set `QUERIES_FILE`.
 2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` (a plain file name) — load
    `builtin/<name>` from the notebook's *Resources* panel.
 3. `QUERIES_FILE = "/lakehouse/default/Files/name.json"` — load from
@@ -159,9 +161,10 @@ USERS_FILE   = None
 USERS_INLINE = []   # empty ⇒ all virtual users share the notebook token
 ```
 
-`USERS_FILE` is **never** auto-discovered — a single `.json` on Resources
-always goes to `QUERIES_FILE` — so name it explicitly. The form of the
-value decides where the file is loaded from (see
+`USERS_FILE` is **never** auto-discovered, so name it explicitly; the file
+it names is in turn skipped by `QUERIES_FILE` auto-discovery, so
+`users.json` can sit next to your queries `.json` on Resources. The form of
+the value decides where the file is loaded from (see
 [Where files are loaded from](#where-files-are-loaded-from)):
 
 - `USERS_FILE = "users.json"` → upload `users.json` to the notebook's
