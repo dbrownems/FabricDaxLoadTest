@@ -10,7 +10,7 @@ using FabricDaxLoadTest;
 
 namespace FabricDaxLoadTest;
 
-class Program
+partial class Program
 {
     // Set once when the access token is resolved, so EmitErrorEnvelope /
     // LogCallback can scrub it out of any string that gets shipped to
@@ -115,6 +115,8 @@ class Program
                 logDir, logFile, tokenDirect, tokenFile, skipResults, noAuth, jsonProgress,
                 errorPolicy, enableTracing: !noTrace);
         });
+
+        rootCommand.AddCommand(BuildProbeCommand());
 
         return rootCommand.Invoke(args);
     }

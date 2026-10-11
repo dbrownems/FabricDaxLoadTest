@@ -13,9 +13,18 @@ supported, in any combination:
 
 ## `users.json` v2 schema
 
-The notebook reads the file pointed to by `USERS_FILE` (Resources panel)
-or the inline `USERS_INLINE` cell. The local CLI reads `--users-file`.
-Three shapes are accepted, all in the same array:
+The notebook reads the file named by `USERS_FILE` in cell 1, or the inline
+`USERS_INLINE` list. Where you put the file depends on the value
+([details](loadgen-main.md#where-files-are-loaded-from)):
+
+| `USERS_FILE` value | Put the file in |
+| ------------------ | --------------- |
+| `"users.json"` (plain file name) | the notebook's **Resources** panel (left sidebar) |
+| `"/lakehouse/default/Files/users.json"` | **Files/** of the notebook's attached (default) lakehouse |
+| `"abfss://…"` | any OneLake path |
+
+The local CLI reads `--users-file`. Three shapes are accepted, all in the
+same array:
 
 ```jsonc
 [
@@ -39,6 +48,41 @@ Keys are case-insensitive. An entry with no recognized field becomes a
 slot with no impersonation (full token identity). Empty `[]` falls back
 to a single anonymous slot.
 
+## Checking a user before the run
+
+Every notebook run starts with a test query as the **first** user in the
+list, using exactly the connection string that virtual user gets. Cell 3
+prints it under the `Users` line:
+
+| Line                  | Comes from                                               | Tells you |
+| --------------------- | -------------------------------------------------------- | --------- |
+| `configured`          | the users file / `USERS_INLINE`                          | the `effectiveUserName`, `customData`, and `roles` sent on the connection. |
+| `USERPRINCIPALNAME()` | DAX, on the impersonated connection                      | the identity that `USERPRINCIPALNAME()`-based RLS filters see. |
+| `CUSTOMDATA()`        | DAX, on the impersonated connection                      | the value that `CUSTOMDATA()`-based filters see. |
+| `active roles`        | `ROLES` column of `$SYSTEM.DBSCHEMA_CATALOGS`, on the impersonated connection | the roles in effect for the connection. `*` means it has admin rights on the model, so RLS is **not** applied (see the gotcha below). |
+| `model roles`         | `$SYSTEM.TMSCHEMA_ROLES`, read **without** impersonation | every role defined in the model. Needs write/admin permission on the model; otherwise shown as *unavailable*. |
+
+It also warns when a configured role isn't defined in the model (usually
+a typo) and when an impersonated identity has admin rights, so RLS is
+bypassed.
+
+If the test query can't connect, the engine's error is printed and the
+run continues; virtual users with that identity will fail the same way.
+Typical errors:
+
+- *You are not a member of any of the roles specified … or one or more of
+  those roles do not exist* — a `roles` entry is misspelled, or
+  `effectiveUserName` isn't a member of it.
+- *Either the database … does not exist, or you do not have permissions to
+  access it* — `effectiveUserName` has no Build permission on the model.
+
+If `model roles` still lists the roles, the token itself works and the
+problem is the impersonation settings.
+
+The same check is available outside the notebook as
+[`LoadGen probe`](loadgen-cli.md#probe--check-a-users-identity-and-roles),
+for any entry of a users file.
+
 ## Combination semantics (verified against the PBI XMLA endpoint)
 
 | EUN | Roles | CustomData | Result                                                                  |
@@ -58,9 +102,12 @@ roles — you cannot force-fit EUN into a role they're not really a member
 of.
 
 For testing arbitrary role behaviour without granting real users the
-role, use `CustomData` and write the role's filter expression in DAX as
-`CUSTOMDATA()`-driven (rather than user-driven). This is the cleanest
-pattern for targeted RLS regression tests.
+role, write the role's filter expression in DAX as `CUSTOMDATA()`-driven
+(rather than user-driven) and set **both** `customData` and `roles` on the
+virtual user, e.g. `{"customData": "USA", "roles": "CustomData Role"}`.
+`CustomData` alone doesn't put the connection in any role, so no role
+filter runs. This is the cleanest pattern for targeted RLS regression
+tests.
 
 ## Gotcha: `EffectiveUserName=<your own UPN>` does NOT trigger RLS for admins
 
@@ -96,11 +143,14 @@ under their role), you must either:
   you are a real member of `<role>` (admin bypass is dropped).
 
 The simplest and most realistic option is **CustomData-driven RLS**: a
-role whose filter expression reads `CUSTOMDATA()`. You can then set
-`CustomData=USA` (or whatever) without needing an EUN at all — admin
-bypass applies to identity, but a `CUSTOMDATA()`-keyed filter still
-evaluates because it's a plain DAX expression, not a role-membership
-check. This is the cleanest pattern for RLS regression tests under load.
+role whose filter expression reads `CUSTOMDATA()`, applied by setting
+`Roles=<that role>` together with `CustomData=USA` (or whatever) — no EUN
+needed, because admins can pick any role. `CustomData` on its own is
+**not** enough: without `Roles=`, an admin connection isn't in any role,
+so no role filter runs, `CUSTOMDATA()`-keyed or not. (The pre-run check
+shows `active roles: *` for that case, and `active roles: <role>` once
+`roles` is set.) This is the cleanest pattern for RLS regression tests
+under load.
 
 ## Permissions on the model
 

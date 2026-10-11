@@ -26,7 +26,7 @@ from .env import (
     resolve_target_dataset,
     find_dotnet,
 )
-from .runner import RunConfig, RunResult, run_load_test, render_progress
+from .runner import RunConfig, RunResult, probe_user, run_load_test, render_progress
 from .persist import WriteSummary, write_run
 from . import notebook
 
@@ -53,6 +53,7 @@ __all__ = [
     "RunConfig",
     "RunResult",
     "run_load_test",
+    "probe_user",
     "render_progress",
     "WriteSummary",
     "write_run",

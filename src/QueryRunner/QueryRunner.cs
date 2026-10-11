@@ -1099,7 +1099,9 @@ namespace FabricDaxLoadTest
         // EffectiveUserName / CustomData / Roles connection-string
         // properties are emitted only when their per-slot string is
         // non-empty. Roles is comma-separated when multiple roles apply.
-        private static string BuildConnectionString(
+        // Internal so IdentityProbe connects exactly the way a load-test
+        // user does.
+        internal static string BuildConnectionString(
             string xmlaEndpoint, string dataset, string token,
             string effectiveUserName, string customData, string roles, string runId)
         {

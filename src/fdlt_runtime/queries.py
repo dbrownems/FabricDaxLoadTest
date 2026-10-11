@@ -8,18 +8,22 @@ Resolution order for a given ``queries_file`` / ``users_file``:
      is **not** supported — ``notebookutils.fs.head`` cannot
      authenticate against it (returns HTTP 401). If passed, the
      resolver raises ``ValueError`` with the abfss equivalent.
-  2. ``"name.json"`` / ``"name.jsonl"`` — load ``builtin/<name>`` from
-     the kernel CWD (the Fabric notebook Resources panel is mounted
-     there).
-  3. ``None`` — auto-discover: if exactly one ``*.json`` or ``*.jsonl``
+  2. An absolute path — read from the driver's local filesystem.
+     ``"/lakehouse/default/Files/<name>"`` is the notebook's attached
+     (default) lakehouse, which Fabric mounts at ``/lakehouse/default``.
+  3. A plain file name (``"name.json"`` / ``"name.jsonl"``, or the
+     ``"builtin/name.json"`` form) — load ``builtin/<name>`` from the
+     kernel CWD (the Fabric notebook Resources panel is mounted there).
+  4. ``None`` — auto-discover: if exactly one ``*.json`` or ``*.jsonl``
      file is present under ``builtin/``, use it. Auto-discovery applies
      to **queries only**; users must always be named explicitly.
-  4. None of the above and ``queries_file`` / ``users_file`` is empty
+  5. None of the above and ``queries_file`` / ``users_file`` is empty
      → caller falls back to its inline default.
 
-A non-empty ``queries_file`` that fails to resolve raises
-``FileNotFoundError`` rather than silently falling through to inline,
-so a typo'd URL or a not-yet-attached resource is loud.
+A non-empty ``queries_file`` / ``users_file`` that fails to resolve
+raises ``FileNotFoundError`` (saying where it looked) rather than
+silently falling through to inline, so a typo'd path or a
+not-yet-uploaded file is loud.
 
 Supported queries shapes:
 
@@ -35,7 +39,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, NoReturn
 
 ReadAbfss = Callable[[str], str]
 
@@ -361,29 +365,76 @@ def normalize_users(raw_json: str) -> list[dict[str, str]]:
     return out
 
 
+# The notebook's Resources panel, relative to the kernel CWD.
+_RESOURCES_DIR = "builtin"
+# Where Fabric mounts the notebook's attached (default) lakehouse.
+_DEFAULT_LAKEHOUSE_MOUNT = "/lakehouse/default"
+
+_WHERE_FILES_ARE_LOADED_FROM = (
+    "Where files are loaded from:\n"
+    "  'name.json'                          -> the notebook's Resources panel (builtin/name.json)\n"
+    "  '/lakehouse/default/Files/name.json' -> the notebook's attached (default) lakehouse\n"
+    "  'abfss://...'                        -> any OneLake path"
+)
+
+
+def _resolve_local_path(path: str) -> tuple[str | None, str]:
+    in_default_lh = (path == _DEFAULT_LAKEHOUSE_MOUNT
+                     or path.startswith(_DEFAULT_LAKEHOUSE_MOUNT + "/"))
+    if os.path.isfile(path):
+        where = "attached lakehouse" if in_default_lh else "local path"
+        return path, f"{where}: {path}"
+    if in_default_lh and not os.path.isdir(_DEFAULT_LAKEHOUSE_MOUNT):
+        return None, (
+            f"no lakehouse is attached to this notebook ({_DEFAULT_LAKEHOUSE_MOUNT} "
+            "is not mounted). Add the lakehouse that holds the file in the "
+            "notebook's Lakehouse explorer (left sidebar) and make it the "
+            "default, or use an abfss:// URL.")
+    if in_default_lh:
+        return None, (
+            "file not found in the notebook's attached lakehouse. Upload it "
+            "under Files/ in the Lakehouse explorer; the path should look like "
+            f"'{_DEFAULT_LAKEHOUSE_MOUNT}/Files/<name>'.")
+    return None, "local path does not exist on the Spark driver."
+
+
 def _resolve_resource(name: str | None, *, allow_auto_discover: bool) -> tuple[str | None, str]:
-    if isinstance(name, str) and _is_remote_url(name):
-        return name, name
+    """Map a ``QUERIES_FILE`` / ``USERS_FILE`` value to a readable path.
+
+    Returns ``(path, label)``. When ``path`` is None and ``name`` was a
+    non-empty string, ``label`` explains why it didn't resolve.
+    """
+    if isinstance(name, str) and _is_remote_url(name.strip()):
+        name = name.strip()
+        return name, f"OneLake: {name}"
     if isinstance(name, str) and name.strip():
-        p = f"builtin/{name.lstrip('/')}"
-        return (p, f"resources:{p}") if os.path.exists(p) else (None, f"(missing resource '{name}')")
-    if allow_auto_discover and os.path.isdir("builtin"):
+        name = name.strip()
+        if name.startswith("/") or os.path.isabs(name):
+            return _resolve_local_path(name)
+        # A plain file name lives on the Resources panel. Accept the
+        # "builtin/<name>" form too (what "Copy relative path" yields).
+        p = name if name.startswith(f"{_RESOURCES_DIR}/") else f"{_RESOURCES_DIR}/{name}"
+        if os.path.isfile(p):
+            return p, f"notebook Resources: {p}"
+        return None, (
+            f"file not found on the notebook's Resources panel (looked for {p}). "
+            "Upload it to Resources (left sidebar), or, if it lives in the "
+            "notebook's attached lakehouse, use the full mount path, e.g. "
+            f"'{_DEFAULT_LAKEHOUSE_MOUNT}/Files/{os.path.basename(name)}'.")
+    if allow_auto_discover and os.path.isdir(_RESOURCES_DIR):
         candidates = sorted(
-            f for f in os.listdir("builtin")
+            f for f in os.listdir(_RESOURCES_DIR)
             if f.lower().endswith((".json", ".jsonl"))
         )
         if len(candidates) == 1:
-            p = f"builtin/{candidates[0]}"
-            return p, f"resources:{p} (auto-discovered)"
+            p = f"{_RESOURCES_DIR}/{candidates[0]}"
+            return p, f"notebook Resources: {p} (auto-discovered)"
     return None, "(no resource)"
 
 
-def _raise_unresolved(kind: str, name: str) -> None:
+def _raise_unresolved(kind: str, name: str, reason: str) -> NoReturn:
     raise FileNotFoundError(
-        f"{kind}_file={name!r} did not resolve to a readable path. "
-        "Expected one of: a filename present on the notebook's Resources "
-        "panel (e.g. 'queries.jsonl'), an abfss://... URL, or an "
-        "https://*.dfs.fabric.microsoft.com/... OneLake URL."
+        f"{kind.upper()}_FILE = {name!r}: {reason}\n{_WHERE_FILES_ARE_LOADED_FROM}"
     )
 
 
@@ -415,7 +466,7 @@ def load_queries(
             queries, visuals = normalize_queries_with_visuals(text)
         return queries, visuals, src
     if isinstance(queries_file, str) and queries_file.strip():
-        _raise_unresolved("queries", queries_file)
+        _raise_unresolved("queries", queries_file, src)
     qs = [str(q) for q in queries_inline]
     return qs, [None] * len(qs), "(QUERIES_INLINE fallback)"
 
@@ -426,12 +477,25 @@ def load_users(
     *,
     read_abfss: ReadAbfss | None = None,
 ) -> tuple[list[dict[str, str]], str]:
+    """Resolve and load the virtual-user (impersonation) list.
+
+    Returns ``(users, source_label)``. ``users_file`` follows the same
+    resolution rules as ``queries_file`` (see module docstring) except
+    that it is never auto-discovered. Raises ``FileNotFoundError`` when
+    a non-empty ``users_file`` doesn't resolve. The list is never empty:
+    an empty file / inline list yields one slot with no impersonation.
+    """
+    anonymous = {"effectiveUserName": "", "customData": "", "roles": ""}
     p, src = _resolve_resource(users_file, allow_auto_discover=False)
     if p is not None:
-        return normalize_users(_read_text(p, read_abfss)), src
-    if isinstance(users_file, str) and users_file.strip():
-        _raise_unresolved("users", users_file)
-    inline = list(users_inline)
-    if inline:
-        return normalize_users(json.dumps(inline)), "(USERS_INLINE)"
-    return [{"effectiveUserName": "", "customData": "", "roles": ""}], "(default anonymous user)"
+        users = normalize_users(_read_text(p, read_abfss))
+    elif isinstance(users_file, str) and users_file.strip():
+        _raise_unresolved("users", users_file, src)
+    else:
+        inline = list(users_inline)
+        if not inline:
+            return [anonymous], "(default anonymous user)"
+        users, src = normalize_users(json.dumps(inline)), "(USERS_INLINE)"
+    if not users:
+        return [anonymous], f"{src} (no users listed: no impersonation)"
+    return users, src
