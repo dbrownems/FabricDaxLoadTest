@@ -138,7 +138,8 @@ def build_run():
     | `"abfss://…"` | any OneLake path |
 
     `QUERIES_FILE = None` auto-picks the single `.json` / `.jsonl` in
-    Resources; `USERS_FILE` is never auto-picked. Cell 3 prints where each
+    Resources, ignoring the file named by `USERS_FILE`; `USERS_FILE` is
+    never auto-picked. Cell 3 prints where each
     file was loaded from, then runs a test query as the first user and
     shows its `USERPRINCIPALNAME()`, `CUSTOMDATA()`, configured roles,
     roles in effect, and the roles defined in the model.
@@ -195,7 +196,8 @@ LAKEHOUSE_NAME = None
 # Scenario (queries to drive). Leave QUERIES_FILE = None to auto-pick the
 # single .json or .jsonl attached to the notebook's *Resources* panel
 # (e.g. a Power BI Performance Analyzer export, or a Profiler trace
-# JSONL with QueryEnd events). QUERIES_INLINE is the fallback.
+# JSONL with QueryEnd events; USERS_FILE doesn't count). QUERIES_INLINE
+# is the fallback.
 # QUERIES_FILE and USERS_FILE are loaded from:
 #   "name.json"                          → this notebook's Resources panel
 #   "/lakehouse/default/Files/name.json" → this notebook's attached (default) lakehouse

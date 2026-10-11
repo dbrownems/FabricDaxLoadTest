@@ -23,6 +23,9 @@ The notebook reads the file named by `USERS_FILE` in cell 1, or the inline
 | `"/lakehouse/default/Files/users.json"` | **Files/** of the notebook's attached (default) lakehouse |
 | `"abfss://…"` | any OneLake path |
 
+A `users.json` on Resources can sit next to your queries file: the file
+named by `USERS_FILE` is never auto-picked as the scenario.
+
 The local CLI reads `--users-file`. Three shapes are accepted, all in the
 same array:
 

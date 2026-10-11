@@ -214,11 +214,14 @@ def run(
                 pass
 
     queries, query_visuals, q_src = load_queries(
-        queries_file, queries_inline or [], read_abfss=_read_abfss)
+        queries_file, queries_inline or [], read_abfss=_read_abfss,
+        users_file=users_file)
     print(f"Queries   : {len(queries)}  from {q_src}")
-    if q_src.startswith("(QUERIES_INLINE"):
+    if q_src == "(QUERIES_INLINE fallback)":
         print("          ⚠ no resource file attached — using fallback queries only.")
         print("          Drop a Performance Analyzer .json or trace .jsonl onto Resources for a real test.")
+    elif q_src.startswith("(QUERIES_INLINE"):
+        print("          ⚠ using fallback queries only.")
     bound_visuals = sum(1 for v in query_visuals if v is not None)
     if bound_visuals:
         print(f"Visuals   : {bound_visuals}/{len(queries)} queries bound to a Power BI visual")

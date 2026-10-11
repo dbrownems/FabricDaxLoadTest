@@ -177,7 +177,7 @@ If you point the notebook at a BYO lakehouse (by changing `LAKEHOUSE_NAME` in ce
 
 The runner loads queries from one of these sources, in order:
 
-1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` or `*.jsonl` is attached to the notebook's **Resources** panel — that file is auto-discovered.
+1. `QUERIES_FILE = None` (default) **and** exactly one `*.json` or `*.jsonl` is attached to the notebook's **Resources** panel, not counting the file named by `USERS_FILE` — that file is auto-discovered. With several candidates nothing is picked (the `Queries` line lists them); set `QUERIES_FILE`.
 2. `QUERIES_FILE = "name.json"` / `"name.jsonl"` (a plain file name) — loads `builtin/<name>` from the notebook's **Resources** panel.
 3. `QUERIES_FILE = "/lakehouse/default/Files/name.json"` — loads from **Files/** of the notebook's attached (default) lakehouse — the lakehouse pinned in the notebook's Lakehouse explorer, which need not be `LAKEHOUSE_NAME`.
 4. `QUERIES_FILE = "abfss://…"` — point at any OneLake file directly (cross-lakehouse / cross-workspace escape hatch). The notebook reads it via `notebookutils.fs.head`. The `https://…dfs.fabric…` form is **not** supported (raises a clear error with the abfss equivalent) — `notebookutils.fs.head` returns HTTP 401 against https URLs.
@@ -230,7 +230,7 @@ The notebook accepts any of these shapes for `queries.json`:
 
 `USERS_FILE` or `USERS_INLINE` (cell 1) drives RLS / impersonation. With `USERS_FILE = None` (default) and no inline users, all virtual users share the notebook's interactive token (no impersonation).
 
-`USERS_FILE` is **never** auto-discovered (a single `.json` in Resources always goes to `QUERIES_FILE`), so name it explicitly. Where the file has to be depends on the value:
+`USERS_FILE` is **never** auto-discovered, so name it explicitly; the file it names is skipped by `QUERIES_FILE` auto-discovery, so `users.json` can sit next to your queries `.json` on Resources. Where the file has to be depends on the value:
 
 | `USERS_FILE` value | Put the file in |
 |---|---|
