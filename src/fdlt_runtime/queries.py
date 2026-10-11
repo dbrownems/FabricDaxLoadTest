@@ -483,10 +483,13 @@ def load_queries(
                 queries, visuals = normalize_queries_with_visuals(text)
         except ValueError as ex:
             if src.endswith("(auto-discovered)"):
+                name = p[len(_RESOURCES_DIR) + 1:]
+                fix = (f"remove it from Resources or set QUERIES_FILE"
+                       if users_file else f"set USERS_FILE = '{name}'")
                 raise ValueError(
                     f"{ex}\nQUERIES_FILE = None picked {p}, the only .json/.jsonl "
-                    "on the notebook's Resources panel. If that's your users "
-                    f"file, set USERS_FILE = '{p[len(_RESOURCES_DIR) + 1:]}'.") from ex
+                    "on the notebook's Resources panel. If that's a users "
+                    f"file, {fix}.") from ex
             raise
         return queries, visuals, src
     if isinstance(queries_file, str) and queries_file.strip():
